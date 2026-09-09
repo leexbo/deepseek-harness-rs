@@ -1,0 +1,29 @@
+[package]
+name = "dsh-host"
+description = "宿主库:wasmtime 组件管理器、事件总线、持久化、总线 transport(执行原语见 dsh-sandbox,LLM 接入见 dsh-llm)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+dsh-agent-loop.workspace = true
+dsh-llm.workspace = true
+dsh-wit.workspace = true
+futures.workspace = true
+hex.workspace = true
+dsh-session.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_norway.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tokio.workspace = true
+turso.workspace = true
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
+
+[dev-dependencies]
+dsh-agent-loop.workspace = true
+dsh-llm.workspace = true

@@ -1,0 +1,17 @@
+/target
+.idea/
+*.wasm
+.DS_Store
+.env
+
+# 本地过程文档,不入库
+docs/history/
+docs/plans/
+
+# 运行时/构建产物
+.dsh/
+.zcode/
+.tmp/
+.tmp-clippy/
+.dsh-workspaces.json
+.dsh-titles.json

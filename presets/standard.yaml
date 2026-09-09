@@ -1,0 +1,25 @@
+# nonk8s
+# standard:功能完整的编码 Agent(默认)
+apiVersion: dsh/v1
+kind: Preset
+metadata:
+  name: standard
+  displayName: 标准模式
+  description: 全部工具能力
+spec:
+  mounts:
+    # persona:prompt 身份段(config 可覆盖 identity / append;缺省 = 宿主默认身份)。
+    # identity 为 standard preset persona 固定文案({{model}}/{{cwd}} 装配期插值)
+    - source: persona
+      config:
+        identity: You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+    - source: bash
+    - source: files
+    - source: todo_write
+    - source: plan
+    - source: goal
+    - source: subagent
+    - source: jobs
+    - source: workflow
+    - source: session_query
+    - source: ask_user_question

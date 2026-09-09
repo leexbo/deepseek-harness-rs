@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""verify-links:docs 内相对链接可达性检查。
+
+规则:
+- 只检查 Markdown 相对链接(跳过 http/https/锚点/代码围栏内链接);
+- 逃离仓库根的链接(指向仓库外本地路径)跳过——此类引用
+  只在本机布局下可达,不作为 CI 依赖。
+"""
+import re
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+LINK = re.compile(r"(?<!\!)\[[^\]]*\]\(([^)]+)\)")
+
+
+def check(doc: Path) -> list[str]:
+    problems = []
+    in_fence = False
+    for line in doc.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        for target in LINK.findall(line):
+            if target.startswith(("http://", "https://", "#", "mailto:")):
+                continue
+            path = target.split("#")[0]
+            if not path:
+                continue
+            resolved = (doc.parent / path).resolve()
+            try:
+                resolved.relative_to(REPO)
+            except ValueError:
+                continue  # 逃离仓库根:本地双仓引用,跳过
+            if not resolved.exists():
+                problems.append(f"{doc.relative_to(REPO)}: {target}")
+    return problems
+
+
+def main() -> int:
+    problems: list[str] = []
+    for doc in sorted((REPO / "docs").rglob("*.md")):
+        problems.extend(check(doc))
+    for p in problems:
+        print(f"broken link: {p}")
+    print(f"verify-links: {'FAILED' if problems else 'OK'}")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,12 @@
+[package]
+name = "dsh-prompt"
+description = "prompt 组件:system-prompt 组装、plan-mode 折叠、skill 渲染、compaction 策略"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+
+[lib]
+crate-type = ["rlib"]

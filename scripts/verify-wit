@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# verify-wit:WIT 契约层解析级校验(契约先行的强制点)
+# 用法:scripts/verify-wit
+set -euo pipefail
+cd "$(dirname "$0")/.."
+cargo test -p dsh-wit --test verify_wit

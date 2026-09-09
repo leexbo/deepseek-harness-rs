@@ -1,0 +1,24 @@
+[package]
+name = "dsh-app"
+description = "会话装配层:Session/prompt/工具组装/transport 构建/日志重载"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+anyhow.workspace = true
+dsh-agent-loop.workspace = true
+dsh-host.workspace = true
+dsh-llm.workspace = true
+dsh-prompt.workspace = true
+dsh-sandbox.workspace = true
+dsh-session.workspace = true
+dsh-tools.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+dsh-host.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "dsh-example-tool"
+description = "示例 wasm 工具组件(dsh:tools world 参考实现;测试物料:echo_config + spin 硬停)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+serde_json.workspace = true
+wit-bindgen.workspace = true

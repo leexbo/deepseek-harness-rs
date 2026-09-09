@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# verify-e2e:端到端链路测试(假 provider 驱动,不依赖真实网络)
+# turn 主链路 + 工具/沙箱闭环 + 审计归因重放(E5)。
+# 随迁测试覆盖:dsh-llm provider 契约(adapters)、dsh-sandbox 进程/沙箱、
+# dsh-tools 工具闭环(HTTP mock 全链)。
+set -euo pipefail
+cd "$(dirname "$0")/.."
+cargo test -p dsh-host --test e2e_turn --test audit
+cargo test -p dsh-tools --test tool_loop --test cli_tool_e2e
+cargo test -p dsh-llm --test adapters
+cargo test -p dsh-sandbox

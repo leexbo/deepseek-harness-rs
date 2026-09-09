@@ -1,0 +1,30 @@
+// dsh:loop — agent-loop 组件契约(turn/step 状态机、inbox、phase)。
+// 一个 step = 一次模型请求加其触发的工具执行;一个 turn = 零或多个 step。
+// 类型细节(user-message/phase 的完整字段)实现期定稿,当前为最小占位。
+package dsh:loop@0.1.0;
+
+interface driver {
+    record user-message {
+        content: string,
+        /// 附件引用(事件 seq)
+        attachments: option<list<u64>>,
+    }
+
+    variant inbox-target {
+        main,
+        inbox(string),
+    }
+
+    /// 循环相位(随状态机实现扩充)
+    enum phase {
+        idle,
+        running,
+        stopped,
+    }
+
+    send: func(msg: user-message, target: inbox-target, wakeup: bool) -> result<_, string>;
+    cancel: func(cause: string, keep-inbox: bool) -> result<_, string>;
+    status: func() -> result<phase, string>;
+    /// 驱动循环直至空闲(0.3 形状:async func 即 future 语义)
+    run: async func() -> result<_, string>;
+}

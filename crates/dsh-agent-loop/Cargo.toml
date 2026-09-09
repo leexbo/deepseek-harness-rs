@@ -1,0 +1,17 @@
+[package]
+name = "dsh-agent-loop"
+description = "agent-loop 组件:turn/step 状态机、inbox、deriveMessages 消费、phase 管理"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+dsh-session.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true

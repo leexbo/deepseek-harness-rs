@@ -1,0 +1,36 @@
+// dsh:tools — 工具组件契约(「一切皆插件」的工具面)。
+// 组件 export 工具声明与执行,宿主桥(WasmTool)实现 ToolPort 进 ToolSet。
+//
+// 能力边界 = import 集(world 即授权):本 world
+// 零 import——纯 json→json 计算;wasi 导入(文件/时钟/网络)
+// 既定不进;进程/LLM 面不可达;dsh:host/cancel 软取消随执行型工具加入,
+// 当下取消 = 宿主 epoch 硬停兜底(E4)。
+//
+// execute 同步形状:0.2 产物无 async export(wit-bindgen stream/future
+// 稳定的既定触发条件未达);异步由宿主 spawn_blocking 承载,0.3 切换时
+// 升 async func(契约版本 bump)。
+package dsh:tools@0.1.0;
+
+world tool-component {
+    // 生命周期与总线订阅型插件同一(dsh:plugin/lifecycle):
+    // init(config)/dispose/config-schema,config 经宿主 config-schema 校验
+    export dsh:plugin/lifecycle@0.1.0;
+    export tools;
+}
+
+interface tools {
+    use dsh:json/value@0.1.0.{json};
+
+    /// 工具声明(模型面;宿主桥组装 OpenAI function 形状进请求 header)
+    record tool-spec {
+        name: string,
+        description: string,
+        input-schema: json,
+    }
+
+    /// 本组件提供的全部工具(单组件可声明多工具,FileTools 同型)
+    describe: func() -> list<tool-spec>;
+
+    /// 执行一次调用;错误为工具级失败(不 trap)
+    execute: func(name: string, input: json) -> result<json, string>;
+}

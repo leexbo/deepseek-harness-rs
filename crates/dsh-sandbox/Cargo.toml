@@ -1,0 +1,18 @@
+[package]
+name = "dsh-sandbox"
+description = "执行原语:OS 沙箱链(fail-closed)与受控 spawn/PTY"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+thiserror.workspace = true
+tokio.workspace = true
+libc.workspace = true
+portable-pty.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.7"
