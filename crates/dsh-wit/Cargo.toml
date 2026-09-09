@@ -1,0 +1,16 @@
+[package]
+name = "dsh-wit"
+description = "host 侧 bindgen 与共享 WIT 类型;verify-wit 的承载 crate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wit-parser.workspace = true
+wasmtime.workspace = true
+
+[dev-dependencies]
+dsh-host.workspace = true
+dsh-session.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

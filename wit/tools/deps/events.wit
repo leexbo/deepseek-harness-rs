@@ -1,0 +1,56 @@
+// dsh:events — 宿主事件总线契约。
+// 5 种分发模式(vendor/cordis DispatchMode 一一对应):
+//   emit 不等结果 / parallel 并发 join / serial 依次 await 且 bail 值短路 /
+//   bail 首个非 null/false/undefined 返回值即止 / waterfall 依次传载荷。
+// veto 不是第 6 种模式,是 waterfall 的内建语义(不调续体即否决)。
+// around 类事件(llm/stream、tools/execute)的续体 resource:@since(unresolved) 待定稿。
+package dsh:events@0.1.0;
+
+interface types {
+    use dsh:json/value@0.1.0.{json};
+
+    record envelope {
+        %type: string,
+        data: json,
+        source: string,
+    }
+
+    /// listener 返回值:continue=无返回;value=bail/serial 携带结果;
+    /// next=waterfall 新载荷继续链;veto=waterfall 否决中止
+    variant listener-result {
+        continue,
+        value(json),
+        next(json),
+        veto,
+    }
+
+    /// 订阅句柄
+    type sub-id = u64;
+}
+
+/// 组件 import;宿主实现
+interface bus {
+    use types.{envelope, sub-id};
+
+    enum dispatch-mode {
+        emit,
+        parallel,
+        serial,
+        bail,
+        waterfall,
+    }
+
+    /// 订阅是数据;宿主按 (priority, 实例顺序) 排序
+    subscribe: func(mode: dispatch-mode, event: string, priority: s32) -> result<sub-id, string>;
+    unsubscribe: func(id: sub-id) -> result<_, string>;
+    /// 宿主按 mode 分发给订阅者
+    publish: func(ev: envelope) -> result<_, string>;
+}
+
+/// 订阅组件 export;宿主调用。
+/// 同一组件内多个 listener 的顺序是组件内部职责(插件 SDK 文档级契约)。
+interface consumer {
+    use types.{envelope, listener-result};
+
+    handle: func(ev: envelope) -> result<listener-result, string>;
+}

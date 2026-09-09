@@ -1,0 +1,15 @@
+[package]
+name = "dsh-session"
+description = "session 组件:事件日志(信封/seq/ignorable/投影三件套/不变式语义)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wit-bindgen.workspace = true

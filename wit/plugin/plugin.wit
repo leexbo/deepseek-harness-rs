@@ -1,0 +1,26 @@
+// dsh:plugin — 第三方插件契约。
+// wasi 导入(environment/filesystem/clocks)在组件组合期加入,
+// 届时随依赖集锁定 wasi 0.2 快照版本。
+package dsh:plugin@0.1.0;
+
+world plugin {
+    import dsh:events/bus@0.1.0;
+    // consumer 是订阅组件 export、宿主调用(修正方案草案中的 import 笔误)
+    import dsh:host/process@0.1.0;
+    import dsh:host/cancel@0.1.0;
+    import dsh:host/registry@0.1.0;
+    import dsh:host/llm-transport@0.1.0;
+    export dsh:events/consumer@0.1.0;
+    export lifecycle;
+}
+
+interface lifecycle {
+    use dsh:json/value@0.1.0.{json};
+
+    /// 实例化时调用一次;config 已经宿主按 config-schema() 校验
+    init: func(config: json) -> result<_, string>;
+    /// 逆序销毁时 await(继承 fiber 逆序回滚语义)
+    dispose: async func() -> result<_, string>;
+    /// JSON Schema 声明,宿主校验用(跨组件通用契约,继承为设计)
+    config-schema: func() -> result<json, string>;
+}

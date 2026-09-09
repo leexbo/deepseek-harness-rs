@@ -1,0 +1,19 @@
+[package]
+name = "dsh"
+description = "deepseek-harness-rs 宿主二进制:Rust + WASM Component Agent Harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+dsh-agent-loop.workspace = true
+dsh-app.workspace = true
+dsh-host.workspace = true
+dsh-llm.workspace = true
+dsh-prompt.workspace = true
+dsh-session.workspace = true
+dsh-tools.workspace = true
+tokio.workspace = true

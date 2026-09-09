@@ -1,0 +1,18 @@
+[package]
+name = "dsh-llm"
+description = "LLM 接入:provider 方言适配器、HTTP/SSE transport 与不变式闸门"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+base64.workspace = true
+dsh-agent-loop.workspace = true
+dsh-session.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

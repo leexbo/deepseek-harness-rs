@@ -1,0 +1,115 @@
+// dsh:host — 宿主函数契约(无 WASI 对应的能力 + 自建语义)。
+// fs/clock/random/env 复用 wasi-filesystem / wasi-clocks / wasi-random / wasi:cli;
+// 网络不直接 import wasi-http,统一走 llm-transport + registry(重写方案 §2)。
+package dsh:host@0.1.0;
+
+interface process {
+    /// spawn 选项(执行世界能力束:目录视图/spawn 策略/沙箱链参数)
+    record spawn-options {
+        cwd: option<string>,
+        /// sandbox policy 标识;探测失败 fail-closed,绝不静默降级
+        sandbox: option<string>,
+    }
+
+    record exit-status {
+        code: s32,
+        signal: option<u32>,
+    }
+
+    resource child-handle;
+    resource pty-handle;
+
+    spawn: func(cmd: string, args: list<string>, env: list<tuple<string, string>>,
+                opts: spawn-options) -> result<child-handle, string>;
+    /// SIGTERM→grace→SIGKILL 语义在宿主实现(subprocess-local)
+    child-wait: async func(h: borrow<child-handle>) -> result<exit-status, string>;
+    child-kill: func(h: borrow<child-handle>, grace-ms: u64) -> result<_, string>;
+    /// 进程树级终止
+    kill-tree: func(h: borrow<child-handle>) -> result<_, string>;
+    pty-spawn: func(cmd: string, cols: u32, rows: u32) -> result<pty-handle, string>;
+    pty-write: func(h: borrow<pty-handle>, data: list<u8>) -> result<_, string>;
+    pty-resize: func(h: borrow<pty-handle>, cols: u32, rows: u32) -> result<_, string>;
+}
+
+/// 合作取消(WASI 0.3 cancellation 未发布,自建;wasmCloud host/cancel 模式)。
+/// 软级:访客在 await/循环顶部轮询;硬级:epoch/fuel 硬停宿主侧兜底(E4)。
+interface cancel {
+    resource cancel-token;
+
+    is-cancelled: func(token: borrow<cancel-token>) -> bool;
+    /// 宿主置标志;不强制
+    request: func(token: borrow<cancel-token>) -> result<_, string>;
+}
+
+/// 动态能力查找(Typert lookup 的等价物)。
+/// 静态依赖在 WIT 声明 import、linker 注入;动态查找走此处,宿主中介转发。
+interface registry {
+    use dsh:json/value@0.1.0.{json};
+
+    resource provider-id;
+
+    variant lookup-failure {
+        unknown-service,
+        unknown-method(string),
+        unavailable(string),
+    }
+
+    record coded-error {
+        code: string,
+        message: string,
+    }
+
+    variant remote-error {
+        message(string),
+        coded(coded-error),
+    }
+
+    resolve: func(service: string, method: string) -> result<provider-id, lookup-failure>;
+    invoke: async func(p: borrow<provider-id>, method: string, args: json)
+        -> result<json, remote-error>;
+}
+
+/// LLM 传输:传输在宿主(连接池/SSE+裸流双模解码),策略在组件。
+/// header/messages 是不变式比对对象(内容级 derive-and-compare,E1)。
+interface llm-transport {
+    use dsh:json/value@0.1.0.{json};
+
+    resource adapter-id;
+
+    record llm-request {
+        provider: string,
+        model: string,
+        /// 折叠 header(model/system/temperature/maxTokens/stop/tools)
+        header: json,
+        /// 完整消息数组
+        messages: json,
+    }
+
+    variant llm-event {
+        chunk(string),
+        assistant-message(json),
+        done,
+        usage(json),
+        failure(json),
+    }
+
+    variant llm-error {
+        transport(string),
+        rate-limited,
+        rejected(string),
+    }
+
+    /// provider 注册面:
+    /// provider-id 指向组件 export 的 stream 接口;第三方 provider 不改宿主即可接入
+    register-adapter: func(providers: list<string>, a: adapter-id) -> result<_, string>;
+    /// 宿主在调用边界做内容级不变式校验后放行
+    %stream: func(req: llm-request) -> result<stream<llm-event>, llm-error>;
+}
+
+interface telemetry {
+    use dsh:json/value@0.1.0.{json};
+
+    resource span-handle;
+
+    span: func(name: string, attrs: json) -> result<span-handle, string>;
+}

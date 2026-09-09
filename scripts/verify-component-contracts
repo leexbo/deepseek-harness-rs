@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# verify-component-contracts:组件契约测试(wasmtime 实际实例化 + world 满足)
+# 含 verify-wit(WIT 解析级)与 session 组件契约(往返/seq 守卫/投影/重放)。
+set -euo pipefail
+cd "$(dirname "$0")/.."
+cargo test -p dsh-wit

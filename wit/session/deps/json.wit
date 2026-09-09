@@ -1,0 +1,10 @@
+// dsh:json — 跨组件统一 JSON 载荷类型。
+// 契约:lossless、保序。
+// WIT 不允许递归类型定义,JSON 值以规范化序列化字节为背板(list<u8>),
+// 边界两侧用 serde_json 编解码;字节相同即值相同,不损失任何信息。
+package dsh:json@0.1.0;
+
+interface value {
+    /// 无损 JSON 载荷(规范化序列化字节)
+    type json = list<u8>;
+}

@@ -1,0 +1,22 @@
+[package]
+name = "dsh-tools"
+description = "tools 组件:工具 schema 注册、call-id 簿记、pre/execute/post 编排"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+dsh-agent-loop.workspace = true
+dsh-host.workspace = true
+dsh-llm.workspace = true
+dsh-sandbox.workspace = true
+dsh-session.workspace = true
+grep-regex.workspace = true
+grep-searcher.workspace = true
+ignore.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true

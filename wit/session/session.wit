@@ -1,0 +1,46 @@
+// dsh:session — 事件日志组件契约。
+// 继承语义(重写方案 §4「事件日志重新设计」):
+//   seq 连续(宿主校验单调)、ignorable 未知事件守卫、
+//   surfaceOp/sourceEventSeqs 引用链、投影三件套、single boundary rule。
+package dsh:session@0.1.0;
+
+interface event-log {
+    use dsh:json/value@0.1.0.{json};
+
+    /// 事件信封(语义与 SessionEvent 一一对应;格式重新设计)
+    record event {
+        %type: string,
+        /// 连续;由宿主校验单调
+        seq: u64,
+        time: s64,
+        data: json,
+        surface-op: option<string>,
+        source-event-seqs: option<list<u64>>,
+        /// 未标记 ignorable 的未知类型令读取方拒绝重建
+        ignorable: bool,
+    }
+
+    /// 追加事件,返回新 seq
+    append: func(ev: event) -> result<u64, string>;
+    get: func(seq: u64) -> result<option<event>, string>;
+    query: func(type-filter: option<string>) -> list<event>;
+    /// 头部 + 事件数组,持久化用
+    snapshot: func() -> result<json, string>;
+}
+
+interface projection {
+    use dsh:json/value@0.1.0.{json};
+    use event-log.{event};
+
+    /// 投影三件套(纯函数,session-projection 契约:
+    /// init/apply/view 必须同步纯函数,state 必须纯 JSON)
+    init: func(schema: json) -> result<json, string>;
+    apply: func(state: json, ev: event) -> result<json, string>;
+    view: func(state: json) -> result<json, string>;
+}
+
+/// session 组件 world:宿主实例化并调用的全部接口
+world session {
+    export event-log;
+    export projection;
+}

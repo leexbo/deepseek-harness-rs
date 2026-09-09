@@ -1,0 +1,13 @@
+# nonk8s
+# minimal:仅 bash + 文件编辑的双工具编码 Agent
+apiVersion: dsh/v1
+kind: Preset
+metadata:
+  name: minimal
+  displayName: 极简模式
+  description: 仅命令与文件工具
+spec:
+  mounts:
+    - source: persona
+    - source: bash
+    - source: files

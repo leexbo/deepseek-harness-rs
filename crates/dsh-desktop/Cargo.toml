@@ -1,0 +1,44 @@
+[package]
+name = "dsh-desktop"
+description = "dsh 桌面客户端:GPUI 原生 UI,进程内直连 dsh-core 宿主"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "dsh-desktop"
+path = "src/main.rs"
+
+[dependencies]
+image.workspace = true
+base64.workspace = true
+dsh-core.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures.workspace = true
+# GPUI Kit 门面:重导出 gpui(=gpui-pre)全部符号 + component/base/assets
+# 子模块;platform features 由其自带依赖携带
+gpui-kit.workspace = true
+pulldown-cmark.workspace = true
+# Mermaid 图渲染(markdown```mermaid 围栏 → SVG → gpui 光栅;kits/mermaid.rs)
+merman.workspace = true
+# 查看器视口裁剪光栅(resvg 根变换只渲染可见区;与 gpui 锁同版)
+resvg.workspace = true
+usvg.workspace = true
+# 语法高亮(read 卡/markdown 代码块;default-fancy = fancy-regex 后端,零 C 依赖)
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# 轨迹 Started 时刻/时间线 tooltip 的本地时区格式化
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Dock 图标运行时绘制(app_icon.rs);objc2 系与 gpui 同源,纯绑定无 C 交付物
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-core-graphics.workspace = true
+objc2-foundation.workspace = true
+
+[dev-dependencies]
+# test-support 经 gpui-kit 透传到 gpui(features 树内 union)
+gpui-kit = { workspace = true, features = ["test-support"] }

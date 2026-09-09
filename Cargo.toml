@@ -1,0 +1,107 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/dsh",
+    "crates/dsh-app",
+    "crates/dsh-desktop",
+    "crates/dsh-core",
+    "crates/dsh-wit",
+    "crates/dsh-host",
+    "crates/dsh-llm",
+    "crates/dsh-sandbox",
+    "crates/dsh-session",
+    "crates/dsh-agent-loop",
+    "crates/dsh-prompt",
+    "crates/dsh-tools",
+    "crates/dsh-example-tool",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+thiserror = "2"
+toml = "1"
+clap = { version = "4", features = ["derive"] }
+wit-parser = "0.258"
+tokio = { version = "1", features = ["full"] }
+wasmtime = { version = "48", features = ["async"] }
+wasmtime-wasi = "48"
+turso = { version = "0.7.2", features = ["fts"] }
+# /export ZIP 打包(stored 条目 + deflate)
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+futures = "0.3"
+libc = "0.2"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# preset manifest 解析(k8s 形态 YAML 多文档流;serde_yaml 已归档,此为活跃接棒 fork)
+serde_norway = "0.9"
+wit-bindgen = "0.61.1"
+dsh-app = { path = "crates/dsh-app" }
+dsh-core = { path = "crates/dsh-core" }
+dsh-host = { path = "crates/dsh-host" }
+dsh-session = { path = "crates/dsh-session" }
+dsh-wit = { path = "crates/dsh-wit" }
+dsh-agent-loop = { path = "crates/dsh-agent-loop" }
+dsh-prompt = { path = "crates/dsh-prompt" }
+dsh-tools = { path = "crates/dsh-tools" }
+dsh-llm = { path = "crates/dsh-llm" }
+dsh-sandbox = { path = "crates/dsh-sandbox" }
+portable-pty = "0.9.0"
+ignore = "0.4.33"
+grep-searcher = "0.1.17"
+grep-regex = "0.1.14"
+uuid = { version = "1", features = ["v4", "v7"] }
+# GPUI 桌面客户端(dsh-desktop):gpui-kit 门面单依赖(crates.io),内部
+# 重导出 gpui(= gpui-pre,zed 官方发布快照)+ gpui-component + base +
+# assets;platform features 与 test-support 均由其自带/透传,不再用 zed
+# 裸 git 引用。升级走 crates.io semver(cargo update -p gpui-kit)
+gpui-kit = "0.6"
+pulldown-cmark = { version = "0.13", default-features = false }
+# Mermaid 图渲染(dsh-desktop markdown;引擎选型见 kits/mermaid.rs 头注:
+# zed #49064→#57644 弃 mermaid-rs-renderer 换 merman)。alpha 版本锁死防漂移,
+# 默认特征(complete-svg=svg+cytoscape+elk+math)裁到所需两项
+merman = { version = "=0.8.0-alpha.5", default-features = false, features = ["svg", "layout-cytoscape"] }
+# Mermaid 查看器视口裁剪光栅(自持 resvg 按 scale+translate 只渲染
+# 可见区域,内存 O(视口);版本与 gpui 0.2.2 锁同版去重)
+resvg = "0.46"
+usvg = "0.46"
+# macOS Dock 图标(dsh-desktop 运行时绘制;objc2 系版本与 gpui 同源锁定)
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "objc2-core-graphics"] }
+objc2-core-graphics = { version = "0.3", features = ["CGBitmapContext", "CGColor", "CGColorSpace", "CGContext", "CGImage"] }
+objc2-foundation = "0.3"
+# macOS 钥匙串凭据(dsh-core credentials seam;非 macOS 平台该级缺席)
+security-framework = "3"
+# 图片附件:解码校验/维度(dsh-host 附件存储;版本与 gpui 0.2.2 锁同版)
+image = "0.25"
+sha2 = "0.11.0"
+hex = "0.4"
+# 图片附件 wire 编码(draft 提交 base64 / data URL / 读取 RPC)
+base64 = "0.23"
+
+[profile.dev]
+# 全量 debuginfo 下 wasmtime+turso 的 debug 构建达数十 GB;行号表足够日常调试
+debug = "line-tables-only"
+
+# GUI/文本栈热点依赖 debug 下仍走优化(对齐 gpui-kit 官方 workspace;
+# 兼收内存与流畅度收益)。包名 = crates.io 真实名(gpui 发布为 gpui-pre)
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-pre-macros = { opt-level = 3 }
+taffy = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+resvg = { opt-level = 3 }
+smol = { opt-level = 3 }
+ropey = { opt-level = 3 }
+markdown = { opt-level = 3 }
+xml5ever = { opt-level = 3 }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
