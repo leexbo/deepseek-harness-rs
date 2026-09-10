@@ -136,7 +136,10 @@ impl AppStore {
             ImageMediaType::Webp => gpui_kit::ImageFormat::Webp,
             ImageMediaType::Gif => gpui_kit::ImageFormat::Gif,
         };
-        Some(Arc::new(gpui_kit::Image::from_bytes(format, bytes.to_vec())))
+        Some(Arc::new(gpui_kit::Image::from_bytes(
+            format,
+            bytes.to_vec(),
+        )))
     }
 
     /// 草稿图片总数(超限检查)

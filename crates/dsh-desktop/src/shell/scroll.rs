@@ -8,8 +8,8 @@
 //! thumb 的满行程精确映射到列表的真实滚动域;轨道高由渲染期 canvas
 //! 捕获存 store,视口高实时读 ListState。
 
-use gpui_kit::{px, Bounds, ListState, Pixels, Point, Size};
 use gpui_kit::component::scroll::ScrollbarHandle;
+use gpui_kit::{Bounds, ListState, Pixels, Point, Size, px};
 
 /// 全高轨道 handle:滚动委托 ListState,content_size 加 extra 补偿。
 #[derive(Clone)]
@@ -21,7 +21,10 @@ pub struct FullTrackHandle {
 
 impl FullTrackHandle {
     pub fn new(list: &ListState, extra: Pixels) -> Self {
-        Self { list: list.clone(), extra: extra.max(px(0.)) }
+        Self {
+            list: list.clone(),
+            extra: extra.max(px(0.)),
+        }
     }
 }
 
@@ -35,8 +38,8 @@ impl ScrollbarHandle for FullTrackHandle {
     }
 
     fn content_size(&self) -> Size<Pixels> {
-        let content = self.list.viewport_bounds().size
-            + Size::from(self.list.max_offset_for_scrollbar());
+        let content =
+            self.list.viewport_bounds().size + Size::from(self.list.max_offset_for_scrollbar());
         content + Size::new(px(0.), self.extra)
     }
 

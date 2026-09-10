@@ -12,8 +12,8 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use gpui_kit::{App, Rgba, Window, WindowAppearance};
 use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::{App, Rgba, Window, WindowAppearance};
 
 // ── 外观档位(与 registry settings.json appearance 字段同词汇)──
 
@@ -157,7 +157,11 @@ fn cur() -> &'static Palette {
 
 /// 指定模式对应盘(mermaid 纯函数化测试用)
 pub(crate) fn palette_of(mode: ThemeMode) -> &'static Palette {
-    &PALETTES[if mode.is_dark() { M_DARK as usize } else { M_LIGHT as usize }]
+    &PALETTES[if mode.is_dark() {
+        M_DARK as usize
+    } else {
+        M_LIGHT as usize
+    }]
 }
 
 // ── 取值 fn(调用点保持原常量形态;语义文档在此处)──────────
@@ -471,7 +475,10 @@ mod tests {
                 Hsla::from(palette_of(ThemeMode::Light).dock)
             );
             // 填充面前景:浅盘下仍为纯白(非近黑 label)
-            assert_eq!(t.colors.primary_foreground, Hsla::from(color(0xFFFFFF, 1.0)));
+            assert_eq!(
+                t.colors.primary_foreground,
+                Hsla::from(color(0xFFFFFF, 1.0))
+            );
         });
     }
 }

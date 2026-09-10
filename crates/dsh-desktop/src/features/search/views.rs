@@ -1,14 +1,14 @@
 //! 全库检索 UI(从 ui::sidebar 切出):侧栏搜索框(本地过滤 + Enter
 //! 触发全库检索)与命中面板(替换会话列表;行点击 = 开会话切轨迹定位)。
 
-use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
-    Styled, div, px,
-};
 use gpui_kit::component::IconName;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::input::Input;
+use gpui_kit::{
+    App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled, div, px,
+};
 
 use crate::kits::icons::{DshIcon, fixed};
 use crate::kits::theme;

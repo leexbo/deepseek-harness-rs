@@ -40,8 +40,8 @@ impl RetryPolicy {
     /// `random` ∈ [0,1] 由调用方注入(测试传固定样本;运行时为引擎随机源)。
     pub fn local_delay_ms(&self, retry: u32, random: f64) -> u64 {
         let exponent = retry.saturating_sub(1).min(1024);
-        let exponential =
-            (self.initial_delay_ms as f64 * 2.0f64.powi(exponent as i32)).min(self.max_delay_ms as f64);
+        let exponential = (self.initial_delay_ms as f64 * 2.0f64.powi(exponent as i32))
+            .min(self.max_delay_ms as f64);
         let jitter = 1.0 - self.jitter_ratio + 2.0 * self.jitter_ratio * random.clamp(0.0, 1.0);
         let ms = (exponential * jitter).min(self.max_delay_ms as f64);
         // 退避等待至少 1ms:0 会退化为忙循环式的立即重发
@@ -111,39 +111,64 @@ mod tests {
     #[test]
     fn decide_by_classification() {
         let p = policy();
-        assert!(p.decide(&TransportError::Transport("conn".into()), 1, 0.5).is_some());
-        assert!(p.decide(&TransportError::Timeout("t".into()), 1, 0.5).is_some());
-        assert!(p
-            .decide(
-                &TransportError::Server { status: 502, body: "bad gw".into() },
+        assert!(
+            p.decide(&TransportError::Transport("conn".into()), 1, 0.5)
+                .is_some()
+        );
+        assert!(
+            p.decide(&TransportError::Timeout("t".into()), 1, 0.5)
+                .is_some()
+        );
+        assert!(
+            p.decide(
+                &TransportError::Server {
+                    status: 502,
+                    body: "bad gw".into()
+                },
                 1,
                 0.5
             )
-            .is_some());
-        assert!(p
-            .decide(
-                &TransportError::RateLimit { retry_after_ms: None, body: "slow".into() },
+            .is_some()
+        );
+        assert!(
+            p.decide(
+                &TransportError::RateLimit {
+                    retry_after_ms: None,
+                    body: "slow".into()
+                },
                 1,
                 0.5
             )
-            .is_some());
+            .is_some()
+        );
         assert!(p.decide(&TransportError::EmptyResponse, 1, 0.5).is_some());
         // 直通:401/400 与未分类
-        assert!(p
-            .decide(
-                &TransportError::Auth { status: 401, body: "nope".into() },
+        assert!(
+            p.decide(
+                &TransportError::Auth {
+                    status: 401,
+                    body: "nope".into()
+                },
                 1,
                 0.5
             )
-            .is_none());
-        assert!(p
-            .decide(
-                &TransportError::InvalidRequest { status: 400, body: "bad".into() },
+            .is_none()
+        );
+        assert!(
+            p.decide(
+                &TransportError::InvalidRequest {
+                    status: 400,
+                    body: "bad".into()
+                },
                 1,
                 0.5
             )
-            .is_none());
-        assert!(p.decide(&TransportError::Other("mystery".into()), 1, 0.5).is_none());
+            .is_none()
+        );
+        assert!(
+            p.decide(&TransportError::Other("mystery".into()), 1, 0.5)
+                .is_none()
+        );
     }
 
     /// 耗尽:第 max_retries 次仍放行重试,其后放行错误
@@ -158,9 +183,15 @@ mod tests {
     #[test]
     fn retry_after_adopted_verbatim_within_cap() {
         let p = policy();
-        let f = TransportError::RateLimit { retry_after_ms: Some(7_777), body: String::new() };
+        let f = TransportError::RateLimit {
+            retry_after_ms: Some(7_777),
+            body: String::new(),
+        };
         assert_eq!(p.decide(&f, 1, 0.0), Some(Duration::from_millis(7_777)));
-        let over = TransportError::RateLimit { retry_after_ms: Some(60_000), body: String::new() };
+        let over = TransportError::RateLimit {
+            retry_after_ms: Some(60_000),
+            body: String::new(),
+        };
         assert_eq!(p.decide(&over, 1, 0.5), None);
     }
 }

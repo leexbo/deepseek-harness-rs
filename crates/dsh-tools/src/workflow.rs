@@ -103,7 +103,10 @@ where
         let mut prev = String::new();
         let mut report = String::new();
         for (i, step) in steps.iter().enumerate() {
-            let out = self.subagent.run_foreground(&self.task_for(step, &prev)).await;
+            let out = self
+                .subagent
+                .run_foreground(&self.task_for(step, &prev))
+                .await;
             if !out.success {
                 return ToolOutput {
                     output: format!(
@@ -261,7 +264,11 @@ mod tests {
         let queue = std::sync::Arc::new(std::sync::Mutex::new(queue));
         Arc::new(move || {
             let mut q = queue.lock().unwrap();
-            let group = if q.is_empty() { Vec::new() } else { q.remove(0) };
+            let group = if q.is_empty() {
+                Vec::new()
+            } else {
+                q.remove(0)
+            };
             let mut p = FakeProvider::new();
             for response in group {
                 p.then(response);

@@ -10,19 +10,20 @@
 //! 字号纪律:16 区标题 / 13 行主文 /
 //! 12 动作钮与说明 / 11 注脚。
 
-use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
-    Styled, div, px,
-};
 use gpui_kit::component::IconName;
 use gpui_kit::component::InteractiveElementExt as _;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::select::{Select, SelectState};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{
+    App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled, div, px,
+};
 
 use crate::features::settings::SettingsNav;
+use crate::features::settings::store::McpDetailMode;
 use crate::kits::icons::{DshIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -72,6 +73,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .child(div().v_flex().w(px(720.)).child(
                     match store.read(cx).settings.settings_nav {
                         SettingsNav::Models => models_section(store, cx).into_any_element(),
+                        SettingsNav::Mcp => mcp_section(store, cx).into_any_element(),
                         SettingsNav::General => general_section(store, cx).into_any_element(),
                         SettingsNav::About => about_section(store, cx).into_any_element(),
                     },
@@ -95,6 +97,761 @@ fn section_title(text: &str) -> impl IntoElement {
         .child(text.to_string())
 }
 
+/// MCP Servers 区:server 行卡(id/command/enabled 开关/移除)+ 添加卡。
+/// 通用字段输入行(标签 + 输入实体)。`sel` = 输入包装的布局回归锚
+fn field_input(
+    label: &str,
+    sel: &'static str,
+    input: &Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(
+            div()
+                .w(px(64.))
+                .flex_shrink_0()
+                .text_size(px(11.))
+                .text_color(theme::CAPTION())
+                .child(label.to_string()),
+        )
+        .children(input.as_ref().map(|e| {
+            div()
+                .id(gpui_kit::SharedString::from(sel))
+                .debug_selector(move || sel.to_string())
+                .flex_1()
+                .min_w(px(0.))
+                .h(px(32.))
+                .child(Input::new(e).small())
+        }))
+}
+
+fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
+    let st = store.read(cx);
+    let st_add = store.clone();
+    let Some(detail) = st.settings.mcp_detail.clone() else {
+        // ── 列表页:行卡(id / command / 启停 Switch / 编辑 / 卸载)+ 添加钮 ──
+        let servers = st.settings.settings_snapshot["mcpServers"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut col = div()
+            .v_flex()
+            .gap(px(12.))
+            .child(section_title("MCP Servers"))
+            .children(st.settings.settings_notice.as_ref().map(|(ok, msg)| {
+                div()
+                    .debug_selector(|| "mcp-settings-notice".to_string())
+                    .text_size(px(12.))
+                    .text_color(if *ok {
+                        theme::SUCCESS()
+                    } else {
+                        theme::DANGER()
+                    })
+                    .child(format!("{} {msg}", if *ok { "✓" } else { "⚠" }))
+            }))
+            .child(intro_line(
+                "外部 MCP server(stdio)的工具桥接进工具面;保存即连接,所有会话共享。",
+            ));
+        // 列表头:「已安装 N」+ 新建主钮
+        let total = servers.len();
+        col = col.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .mt(px(12.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .text_size(px(11.))
+                        .text_color(theme::CAPTION())
+                        .child(format!("已安装 {total}")),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .id("mcp-add")
+                        .debug_selector(|| "mcp-add".to_string())
+                        .flex()
+                        .h(px(28.))
+                        .items_center()
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .bg(theme::BRAND())
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(gpui_kit::white())
+                        .hover(|s| s.opacity(0.9))
+                        .on_click({
+                            let st_open = st_add.clone();
+                            move |_, window, cx| {
+                                st_open.update(cx, |st, cx| st.open_mcp_add(window, cx));
+                            }
+                        })
+                        .child("+ 新建"),
+                ),
+        );
+
+        let mut rows = div().v_flex().gap(px(8.));
+        if servers.is_empty() {
+            rows = rows.child(caption_line("尚未配置 MCP server。"));
+        }
+        for (ix, s) in servers.into_iter().enumerate() {
+            let id = s["id"].as_str().unwrap_or_default().to_string();
+            let command = s["command"].as_str().unwrap_or_default().to_string();
+            let args: Vec<String> = s["args"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let enabled = s["enabled"].as_bool().unwrap_or(false);
+            let status = st
+                .settings
+                .mcp_status_by_id
+                .get(&id)
+                .cloned()
+                .or_else(|| {
+                    // 帧未达时的兜底:设置快照里的宿主已知状态
+                    st.settings.settings_snapshot["mcpStatus"]["servers"]
+                        .as_array()?
+                        .iter()
+                        .find(|s| s["id"].as_str() == Some(id.as_str()))
+                        .map(|s| {
+                            (
+                                s["status"].as_str().unwrap_or_default().to_string(),
+                                s["error"].as_str().unwrap_or_default().to_string(),
+                            )
+                        })
+                })
+                .unwrap_or_else(|| ("stopped".into(), String::new()));
+            let (st_switch, st_edit, st_remove) = (store.clone(), store.clone(), store.clone());
+            let (id_switch_click, id_edit_click, id_remove_click) =
+                (id.clone(), id.clone(), id.clone());
+            let (id_sw_dbg, id_sw_click) = (id_switch_click.clone(), id_switch_click.clone());
+            let (id_ed_dbg, id_ed_click) = (id_edit_click.clone(), id_edit_click.clone());
+            let (id_rm_dbg, id_rm_click) = (id_remove_click.clone(), id_remove_click.clone());
+            let (dot_color, status_text) = match status.0.as_str() {
+                "ready" => (theme::SUCCESS(), String::new()),
+                "connecting" => (theme::LABEL_2(), "连接中".to_string()),
+                "failed" => (theme::DANGER(), "失败".to_string()),
+                _ => (theme::CAPTION(), String::new()),
+            };
+            let mut summary = format!("stdio · {command}");
+            if !args.is_empty() {
+                summary.push(' ');
+                summary.push_str(&args.join(" "));
+            }
+            rows = rows.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .rounded(px(10.))
+                    .bg(theme::LAYER())
+                    .px(px(12.))
+                    .py(px(10.))
+                    // 左列:名称行(状态点 + id)/ 摘要行
+                    .child(
+                        div()
+                            .v_flex()
+                            .gap(px(2.))
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(div().size(px(7.)).rounded_full().bg(dot_color))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                            .text_color(theme::LABEL())
+                                            .child(id_switch_click.clone()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .min_w(px(0.))
+                                            .text_size(px(11.))
+                                            .text_color(theme::CAPTION())
+                                            .child(summary),
+                                    )
+                                    .children((!status_text.is_empty()).then(|| {
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(status_color_of(&status))
+                                            .child(status_text)
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(("mcp-switch", ix))
+                            .debug_selector(move || format!("mcp-switch-{id_sw_dbg}"))
+                            .on_mouse_down(gpui_kit::MouseButton::Left, {
+                                let st_switch = st_switch.clone();
+                                let id_sw = id_sw_click.clone();
+                                move |_, _, cx| {
+                                    st_switch.update(cx, |st, cx| st.toggle_mcp_server(&id_sw, cx));
+                                }
+                            })
+                            .child(toggle_switch(enabled)),
+                    )
+                    .child(
+                        div()
+                            .id(("mcp-edit", ix))
+                            .debug_selector(move || format!("mcp-edit-{id_ed_dbg}"))
+                            .flex()
+                            .h(px(22.))
+                            .items_center()
+                            .px(px(8.))
+                            .rounded(px(11.))
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(theme::LABEL_2())
+                            .hover(|s| s.bg(theme::DOCK()))
+                            .on_click(move |_, window, cx| {
+                                st_edit.update(cx, |st, cx| {
+                                    st.open_mcp_edit(&id_ed_click, window, cx)
+                                });
+                            })
+                            .child("编辑"),
+                    )
+                    .child(
+                        div()
+                            .id(("mcp-remove", ix))
+                            .debug_selector(move || format!("mcp-remove-{id_rm_dbg}"))
+                            .flex()
+                            .h(px(22.))
+                            .items_center()
+                            .px(px(8.))
+                            .rounded(px(11.))
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(theme::DANGER())
+                            .hover(|s| s.bg(theme::DOCK()))
+                            .on_click(move |_, _, cx| {
+                                st_remove
+                                    .update(cx, |st, cx| st.remove_mcp_server(&id_rm_click, cx));
+                            })
+                            .child("卸载"),
+                    ),
+            );
+        }
+        col = col.child(rows);
+        return col.into_any_element();
+    };
+
+    // ── 详情页(新增/编辑;页签只切换编辑形态,保存是同一个动作)──
+    let (title, intro) = match &detail.editing {
+        Some(id) => (
+            format!("编辑 MCP Server · {id}"),
+            "修改当前 MCP 配置,保存后返回列表。",
+        ),
+        None => (
+            "新增 MCP Server".into(),
+            "注册新的 MCP server,保存后返回列表。",
+        ),
+    };
+    let json_open = detail.mode == McpDetailMode::Json;
+    let (st_close, st_save, _st_env_toggle, _st_env_add, st_uninstall) = (
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
+    );
+    let st_form = store.clone();
+    let st_json = store.clone();
+    let st_cancel = st_close.clone();
+
+    // 标题 + 说明 + 页签(右上,一体胶囊组)
+    let mut head = div()
+        .flex()
+        .items_start()
+        .gap(px(12.))
+        .child(
+            div()
+                .v_flex()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .text_size(px(15.))
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .text_color(theme::LABEL())
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme::CAPTION())
+                        .child(intro),
+                ),
+        )
+        .child(div().flex_1())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .rounded(px(10.))
+                .bg(theme::LAYER())
+                .p(px(2.))
+                .child(
+                    div()
+                        .id("mcp-tab-form")
+                        .debug_selector(|| "mcp-tab-form".to_string())
+                        .flex()
+                        .h(px(22.))
+                        .items_center()
+                        .px(px(10.))
+                        .rounded(px(8.))
+                        .cursor_pointer()
+                        .text_size(px(11.))
+                        .text_color(if json_open {
+                            theme::CAPTION().into()
+                        } else {
+                            gpui_kit::white()
+                        })
+                        .bg(if json_open {
+                            theme::LAYER()
+                        } else {
+                            theme::BRAND()
+                        })
+                        .on_click(move |_, window, cx| {
+                            st_form.update(cx, |st, cx| {
+                                if st.settings.mcp_detail.as_ref().map(|d| d.mode)
+                                    != Some(McpDetailMode::Form)
+                                {
+                                    st.switch_mcp_mode(McpDetailMode::Form, window, cx);
+                                }
+                            });
+                        })
+                        .child("表单"),
+                )
+                .child(
+                    div()
+                        .id("mcp-tab-json")
+                        .debug_selector(|| "mcp-tab-json".to_string())
+                        .flex()
+                        .h(px(22.))
+                        .items_center()
+                        .px(px(10.))
+                        .rounded(px(8.))
+                        .cursor_pointer()
+                        .text_size(px(11.))
+                        .text_color(if json_open {
+                            gpui_kit::white()
+                        } else {
+                            theme::CAPTION().into()
+                        })
+                        .bg(if json_open {
+                            theme::BRAND()
+                        } else {
+                            theme::LAYER()
+                        })
+                        .on_click(move |_, window, cx| {
+                            st_json.update(cx, |st, cx| {
+                                if st.settings.mcp_detail.as_ref().map(|d| d.mode)
+                                    != Some(McpDetailMode::Json)
+                                {
+                                    st.switch_mcp_mode(McpDetailMode::Json, window, cx);
+                                }
+                            });
+                        })
+                        .child("JSON"),
+                ),
+        );
+    // ✕(返回列表)
+    head = head.child(
+        div()
+            .id("mcp-detail-close")
+            .size(px(24.))
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(theme::CAPTION())
+            .hover(|s| s.bg(theme::DOCK()))
+            .on_click(move |_, _, cx| {
+                st_close.update(cx, |st, cx| st.close_mcp_detail(cx));
+            })
+            .child(fixed(IconName::Close, 12.)),
+    );
+
+    // 详情卡(中性边框;蓝 BRAND 只给主钮)
+    let mut card = div()
+        .id("mcp-add-card")
+        .debug_selector(|| "mcp-add-card".to_string())
+        .v_flex()
+        .gap(px(14.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(theme::BORDER())
+        .bg(theme::LAYER())
+        .p(px(14.))
+        .child(head);
+
+    // 页签内容
+    if json_open {
+        if let Some(input) = &detail.json_input {
+            card = card.child(
+                div()
+                    .v_flex()
+                    .gap(px(6.))
+                    .child(caption_line("完整配置"))
+                    .child(
+                        div()
+                            .id("mcp-json-input")
+                            .debug_selector(|| "mcp-json-input".to_string())
+                            .w_full()
+                            .min_w(px(0.))
+                            .child(
+                                gpui_kit::component::input::Editor::new(input).h(px(280.)),
+                            ),
+                    )
+
+            );
+        }
+        if let Some(Err(e)) = &detail.json_preview {
+            card = card.child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(theme::DANGER())
+                    .child(format!("⚠ {e}")),
+            );
+        }
+        if let Some(Ok(entries)) = &detail.json_preview {
+            let mut list = div().v_flex().gap(px(4.));
+            for e in entries {
+                list = list.child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme::LABEL_2())
+                        .child(format!("{} · {}", e.id, e.command)),
+                );
+            }
+            card = card.child(list);
+        }
+    } else {
+        // 通用字段行(标签 64px 左置 + 输入 flex_1)
+        let id_field: gpui_kit::AnyElement = if let Some(id) = &detail.editing {
+            div()
+                .id("mcp-id-input")
+                .debug_selector(|| "mcp-id-input".to_string())
+                .flex_1()
+                .min_w(px(0.))
+                .h(px(32.))
+                .flex()
+                .items_center()
+                .text_size(px(12.))
+                .text_color(theme::CAPTION())
+                .child(id.clone())
+                .into_any_element()
+        } else {
+            div()
+                .id("mcp-id-input")
+                .debug_selector(|| "mcp-id-input".to_string())
+                .flex_1()
+                .min_w(px(0.))
+                .h(px(32.))
+                .children(
+                    detail
+                        .form_id
+                        .as_ref()
+                        .map(|e| div().w_full().h(px(32.)).child(Input::new(e).small())),
+                )
+                .into_any_element()
+        };
+        card = card.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .w(px(64.))
+                        .flex_shrink_0()
+                        .text_size(px(11.))
+                        .text_color(theme::CAPTION())
+                        .child("名称"),
+                )
+                .child(id_field),
+        );
+        card = card.child(field_input(
+            "command",
+            "mcp-command-input",
+            &detail.form_command,
+        ));
+        card = card.child(field_input("cwd", "mcp-cwd-input", &detail.form_cwd));
+        card = card.child(field_input(
+            "超时 MS",
+            "mcp-timeout-input",
+            &detail.form_timeout,
+        ));
+        // 参数(每参数一条;含空格的参数单行化会吞内容)
+        let mut arg_rows = div().v_flex().gap(px(4.));
+        for (ix, arg) in detail.form_args.iter().enumerate() {
+            let st_rm = store.clone();
+            arg_rows = arg_rows.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .h(px(32.))
+                            .child(Input::new(arg).small()),
+                    )
+                    .child(
+                        div()
+                            .id(("mcp-arg-rm", ix))
+                            .flex()
+                            .h(px(22.))
+                            .items_center()
+                            .px(px(6.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(theme::CAPTION())
+                            .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
+                            .on_click({
+                                let st_rm = st_rm.clone();
+                                move |_, _, cx| {
+                                    st_rm.update(cx, |st, cx| st.remove_mcp_arg(ix, cx));
+                                }
+                            })
+                            .child("移除"),
+                    ),
+            );
+        }
+        let st_arg_add = store.clone();
+        card = card.child(
+            div()
+                .v_flex()
+                .gap(px(4.))
+                .child(caption_line("参数(每个一条)"))
+                .child(arg_rows)
+                .child(
+                    div()
+                        .id("mcp-arg-add")
+                        .flex()
+                        .h(px(24.))
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .text_size(px(11.))
+                        .text_color(theme::CAPTION())
+                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
+                        .on_click({
+                            let st_arg_add = st_arg_add.clone();
+                            move |_, window, cx| {
+                                st_arg_add.update(cx, |st, cx| st.add_mcp_arg(window, cx));
+                            }
+                        })
+                        .child("+ 添加参数"),
+                ),
+        );
+        // 环境变量(键值对,平铺)
+        let mut env_rows = div().v_flex().gap(px(4.));
+        for (ix, (k, v)) in detail.form_env.iter().enumerate() {
+            let st_rm = store.clone();
+            env_rows = env_rows.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .w(px(120.))
+                            .flex_shrink_0()
+                            .h(px(32.))
+                            .child(Input::new(k).small()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .h(px(32.))
+                            .child(Input::new(v).small()),
+                    )
+                    .child(
+                        div()
+                            .id(("mcp-env-rm", ix))
+                            .flex()
+                            .h(px(22.))
+                            .items_center()
+                            .px(px(6.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(theme::CAPTION())
+                            .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
+                            .on_click({
+                                let st_rm = st_rm.clone();
+                                move |_, _, cx| {
+                                    st_rm.update(cx, |st, cx| st.remove_mcp_env(ix, cx));
+                                }
+                            })
+                            .child("移除"),
+                    ),
+            );
+        }
+        let st_env_add = store.clone();
+        card = card.child(
+            div()
+                .v_flex()
+                .gap(px(4.))
+                .child(caption_line("环境变量(可选;键 + 值)"))
+                .child(env_rows)
+                .child(
+                    div()
+                        .id("mcp-env-add")
+                        .flex()
+                        .h(px(24.))
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .text_size(px(11.))
+                        .text_color(theme::CAPTION())
+                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
+                        .on_click({
+                            let st_env_add = st_env_add.clone();
+                            move |_, window, cx| {
+                                st_env_add.update(cx, |st, cx| st.add_mcp_env(window, cx));
+                            }
+                        })
+                        .child("+ 添加环境变量"),
+                ),
+        );
+        // 启用开关(启停由表单随保存落盘)
+        let st_enable = store.clone();
+        card = card.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(if detail.form_enabled {
+                            theme::LABEL_2()
+                        } else {
+                            theme::CAPTION()
+                        })
+                        .child(if detail.form_enabled {
+                            "已启用"
+                        } else {
+                            "未启用"
+                        }),
+                )
+                .child(
+                    div()
+                        .id("mcp-enabled")
+                        .on_mouse_down(gpui_kit::MouseButton::Left, {
+                            let st_enable = st_enable.clone();
+                            move |_, _, cx| {
+                                st_enable.update(cx, |st, cx| {
+                                    st.toggle_mcp_form_enabled(cx);
+                                });
+                            }
+                        })
+                        .child(toggle_switch(detail.form_enabled)),
+                ),
+        );
+    }
+    // 底部按钮组:左 = 卸载(编辑态);右 = 保存(统一动作)+ 取消
+    let mut footer = div().flex().items_center().gap(px(8.));
+    if detail.editing.is_some() {
+        footer = footer.child(
+            div()
+                .id("mcp-uninstall")
+                .flex()
+                .h(px(28.))
+                .items_center()
+                .gap(px(4.))
+                .px(px(8.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .text_size(px(12.))
+                .text_color(theme::DANGER())
+                .hover(|s| s.bg(theme::DOCK()))
+                .on_click(move |_, _, cx| {
+                    st_uninstall.update(cx, |st, cx| st.uninstall_mcp_detail(cx));
+                })
+                .child("卸载"),
+        );
+    }
+    footer = footer.child(div().flex_1()).child(
+        div()
+            .id("mcp-submit")
+            .debug_selector(|| "mcp-submit".to_string())
+            .flex()
+            .h(px(28.))
+            .items_center()
+            .justify_center()
+            .rounded(px(8.))
+            .bg(theme::BRAND())
+            .px(px(18.))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .text_color(gpui_kit::white())
+            .hover(|s| s.opacity(0.9))
+            .on_click(move |_, _, cx| {
+                st_save.update(cx, |st, cx| st.save_mcp_detail(cx));
+            })
+            .child("保存"),
+    );
+    footer = footer.child(
+        div()
+            .id("mcp-cancel")
+            .flex()
+            .h(px(28.))
+            .items_center()
+            .px(px(10.))
+            .rounded(px(8.))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .text_color(theme::LABEL_2())
+            .hover(|s| s.bg(theme::DOCK()))
+            .on_click(move |_, _, cx| {
+                st_cancel.update(cx, |st, cx| st.close_mcp_detail(cx));
+            })
+            .child("取消"),
+    );
+    card = card.child(footer);
+    card.into_any_element()
+}
+
+/// MCP 连接状态着色(ready 绿 / connecting 中性 / failed 红 / 其余灰)
+fn status_color_of(status: &(String, String)) -> gpui_kit::Rgba {
+    match status.0.as_str() {
+        "ready" => theme::SUCCESS(),
+        "connecting" => theme::LABEL_2(),
+        "failed" => theme::DANGER(),
+        _ => theme::CAPTION(),
+    }
+}
+
+/// 表单行(标签 + 输入实体;InputState 必须挂树才能聚焦输入)
 /// Models 区:标题+intro+通告 / 行卡列表(编辑内嵌 / setup 姿态)/ 添加块
 fn models_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let st = store.read(cx);
@@ -117,7 +874,11 @@ fn models_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .items_center()
                 .gap(px(6.))
                 .text_size(px(12.))
-                .text_color(if *ok { theme::SUCCESS() } else { theme::DANGER() })
+                .text_color(if *ok {
+                    theme::SUCCESS()
+                } else {
+                    theme::DANGER()
+                })
                 .child(format!("{} {msg}", if *ok { "✓" } else { "⚠" }))
         }));
     let providers: Vec<serde_json::Value> = st.settings.settings_snapshot["providers"]
@@ -342,7 +1103,11 @@ fn billing_value_line(cache: &serde_json::Value) -> Option<impl IntoElement> {
                             .font_weight(gpui_kit::FontWeight::MEDIUM)
                             .child(amount.to_string()),
                     )
-                    .child(div().text_color(theme::LABEL_3()).child(currency.to_string()))
+                    .child(
+                        div()
+                            .text_color(theme::LABEL_3())
+                            .child(currency.to_string()),
+                    )
                     .into_any_element(),
             )
         }
@@ -991,10 +1756,18 @@ fn billing_kind_chip(
         .px(px(8.))
         .rounded(px(14.))
         .border_1()
-        .border_color(if active { theme::BRAND() } else { theme::BORDER() })
+        .border_color(if active {
+            theme::BRAND()
+        } else {
+            theme::BORDER()
+        })
         .cursor_pointer()
         .text_size(px(12.))
-        .text_color(if active { theme::LABEL() } else { theme::LABEL_3() })
+        .text_color(if active {
+            theme::LABEL()
+        } else {
+            theme::LABEL_3()
+        })
         .hover(|s| s.bg(theme::DOCK()))
         .child(label.to_string())
         .on_click(move |_, _, cx| {
@@ -1039,7 +1812,8 @@ fn dialect_chips(store: &Entity<AppStore>, selected: &str) -> impl IntoElement {
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
                 })
                 .when(!active, |el| {
-                    el.text_color(theme::LABEL_3()).hover(|s| s.bg(theme::DOCK()))
+                    el.text_color(theme::LABEL_3())
+                        .hover(|s| s.bg(theme::DOCK()))
                 })
                 .child(label)
                 .on_click(move |_, _, cx| {
@@ -1254,7 +2028,11 @@ fn appearance_group(store: &Entity<AppStore>, current: &str) -> impl IntoElement
                 .when(active, |el| el.bg(theme::DOCK()))
                 .cursor_pointer()
                 .text_size(px(14.))
-                .text_color(if active { theme::LABEL() } else { theme::LABEL_2() })
+                .text_color(if active {
+                    theme::LABEL()
+                } else {
+                    theme::LABEL_2()
+                })
                 .when(!active, |el| el.hover(|s| s.bg(theme::LAYER())))
                 .child(icon)
                 .child(label)
@@ -1361,7 +2139,11 @@ pub fn provider_models_fetch_modal(store: &Entity<AppStore>, cx: &App) -> gpui_k
                         .justify_center()
                         .rounded(px(4.))
                         .border_1()
-                        .border_color(if picked { theme::BRAND() } else { theme::BORDER() })
+                        .border_color(if picked {
+                            theme::BRAND()
+                        } else {
+                            theme::BORDER()
+                        })
                         .bg(if picked {
                             theme::BRAND()
                         } else {
@@ -1407,7 +2189,9 @@ pub fn provider_models_fetch_modal(store: &Entity<AppStore>, cx: &App) -> gpui_k
                 .border_color(theme::BORDER())
                 .bg(theme::LAYER())
                 .p(px(20.))
-                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation()
+                })
                 .child(
                     div()
                         .flex()
@@ -1519,7 +2303,9 @@ pub fn provider_delete_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::An
                 .border_color(theme::BORDER())
                 .bg(theme::LAYER())
                 .p(px(20.))
-                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation()
+                })
                 .child(
                     div()
                         .text_size(px(14.))
@@ -1779,9 +2565,10 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let back = store.clone();
     // 「基础设置」组:常规 / 模型设置(模型行名为「模型」);
     // 「Agent 能力」「数据与统计」无已实装项,不渲染空组头
-    let basic: [(SettingsNav, &str, gpui_kit::component::Icon); 2] = [
+    let basic: [(SettingsNav, &str, gpui_kit::component::Icon); 3] = [
         (SettingsNav::General, "常规", fixed(IconName::Settings, 15.)),
         (SettingsNav::Models, "模型设置", fixed(DshIcon::Gauge, 15.)),
+        (SettingsNav::Mcp, "MCP", fixed(DshIcon::Infinity, 15.)),
     ];
     let mut list = div().v_flex().gap(px(4.));
     list = list.child(nav_group_header("基础设置"));
@@ -1874,10 +2661,15 @@ fn nav_item(
         .cursor_pointer()
         .when(active, |el| el.bg(theme::DOCK()))
         .when(!active, |el| {
-            el.hover(|s| s.bg(theme::LAYER())).text_color(theme::LABEL_3())
+            el.hover(|s| s.bg(theme::LAYER()))
+                .text_color(theme::LABEL_3())
         })
         .text_size(px(13.))
-        .text_color(if active { theme::LABEL() } else { theme::LABEL_3() })
+        .text_color(if active {
+            theme::LABEL()
+        } else {
+            theme::LABEL_3()
+        })
         .when(active, |el| el.font_weight(gpui_kit::FontWeight::MEDIUM))
         .child(icon)
         .child(label)

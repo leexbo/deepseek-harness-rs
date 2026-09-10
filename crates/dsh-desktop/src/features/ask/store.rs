@@ -2,8 +2,8 @@
 //! 提交/自定义输入。pending_ask/pending_plan 是 StoreState 的会话镜像
 //! (reducer 侧),本域应答后经 host.respond 回填。
 
-use gpui_kit::{AppContext, Context, Entity, Window};
 use gpui_kit::component::input::{InputEvent, TextareaState};
+use gpui_kit::{AppContext, Context, Entity, Window};
 
 use dsh_core::proto::RpcResult;
 
@@ -142,17 +142,14 @@ impl AppStore {
         if self.ask.plan_decline_input.is_some() {
             return;
         }
-        let input = cx.new(|cx| {
-            TextareaState::new(window, cx).placeholder("否,并告诉它应该如何做不同")
-        });
-        cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
-            match event {
-                InputEvent::PressEnter { shift: false, .. } => {
-                    this.submit_plan_selection(cx);
-                }
-                InputEvent::Change => cx.notify(),
-                _ => {}
+        let input =
+            cx.new(|cx| TextareaState::new(window, cx).placeholder("否,并告诉它应该如何做不同"));
+        cx.subscribe(&input, |this, _input, event: &InputEvent, cx| match event {
+            InputEvent::PressEnter { shift: false, .. } => {
+                this.submit_plan_selection(cx);
             }
+            InputEvent::Change => cx.notify(),
+            _ => {}
         })
         .detach();
         self.ask.plan_decline_input = Some(input);

@@ -6,11 +6,11 @@
 //! (浏览器/命令行类)加 `PanelTab` 变体即自动进「+」与空态清单。
 //! 设置页整列接管时面板隐藏。
 
-use gpui_kit::{
-    actions, App, Entity, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent,
-    MouseUpEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
-};
 use gpui_kit::component::{IconName, InteractiveElementExt as _, StyledExt};
+use gpui_kit::{
+    App, Entity, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, actions, div, px,
+};
 
 use crate::features::chat::{ChatNode, PlanStatus};
 use crate::kits::icons::{DshIcon, fixed};
@@ -159,7 +159,11 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
 /// 时同款钮回标题栏——原 ✕ 关闭钮撤除)。头部空白处 mousedown 即拖;
 /// 交互子件自挂 mousedown stop_propagation,点击不触发窗口拖拽
 /// (同 drag_strip「区域内无交互子元素」约定的子件侧豁免)
-fn panel_header(store: &Entity<AppStore>, tabs: &[PanelTab], active: Option<PanelTab>) -> impl IntoElement {
+fn panel_header(
+    store: &Entity<AppStore>,
+    tabs: &[PanelTab],
+    active: Option<PanelTab>,
+) -> impl IntoElement {
     let mut strip: Vec<gpui_kit::AnyElement> = Vec::new();
     for tab in tabs {
         strip.push(panel_tab_pill(store, *tab, Some(*tab) == active).into_any_element());
@@ -168,29 +172,29 @@ fn panel_header(store: &Entity<AppStore>, tabs: &[PanelTab], active: Option<Pane
     let s_toggle = store.clone();
     if !tabs.is_empty() {
         strip.push(
-        div()
-            .id("panel-plus")
-            .debug_selector(|| "panel-plus".to_string())
-            .flex()
-            .size(px(22.))
-            .flex_shrink_0()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.))
-            .cursor_pointer()
-            .text_color(theme::CAPTION())
-            .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
-            .child(fixed(IconName::Plus, 13.))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
-                cx.stop_propagation();
-                let pos = match ev {
-                    gpui_kit::ClickEvent::Mouse(m) => m.down.position,
-                    _ => gpui_kit::Point::default(),
-                };
-                s_plus.update(cx, |st, cx| st.open_panel_plus_menu_at(pos, cx));
-            })
-            .into_any_element(),
+            div()
+                .id("panel-plus")
+                .debug_selector(|| "panel-plus".to_string())
+                .flex()
+                .size(px(22.))
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.))
+                .cursor_pointer()
+                .text_color(theme::CAPTION())
+                .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+                .child(fixed(IconName::Plus, 13.))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    let pos = match ev {
+                        gpui_kit::ClickEvent::Mouse(m) => m.down.position,
+                        _ => gpui_kit::Point::default(),
+                    };
+                    s_plus.update(cx, |st, cx| st.open_panel_plus_menu_at(pos, cx));
+                })
+                .into_any_element(),
         );
     }
     div()
@@ -217,31 +221,27 @@ fn panel_header(store: &Entity<AppStore>, tabs: &[PanelTab], active: Option<Pane
                 .children(strip),
         )
         .child(
-            div()
-                .flex()
-                .items_center()
-                .pr(px(10.))
-                .child(
-                    div()
-                        .id("panel-toggle")
-                        .debug_selector(|| "panel-toggle".to_string())
-                        .flex()
-                        .size(px(26.))
-                        .flex_shrink_0()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(8.))
-                        .cursor_pointer()
-                        // 开态形态(同 topbar 面板开关,不用蓝
-                        // 色):前景提亮 + 素底,hover 显灰
-                        .text_color(theme::LABEL())
-                        .hover(|s| s.bg(theme::LAYER()))
-                        .child(fixed(IconName::PanelRight, 14.))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(move |_, _, cx| {
-                            s_toggle.update(cx, |st, cx| st.toggle_panel(cx));
-                        }),
-                ),
+            div().flex().items_center().pr(px(10.)).child(
+                div()
+                    .id("panel-toggle")
+                    .debug_selector(|| "panel-toggle".to_string())
+                    .flex()
+                    .size(px(26.))
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    // 开态形态(同 topbar 面板开关,不用蓝
+                    // 色):前景提亮 + 素底,hover 显灰
+                    .text_color(theme::LABEL())
+                    .hover(|s| s.bg(theme::LAYER()))
+                    .child(fixed(IconName::PanelRight, 14.))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |_, _, cx| {
+                        s_toggle.update(cx, |st, cx| st.toggle_panel(cx));
+                    }),
+            ),
         )
 }
 
@@ -363,10 +363,7 @@ fn empty_menu(store: &Entity<AppStore>, shortcut: &str) -> gpui_kit::AnyElement 
         .map(|tab| {
             let s = store.clone();
             div()
-                .id(SharedString::from(format!(
-                    "panel-empty-row-{}",
-                    tab.key()
-                )))
+                .id(SharedString::from(format!("panel-empty-row-{}", tab.key())))
                 .debug_selector(move || format!("panel-empty-row-{}", tab.key()))
                 .flex()
                 .items_center()
@@ -442,10 +439,7 @@ pub fn plus_menu_card(
             let s = store.clone();
             let shortcut = shortcut.clone();
             div()
-                .id(SharedString::from(format!(
-                    "panel-plus-item-{}",
-                    tab.key()
-                )))
+                .id(SharedString::from(format!("panel-plus-item-{}", tab.key())))
                 .debug_selector(move || format!("panel-plus-item-{}", tab.key()))
                 .flex()
                 .items_center()

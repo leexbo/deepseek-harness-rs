@@ -1,13 +1,13 @@
 //! TodoDock(web `TodoPanel`):composer 上方的计划条,默认折叠一行
 //! (标题 + 计数);展开为条目列表。空列表不渲染。
 
+use gpui_kit::component::IconName;
+use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
     Styled, div, px,
 };
-use gpui_kit::component::IconName;
-use gpui_kit::component::StyledExt;
 
 use super::projection::TodoItem;
 use crate::kits::icons::{DshIcon, fixed};

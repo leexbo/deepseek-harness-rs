@@ -205,6 +205,7 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
             None,
             None,
             None,
+            Vec::new(),
         )?;
         let session = Session::new(parts, gate, log, tools, backend, session_path, cancel);
         dispatch(session, message).await?;
@@ -479,6 +480,7 @@ async fn serve(common: CommonOpts) -> anyhow::Result<()> {
         None,
         None,
         None,
+        Vec::new(),
     )?;
     let mut gateway: Gateway<dsh_llm::HttpTransport, ToolSet> =
         Gateway::with_log(header, transport, tools, backend, log);

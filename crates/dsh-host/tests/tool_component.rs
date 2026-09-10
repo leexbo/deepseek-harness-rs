@@ -19,7 +19,13 @@ fn example_wasm() -> PathBuf {
         .join("../../target/wasm32-wasip2/debug/dsh_example_tool.wasm");
     if !p.exists() {
         let status = Command::new("cargo")
-            .args(["build", "-p", "dsh-example-tool", "--target", "wasm32-wasip2"])
+            .args([
+                "build",
+                "-p",
+                "dsh-example-tool",
+                "--target",
+                "wasm32-wasip2",
+            ])
             .status()
             .expect("spawn cargo");
         assert!(status.success(), "dsh-example-tool wasm 构建失败");
@@ -33,8 +39,8 @@ fn config() -> serde_json::Value {
 
 #[tokio::test]
 async fn loads_describes_and_executes() {
-    let mut tool = WasmTool::new(&example_wasm(), &config(), CancelToken::new())
-        .expect("装载示例组件");
+    let mut tool =
+        WasmTool::new(&example_wasm(), &config(), CancelToken::new()).expect("装载示例组件");
 
     // describe → OpenAI function 声明(装载期缓存)
     let specs = tool.specs();
@@ -45,8 +51,10 @@ async fn loads_describes_and_executes() {
     assert_eq!(names, vec!["echo_config", "spin"], "声明两工具");
     let echo = &specs[0];
     assert_eq!(echo["type"], "function");
-    assert!(echo["function"]["parameters"]["properties"]["message"].is_object(),
-        "input-schema 透传:{echo}");
+    assert!(
+        echo["function"]["parameters"]["properties"]["message"].is_object(),
+        "input-schema 透传:{echo}"
+    );
 
     // execute json→json 往返(config 回显)
     let out = tool

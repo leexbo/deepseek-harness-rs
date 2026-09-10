@@ -58,16 +58,12 @@ pub trait ProviderAdapter: Send + Sync {
 /// 未知名字返回 None(调用方 fail-fast,不静默回退默认方言)。
 pub fn adapter_by_name(name: &str) -> Option<Box<dyn ProviderAdapter>> {
     match name {
-        "deepseek-responses" => {
-            Some(Box::new(crate::responses::GenericResponsesAdapter::new(
-                crate::ext::DeepSeekResponsesExt,
-            )))
-        }
-        "openai-responses" => {
-            Some(Box::new(crate::responses::GenericResponsesAdapter::new(
-                crate::ext::OpenAiResponsesExt,
-            )))
-        }
+        "deepseek-responses" => Some(Box::new(crate::responses::GenericResponsesAdapter::new(
+            crate::ext::DeepSeekResponsesExt,
+        ))),
+        "openai-responses" => Some(Box::new(crate::responses::GenericResponsesAdapter::new(
+            crate::ext::OpenAiResponsesExt,
+        ))),
         "deepseek-chat" => Some(Box::new(GenericChatAdapter::new(DeepSeekChatExt))),
         "openai-chat" => Some(Box::new(GenericChatAdapter::new(OpenAiChatExt))),
         "anthropic" => Some(Box::new(crate::anthropic::GenericAnthropicAdapter::new(
@@ -109,7 +105,10 @@ mod tests {
             serde_json::Value::Null,
             "reasoning_effort 不得嵌进 thinking 对象"
         );
-        assert_eq!(body["stream_options"]["include_usage"], serde_json::json!(true));
+        assert_eq!(
+            body["stream_options"]["include_usage"],
+            serde_json::json!(true)
+        );
     }
 
     /// 净版 chat 方言(剥 DeepSeek 私参):即使请求面带 reasoning_effort
@@ -130,6 +129,9 @@ mod tests {
         );
         assert_eq!(body["thinking"], serde_json::Value::Null);
         assert_eq!(body["reasoning_effort"], serde_json::Value::Null);
-        assert_eq!(body["stream_options"]["include_usage"], serde_json::json!(true));
+        assert_eq!(
+            body["stream_options"]["include_usage"],
+            serde_json::json!(true)
+        );
     }
 }

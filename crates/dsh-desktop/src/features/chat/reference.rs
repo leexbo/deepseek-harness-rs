@@ -480,11 +480,7 @@ pub fn rank_session_candidates(
     });
     let _ = current_cwd;
     // 与文件候选同上限:会话多时候选行数不限会把补全卡顶到窗高
-    sorted
-        .into_iter()
-        .take(MAX_RESULTS)
-        .cloned()
-        .collect()
+    sorted.into_iter().take(MAX_RESULTS).cloned().collect()
 }
 
 /// 轻量匹配(避免引 regex crate;按标记分派)。

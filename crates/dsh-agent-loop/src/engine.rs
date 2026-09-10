@@ -1935,7 +1935,11 @@ mod streaming_tests {
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     fn count_events(log: &Arc<Mutex<EventLog>>, ty: &str) -> usize {
-        log.lock().unwrap().iter().filter(|e| e.r#type == ty).count()
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.r#type == ty)
+            .count()
     }
 
     fn count_audits(log: &Arc<Mutex<EventLog>>) -> usize {
@@ -2048,7 +2052,14 @@ mod streaming_tests {
         let clock = || 1i64;
         let outcome = engine
             .run_turn(
-                "hi", None, &[], &[], &mut transport, &mut tools, &clock, &mut |_| {},
+                "hi",
+                None,
+                &[],
+                &[],
+                &mut transport,
+                &mut tools,
+                &clock,
+                &mut |_| {},
             )
             .await
             .expect("瞬态失败后应成功");
@@ -2078,14 +2089,25 @@ mod streaming_tests {
         let clock = || 1i64;
         let r = engine
             .run_turn(
-                "hi", None, &[], &[], &mut transport, &mut tools, &clock, &mut |_| {},
+                "hi",
+                None,
+                &[],
+                &[],
+                &mut transport,
+                &mut tools,
+                &clock,
+                &mut |_| {},
             )
             .await;
         assert!(matches!(
             r,
             Err(LoopError::Transport(TransportError::Auth { .. }))
         ));
-        assert_eq!(transport.attempts.load(AtomicOrdering::SeqCst), 1, "401 不重试");
+        assert_eq!(
+            transport.attempts.load(AtomicOrdering::SeqCst),
+            1,
+            "401 不重试"
+        );
         assert_eq!(count_events(&log, "llm/retry"), 0);
         let code = log
             .lock()
@@ -2118,7 +2140,14 @@ mod streaming_tests {
         let clock = || 1i64;
         let r = engine
             .run_turn(
-                "hi", None, &[], &[], &mut transport, &mut tools, &clock, &mut |_| {},
+                "hi",
+                None,
+                &[],
+                &[],
+                &mut transport,
+                &mut tools,
+                &clock,
+                &mut |_| {},
             )
             .await;
         assert!(matches!(
@@ -2154,7 +2183,14 @@ mod streaming_tests {
         let clock = || 1i64;
         let outcome = engine
             .run_turn(
-                "hi", None, &[], &[], &mut transport, &mut tools, &clock, &mut |_| {},
+                "hi",
+                None,
+                &[],
+                &[],
+                &mut transport,
+                &mut tools,
+                &clock,
+                &mut |_| {},
             )
             .await
             .expect("断流后重试应成功");
@@ -2190,14 +2226,25 @@ mod streaming_tests {
         }
         let r = engine
             .run_turn(
-                "hi", None, &[], &[], &mut transport, &mut tools, &clock, &mut |_| {},
+                "hi",
+                None,
+                &[],
+                &[],
+                &mut transport,
+                &mut tools,
+                &clock,
+                &mut |_| {},
             )
             .await;
         assert!(
             matches!(r, Err(LoopError::Cancelled)),
             "退避中取消 → aborted: {r:?}"
         );
-        assert_eq!(transport.attempts.load(AtomicOrdering::SeqCst), 1, "不再发请求");
+        assert_eq!(
+            transport.attempts.load(AtomicOrdering::SeqCst),
+            1,
+            "不再发请求"
+        );
         assert_eq!(count_events(&log, "llm/retry"), 1, "重试已排定");
         assert_eq!(count_events(&log, "llm/retry-started"), 0, "退避未结束");
         let l = log.lock().unwrap();

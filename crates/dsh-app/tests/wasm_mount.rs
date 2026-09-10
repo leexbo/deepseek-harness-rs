@@ -19,7 +19,13 @@ fn example_wasm() -> PathBuf {
         .join("../../target/wasm32-wasip2/debug/dsh_example_tool.wasm");
     if !p.exists() {
         let status = Command::new("cargo")
-            .args(["build", "-p", "dsh-example-tool", "--target", "wasm32-wasip2"])
+            .args([
+                "build",
+                "-p",
+                "dsh-example-tool",
+                "--target",
+                "wasm32-wasip2",
+            ])
             .status()
             .expect("spawn cargo");
         assert!(status.success(), "dsh-example-tool wasm 构建失败");
@@ -87,6 +93,7 @@ async fn preset_mounts_external_wasm_tool() {
         None,
         None,
         None,
+        Vec::new(),
     )
     .expect("装配");
 
@@ -98,14 +105,18 @@ async fn preset_mounts_external_wasm_tool() {
     );
 
     // 执行往返:config(label)经 init 透传进组件
-    let out = tools        .execute(&ToolCallRequest {
+    let out = tools
+        .execute(&ToolCallRequest {
             name: "echo_config".into(),
             arguments: serde_json::json!({ "message": "hi" }),
         })
         .await;
     assert!(out.success, "执行成功:{}", out.output);
     let value: serde_json::Value = serde_json::from_str(&out.output).expect("JSON 输出");
-    assert_eq!(value["config"]["label"], "e2e-label", "manifest config 透传");
+    assert_eq!(
+        value["config"]["label"], "e2e-label",
+        "manifest config 透传"
+    );
 }
 
 #[tokio::test]
@@ -137,6 +148,7 @@ async fn broken_wasm_mount_fails_fast_at_assembly() {
         None,
         None,
         None,
+        Vec::new(),
     );
     assert!(err.is_err(), "非组件文件应装配期拒绝");
 }

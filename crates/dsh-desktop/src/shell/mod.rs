@@ -18,12 +18,12 @@ use crate::kits::modals::{
     attachment_toast_card, delete_confirm_modal, rename_modal, workspace_menu_card,
 };
 
+use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Context, Entity, InteractiveElement, IntoElement, ParentElement, Render, Styled, Window, div,
     px,
 };
-use gpui_kit::component::StyledExt;
 
 use crate::features::ask;
 use crate::features::attachments;
@@ -68,11 +68,12 @@ impl WorkspaceView {
         // 也送达;Context 有同名低阶方法,须全限定)。键表见
         // shell::bind_global_keys
         let hotkey_store = store.clone();
-        gpui_kit::App::on_action(cx, move |_: &panel::OpenPanelPlan, cx: &mut gpui_kit::App| {
-            hotkey_store.update(cx, |st, cx| {
-                st.open_panel_tab(panel::PanelTab::Plan, cx)
-            });
-        });
+        gpui_kit::App::on_action(
+            cx,
+            move |_: &panel::OpenPanelPlan, cx: &mut gpui_kit::App| {
+                hotkey_store.update(cx, |st, cx| st.open_panel_tab(panel::PanelTab::Plan, cx));
+            },
+        );
         Self {
             store,
             #[cfg(test)]
@@ -247,14 +248,10 @@ impl Render for WorkspaceView {
                                         .flex_shrink_0()
                                         // 列对齐容器同款槽 padding(左锚点槽/
                                         // 右滚动条槽,与列表容器同中心线)
-                                        .pl(px(
-                                            crate::shell::metrics::H_PAD
-                                                + crate::shell::metrics::NAV_GUTTER_W,
-                                        ))
-                                        .pr(px(
-                                            crate::shell::metrics::H_PAD
-                                                + crate::shell::metrics::SCROLLBAR_GUTTER_W,
-                                        ))
+                                        .pl(px(crate::shell::metrics::H_PAD
+                                            + crate::shell::metrics::NAV_GUTTER_W))
+                                        .pr(px(crate::shell::metrics::H_PAD
+                                            + crate::shell::metrics::SCROLLBAR_GUTTER_W))
                                         .pt(px(4.))
                                         .pb(px(8.))
                                         .child(
@@ -268,11 +265,7 @@ impl Render for WorkspaceView {
                                                     window,
                                                     cx,
                                                 ))
-                                                .children(ask::render_plan(
-                                                    &self.store,
-                                                    window,
-                                                    cx,
-                                                ))
+                                                .children(ask::render_plan(&self.store, window, cx))
                                                 .children(ask::render_approval(&self.store, cx))
                                                 .children(ask::render_question(
                                                     &self.store,
@@ -281,10 +274,7 @@ impl Render for WorkspaceView {
                                                 ))
                                                 // todo_dock = 纯状态展示(非阻塞交互,
                                                 // 不同于审批/提问)
-                                                .children(chat::todo_dock::render(
-                                                    &self.store,
-                                                    cx,
-                                                ))
+                                                .children(chat::todo_dock::render(&self.store, cx))
                                                 // 子代理任务条(聊天框上方常驻
                                                 // chips:运行中子代理一键切换查看)
                                                 .when_some(
@@ -310,9 +300,13 @@ impl Render for WorkspaceView {
                                 .child({
                                     let st = self.store.read(cx);
                                     let extra = st.chat.track_h
-                                        - f32::from(st.chat.chat_list.viewport_bounds().size.height);
-                                    let handle =
-                                        scroll::FullTrackHandle::new(&st.chat.chat_list, gpui_kit::px(extra));
+                                        - f32::from(
+                                            st.chat.chat_list.viewport_bounds().size.height,
+                                        );
+                                    let handle = scroll::FullTrackHandle::new(
+                                        &st.chat.chat_list,
+                                        gpui_kit::px(extra),
+                                    );
                                     // viewport_from_layout:轨道钉元素布局
                                     // bounds(全列)——默认走 handle 的列表
                                     // 视口,轨道会缩在列表段;全列轨道 +
@@ -393,21 +387,13 @@ impl Render for WorkspaceView {
             })
             // 面板「+」菜单(root 级定位渲染,同 row/ws 菜单;徽标文案
             // 与面板空态同源:键表生成)
-            .when(
-                self.store.read(cx).panel_plus_menu_at.is_some(),
-                |el| {
-                    let card = self
-                        .store
-                        .read(cx)
-                        .panel_plus_menu_at
-                        .map(|pos| {
-                            let shortcut =
-                                window.keystroke_text_for(&panel::OpenPanelPlan);
-                            panel::plus_menu_card(&self.store, pos, shortcut)
-                        });
-                    el.children(card)
-                },
-            )
+            .when(self.store.read(cx).panel_plus_menu_at.is_some(), |el| {
+                let card = self.store.read(cx).panel_plus_menu_at.map(|pos| {
+                    let shortcut = window.keystroke_text_for(&panel::OpenPanelPlan);
+                    panel::plus_menu_card(&self.store, pos, shortcut)
+                });
+                el.children(card)
+            })
             // composer 权限下拉(根级渲染,同 +/行/工作区菜单模式:
             // 内联浮层叠进输入卡子树会透视;其余
             // composer 下拉不叠卡体,维持内联)。锚 = 渲染期捕获的

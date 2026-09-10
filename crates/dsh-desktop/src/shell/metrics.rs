@@ -83,11 +83,7 @@ pub fn panel_width_for(
 /// 折叠不再保留 56px rail)。
 /// `width` 仅展开态生效;收起恒返 0。
 pub fn sidebar_width_for(collapsed: bool, width: f32) -> Pixels {
-    px(if collapsed {
-        0.
-    } else {
-        clamp_sidebar(width)
-    })
+    px(if collapsed { 0. } else { clamp_sidebar(width) })
 }
 
 /// 对话列宽:clamp(内容区×50%, 748, [内容区−双槽−32, 780])。
@@ -95,8 +91,7 @@ pub fn sidebar_width_for(collapsed: bool, width: f32) -> Pixels {
 /// 列吃满可用宽时,刻度与滚动条 thumb 会叠上文字(锚点与滚动条
 /// 侵入内容区域);大屏封顶 MAX_COL=780(大宽度下输入框太长)。
 pub fn chat_col_w(content_w: Pixels) -> Pixels {
-    let avail =
-        content_w - px(2. * H_PAD + NAV_GUTTER_W + SCROLLBAR_GUTTER_W);
+    let avail = content_w - px(2. * H_PAD + NAV_GUTTER_W + SCROLLBAR_GUTTER_W);
     (content_w * COL_RATIO)
         .max(px(MIN_COL))
         .min(avail)
@@ -141,7 +136,10 @@ mod tests {
         // 中小窗口:50% 低于保底 → 748,且不超内容区−双槽−32
         assert_eq!(chat_col_w(px(1160.)), px(748.)); // 1440 默认窗 − 280
         // 窄窗:可用宽(扣左右边槽 56+24)本身不足 748 → 填满可用宽
-        assert_eq!(chat_col_w(px(744.)), px(744. - 32. - NAV_GUTTER_W - SCROLLBAR_GUTTER_W));
+        assert_eq!(
+            chat_col_w(px(744.)),
+            px(744. - 32. - NAV_GUTTER_W - SCROLLBAR_GUTTER_W)
+        );
         // 过渡带:内容区 1560 → 50% = 780,恰好触顶
         assert_eq!(chat_col_w(px(1560.)), px(MAX_COL));
         // 大屏:封顶 780(大宽度下输入框太长)

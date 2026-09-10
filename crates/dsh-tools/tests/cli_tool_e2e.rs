@@ -26,12 +26,10 @@ async fn http_tool_round_trip_through_sandbox() {
     let marker = dir.join("marker.txt");
 
     // 用 serde 构造 SSE 帧(避免手写 JSON 转义)
-    let tool_args = serde_json::to_string(
-        &json!({
-            "command": format!("echo done > {} && echo ran-ok", marker.display()),
-            "description": "Write marker file and echo confirmation",
-        }),
-    )
+    let tool_args = serde_json::to_string(&json!({
+        "command": format!("echo done > {} && echo ran-ok", marker.display()),
+        "description": "Write marker file and echo confirmation",
+    }))
     .unwrap();
     let first = format!(
         "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",

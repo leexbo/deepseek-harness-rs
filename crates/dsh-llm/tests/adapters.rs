@@ -227,14 +227,20 @@ async fn deepseek_responses_http_endpoint_and_events() {
 
     let raw = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
     let request_line = raw.lines().next().unwrap();
-    assert!(request_line.contains("POST /responses"), "got: {request_line}");
+    assert!(
+        request_line.contains("POST /responses"),
+        "got: {request_line}"
+    );
     assert!(
         raw.contains("authorization: Bearer sk-ds-test"),
         "Bearer 鉴权头缺失"
     );
     // 请求体:responses 形态不带 stream_options(chat 形态专属)
     assert!(raw.contains("\"input\""), "responses 请求体缺 input");
-    assert!(!raw.contains("stream_options"), "responses 不发 stream_options");
+    assert!(
+        !raw.contains("stream_options"),
+        "responses 不发 stream_options"
+    );
 
     assert_eq!(
         events,
@@ -246,9 +252,7 @@ async fn deepseek_responses_http_endpoint_and_events() {
             }))),
             LlmEventLike::assistant("hi"),
             LlmEventLike::done(),
-            LlmEventLike(dsh_agent_loop::LlmEvent::Usage(
-                json!({ "ttftMs": 0 }),
-            )),
+            LlmEventLike(dsh_agent_loop::LlmEvent::Usage(json!({ "ttftMs": 0 }),)),
         ]
         .into_iter()
         .map(Into::into)

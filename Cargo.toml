@@ -5,6 +5,7 @@ members = [
     "crates/dsh-app",
     "crates/dsh-desktop",
     "crates/dsh-core",
+    "crates/dsh-mcp",
     "crates/dsh-wit",
     "crates/dsh-host",
     "crates/dsh-llm",
@@ -50,6 +51,7 @@ dsh-agent-loop = { path = "crates/dsh-agent-loop" }
 dsh-prompt = { path = "crates/dsh-prompt" }
 dsh-tools = { path = "crates/dsh-tools" }
 dsh-llm = { path = "crates/dsh-llm" }
+dsh-mcp = { path = "crates/dsh-mcp" }
 dsh-sandbox = { path = "crates/dsh-sandbox" }
 portable-pty = "0.9.0"
 ignore = "0.4.33"
@@ -68,8 +70,8 @@ pulldown-cmark = { version = "0.13", default-features = false }
 merman = { version = "=0.8.0-alpha.5", default-features = false, features = ["svg", "layout-cytoscape"] }
 # Mermaid 查看器视口裁剪光栅(自持 resvg 按 scale+translate 只渲染
 # 可见区域,内存 O(视口);版本与 gpui 0.2.2 锁同版去重)
-resvg = "0.46"
-usvg = "0.46"
+resvg = "0.48.1"
+usvg = "0.48.1"
 # macOS Dock 图标(dsh-desktop 运行时绘制;objc2 系版本与 gpui 同源锁定)
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "objc2-core-graphics"] }
@@ -81,6 +83,8 @@ security-framework = "3"
 image = "0.25"
 sha2 = "0.11.0"
 hex = "0.4"
+# MCP client(官方 Rust SDK;stdio 首批,transports 子集)
+rmcp = { version = "3.2", default-features = false, features = ["client", "transport-child-process"] }
 # 图片附件 wire 编码(draft 提交 base64 / data URL / 读取 RPC)
 base64 = "0.23"
 

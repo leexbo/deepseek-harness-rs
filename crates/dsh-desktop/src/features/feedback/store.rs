@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use dsh_core::registry::MessageFeedbackItem;
-use gpui_kit::{AppContext, Context, Entity, Window};
 use gpui_kit::component::input::{InputEvent, TextareaState};
+use gpui_kit::{AppContext, Context, Entity, Window};
 
 use crate::shell::store::AppStore;
 

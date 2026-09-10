@@ -6,8 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use gpui_kit::{AppContext, Context, Entity, Window};
 use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::{AppContext, Context, Entity, Window};
 
 use crate::features::chat::ChatNode;
 use crate::shell::reducer;

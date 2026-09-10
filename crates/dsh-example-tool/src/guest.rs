@@ -63,7 +63,8 @@ impl tools::Guest for ExampleToolComponent {
         vec![
             tools::ToolSpec {
                 name: "echo_config".to_string(),
-                description: "Echo the component config (from lifecycle.init) and the call input.".to_string(),
+                description: "Echo the component config (from lifecycle.init) and the call input."
+                    .to_string(),
                 input_schema: serde_json::to_vec(&serde_json::json!({
                     "type": "object",
                     "properties": { "message": { "type": "string" } },

@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use dsh_core::proto::ServerRequest;
-use gpui_kit::{AppContext, Context, Window};
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
+use gpui_kit::{AppContext, Context, Window};
 
 use crate::features::ask::AskStore;
 use crate::features::attachments::AttachmentsStore;
@@ -253,6 +253,25 @@ impl AppStore {
     /// 用法);曾试 background-timer 合帧,空闲主循环不被唤醒导致
     /// 重绘信号卡死(表现为流式期间完全无输出),已回退。
     pub fn apply_frame(&mut self, frame: ServerRequest, cx: &mut Context<Self>) {
+        // MCP 连接状态(宿主级端口池三态 + 停机):维护设置页状态表;
+        // 失败落设置页通告(连接与具体会话无关,不进聊天区)
+        if frame.method.as_str() == "mcp/status" {
+            if let Some(server) = frame.payload["server"].as_str() {
+                let status = frame.payload["status"].as_str().unwrap_or_default();
+                let error = frame.payload["error"].as_str().unwrap_or_default();
+                self.settings
+                    .mcp_status_by_id
+                    .insert(server.to_string(), (status.to_string(), error.to_string()));
+                if status == "failed" {
+                    self.set_settings_notice(
+                        false,
+                        format!("MCP server「{server}」连接失败:{error}"),
+                        cx,
+                    );
+                }
+            }
+            return;
+        }
         let touches_current_chat = frame.method.as_str() == "session/event"
             && frame.payload["sessionId"]
                 .as_str()
@@ -343,13 +362,9 @@ impl AppStore {
                         .await;
                     let gone = this
                         .update(cx, |s, cx| {
-                            let alive = s
-                                .state
-                                .current_id
-                                .as_deref()
-                                .is_some_and(|id| {
-                                    s.running_subagent_count(&s.subagent_anchor_of(id)) > 0
-                                });
+                            let alive = s.state.current_id.as_deref().is_some_and(|id| {
+                                s.running_subagent_count(&s.subagent_anchor_of(id)) > 0
+                            });
                             if alive {
                                 cx.notify();
                             }
@@ -546,7 +561,9 @@ impl AppStore {
         let store = cx.entity().clone();
         let host = self.bridge.host().clone();
         let rollback_id = id.clone();
-        let rx = self.bridge.call(async move { host.set_mode(&id, mode).await });
+        let rx = self
+            .bridge
+            .call(async move { host.set_mode(&id, mode).await });
         cx.spawn(async move |_this, cx| {
             match rx.await {
                 Ok(Err(e)) => store.update(cx, |s, cx| {

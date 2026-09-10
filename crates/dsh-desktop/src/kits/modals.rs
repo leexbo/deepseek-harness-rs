@@ -2,12 +2,12 @@
 //! 重命名与删除确认模态、overlay 与 toast 卡片、关闭钮;由 shell
 //! 底座的 WorkspaceView 渲染与 hero 态装配使用。
 
+use gpui_kit::component::{IconName, StyledExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
     Styled, div, px,
 };
-use gpui_kit::component::{IconName, StyledExt};
 
 use crate::kits::icons::{DshIcon, fixed};
 use crate::kits::theme;

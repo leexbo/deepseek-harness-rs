@@ -5,15 +5,15 @@
 //! 节点渲染:用户气泡/助手正文(流式 markdown)/工具行(点击展开,
 //! 渲染意图卡路由)/Think 行(点击展开)/回合收尾。
 
+use gpui_kit::component::IconName;
+use gpui_kit::component::StyledExt;
+use gpui_kit::component::WindowExt;
+use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, Div, Entity, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
-use gpui_kit::component::IconName;
-use gpui_kit::component::StyledExt;
-use gpui_kit::component::WindowExt;
-use gpui_kit::component::notification::{Notification, NotificationType};
 
 use super::projection::{
     ChatNode, NavAnchor, PlanStatus, RetryState, RowSlot, ToolState, nav_anchors,
@@ -330,7 +330,8 @@ fn enter_anim(
         .child(el)
         .with_animation(
             gpui_kit::SharedString::from(format!("node-enter-{key}")),
-            Animation::new(NODE_ENTER_MS).with_easing(gpui_kit::component::animation::ease_out_cubic),
+            Animation::new(NODE_ENTER_MS)
+                .with_easing(gpui_kit::component::animation::ease_out_cubic),
             |wrapper, delta| {
                 wrapper
                     .opacity(0.2 + 0.8 * delta)
@@ -417,8 +418,7 @@ fn nav_ticks(
     };
     let band_top = (track_h - (n.max(1) - 1) as f32 * pitch) / 2.;
     // hover 激活的刻度序号(锚点列表下标),渐变宽度按距离取
-    let hovered_ix = hovered
-        .and_then(|slot| anchors.iter().position(|a| a.slot_ix == slot));
+    let hovered_ix = hovered.and_then(|slot| anchors.iter().position(|a| a.slot_ix == slot));
     let tick = |i: usize, a: &NavAnchor, y_track: f32| {
         let slot = a.slot_ix;
         let sc = store.clone();
@@ -743,7 +743,9 @@ fn notice_card(
         // 回发消息:正文 = 前缀行之后的消息本体
         (
             "子代理·消息",
-            content.split_once(":\n\n").map(|(_, rest)| rest.trim().to_string()),
+            content
+                .split_once(":\n\n")
+                .map(|(_, rest)| rest.trim().to_string()),
         )
     } else if summary.contains("was stopped") {
         ("子代理·已停止", closing_of_settlement(content))
@@ -802,7 +804,9 @@ fn notice_card(
                     .text_color(theme::BRAND())
                     .cursor_pointer()
                     // 嵌套点击:跳转不触发卡片折叠切换
-                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation()
+                    })
                     .on_click(move |_, _, cx| {
                         s.update(cx, |st, cx| st.open_session(&jump, cx));
                     })
@@ -828,12 +832,7 @@ fn closing_of_settlement(content: &str) -> Option<String> {
 /// 图标 + 标题 + 折叠摘要(仅折叠态,truncate + flex-1)/ 展开弹性
 /// 占位 + 展开箭头。容器(底色/内边距/点击区)归各块自有;工具行
 /// (摘要常显 13px)与计划卡(徽标头)形态不同,不入此族
-fn collapse_row_header(
-    icon: AnyElement,
-    title: &str,
-    summary: Option<String>,
-    open: bool,
-) -> Div {
+fn collapse_row_header(icon: AnyElement, title: &str, summary: Option<String>, open: bool) -> Div {
     div()
         .flex()
         .min_w(px(0.))
@@ -1028,7 +1027,16 @@ fn render_node(
             state,
             ..
         } => retry_row(
-            store, cx, open_retries, ix, key, *retry, *max_retries, *delay_ms, message, *state,
+            store,
+            cx,
+            open_retries,
+            ix,
+            key,
+            *retry,
+            *max_retries,
+            *delay_ms,
+            message,
+            *state,
         )
         .into_any_element(),
     }
@@ -1147,7 +1155,9 @@ fn plan_archive_card(
         .when(open, |el| {
             el.child(
                 div()
-                    .id(gpui_kit::ElementId::Name(SharedString::from(body_sel.clone())))
+                    .id(gpui_kit::ElementId::Name(SharedString::from(
+                        body_sel.clone(),
+                    )))
                     .debug_selector(move || body_sel.clone())
                     .max_h(px(320.))
                     .overflow_y_scroll()
@@ -1799,7 +1809,12 @@ fn todo_write_expanded(
     card.into_any_element()
 }
 
-fn io_card(ix: usize, arguments: &str, output: Option<&str>, is_error: bool) -> gpui_kit::AnyElement {
+fn io_card(
+    ix: usize,
+    arguments: &str,
+    output: Option<&str>,
+    is_error: bool,
+) -> gpui_kit::AnyElement {
     let card_sel = format!("io-card-{ix}");
     let mut card = div()
         .id(("io-card", ix))
@@ -1823,7 +1838,13 @@ fn io_card(ix: usize, arguments: &str, output: Option<&str>, is_error: bool) -> 
         ));
     if let Some(o) = output {
         card = card
-            .child(div().h(px(1.)).w_full().flex_shrink_0().bg(theme::BORDER_2()))
+            .child(
+                div()
+                    .h(px(1.))
+                    .w_full()
+                    .flex_shrink_0()
+                    .bg(theme::BORDER_2()),
+            )
             .child(io_section("io-out", ix, "OUT", o, is_error));
     }
     card.into_any_element()
@@ -1859,7 +1880,11 @@ fn io_section(
             div()
                 .min_w(px(0.))
                 .flex_1()
-                .text_color(if error { theme::DANGER() } else { theme::LABEL_2() })
+                .text_color(if error {
+                    theme::DANGER()
+                } else {
+                    theme::LABEL_2()
+                })
                 .child(body.to_string()),
         )
 }
@@ -2029,11 +2054,9 @@ fn retry_row(
     let live = deadline.is_some_and(|d| d > now);
     // 秒数:等待态直播取剩余(下限 1);其余取排定值
     let seconds = match (state, deadline) {
-        (RetryState::Waiting, Some(d)) if live => {
-            (d.duration_since(now).as_millis() as u64)
-                .div_ceil(1000)
-                .max(1)
-        }
+        (RetryState::Waiting, Some(d)) if live => (d.duration_since(now).as_millis() as u64)
+            .div_ceil(1000)
+            .max(1),
         _ => delay_ms.div_ceil(1000).max(1),
     };
     let label = match state {
@@ -2066,13 +2089,7 @@ fn retry_row(
                 .text_size(px(12.))
                 .text_color(theme::CAPTION())
                 .child(fixed(DshIcon::RefreshCw, 14.))
-                .child(
-                    div()
-                        .min_w(px(0.))
-                        .flex_1()
-                        .truncate()
-                        .child(status),
-                )
+                .child(div().min_w(px(0.)).flex_1().truncate().child(status))
                 .child(fixed(
                     if open {
                         IconName::ChevronDown

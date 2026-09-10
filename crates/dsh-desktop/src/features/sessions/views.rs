@@ -4,15 +4,15 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dsh_core::proto::SessionSummary;
+use gpui_kit::component::Icon;
+use gpui_kit::component::IconName;
+use gpui_kit::component::InteractiveElementExt as _;
+use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, StatefulInteractiveElement, Styled, div, px,
 };
-use gpui_kit::component::Icon;
-use gpui_kit::component::IconName;
-use gpui_kit::component::InteractiveElementExt as _;
-use gpui_kit::component::StyledExt;
 
 use crate::features::search;
 use crate::features::settings;
@@ -264,7 +264,11 @@ fn group_header(
         ws.to_string(),
         ws.to_string(),
     );
-    let fg = if active { theme::LABEL() } else { theme::LABEL_3() };
+    let fg = if active {
+        theme::LABEL()
+    } else {
+        theme::LABEL_3()
+    };
     let sel = format!("ws-chevron-{}", if collapsed { "closed" } else { "open" });
     div()
         .id(("ws", gi))
@@ -323,7 +327,11 @@ fn group_header(
                 },
                 16.,
             )
-            .text_color(if active { theme::BRAND() } else { theme::LABEL_3() }),
+            .text_color(if active {
+                theme::BRAND()
+            } else {
+                theme::LABEL_3()
+            }),
         )
         .child(div().min_w(px(0.)).truncate().child(display))
         .child(div().flex_1())
@@ -706,12 +714,7 @@ fn sub_running_badge(n: usize) -> gpui_kit::AnyElement {
         .items_center()
         .gap(px(4.))
         .flex_shrink_0()
-        .child(
-            div()
-                .size(px(6.))
-                .rounded_full()
-                .bg(theme::ONGOING()),
-        )
+        .child(div().size(px(6.)).rounded_full().bg(theme::ONGOING()))
         .child(
             div()
                 .text_size(px(11.))

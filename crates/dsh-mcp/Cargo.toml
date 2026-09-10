@@ -1,0 +1,16 @@
+[package]
+name = "dsh-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rmcp.workspace = true
+sha2.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+dsh-agent-loop.workspace = true
+
+[package.metadata.notes]
