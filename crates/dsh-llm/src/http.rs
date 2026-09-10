@@ -33,14 +33,24 @@ fn classify_reqwest(e: reqwest::Error) -> TransportError {
 
 /// 非 2xx 状态归类(httpErrorCode:401/403 → AUTH;400/413 →
 /// INVALID_REQUEST;429 → RATE_LIMIT;≥500 → SERVER;其余未分类直通)
-fn classify_status(status: reqwest::StatusCode, retry_after: Option<String>, body: String) -> TransportError {
-    if matches!(status, reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN) {
+fn classify_status(
+    status: reqwest::StatusCode,
+    retry_after: Option<String>,
+    body: String,
+) -> TransportError {
+    if matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    ) {
         return TransportError::Auth {
             status: status.as_u16(),
             body,
         };
     }
-    if matches!(status, reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::PAYLOAD_TOO_LARGE) {
+    if matches!(
+        status,
+        reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::PAYLOAD_TOO_LARGE
+    ) {
         return TransportError::InvalidRequest {
             status: status.as_u16(),
             body,
@@ -64,7 +74,11 @@ fn classify_status(status: reqwest::StatusCode, retry_after: Option<String>, bod
 /// Retry-After 解析:整秒数值(毫秒换算,≤0 视为缺失)。
 /// HTTP 日期形式不支持(回落 None → 本地退避)
 fn parse_retry_after_ms(v: &str) -> Option<u64> {
-    v.trim().parse::<u64>().ok().map(|secs| secs * 1000).filter(|ms| *ms > 0)
+    v.trim()
+        .parse::<u64>()
+        .ok()
+        .map(|secs| secs * 1000)
+        .filter(|ms| *ms > 0)
 }
 
 /// 连接建立超时(TCP+TLS)

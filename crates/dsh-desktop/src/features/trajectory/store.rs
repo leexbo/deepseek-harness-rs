@@ -5,8 +5,8 @@
 
 use std::collections::HashSet;
 
-use gpui_kit::{Context, Entity};
 use gpui_kit::component::input::InputState;
+use gpui_kit::{Context, Entity};
 
 use dsh_core::trajectory::{TrajectoryRecord, TrajectoryRequest};
 

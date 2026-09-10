@@ -12,12 +12,12 @@
 //! /「收起」)。read/search 横幅 bg `theme::CARD()`(bluish-850 banner
 //! token);diff 无横幅(浮动复制钮)。
 
+use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
     Styled, div, px,
 };
-use gpui_kit::component::StyledExt;
 
 use super::projection::relativize;
 use crate::kits::theme;

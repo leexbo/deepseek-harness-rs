@@ -2,12 +2,12 @@
 //! (StatusBar 迁入)+ 居中会话标题。轨迹页已迁右栏面板标签;
 //! Session log 导出已移入侧栏会话行 ⋯ 菜单。
 
+use gpui_kit::component::IconName;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
-use gpui_kit::component::IconName;
 
 use crate::kits::icons::{DshIcon, fixed};
 use crate::kits::theme;
@@ -64,7 +64,9 @@ pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) ->
         // 弹性占位:面板开关推到标题栏右缘(仅关态渲染;面板开着时
         // 同款钮挪入面板头右缘)
         .child(div().flex_1())
-        .when(!st.panel_open, |el| el.child(panel_toggle_button(store, cx)))
+        .when(!st.panel_open, |el| {
+            el.child(panel_toggle_button(store, cx))
+        })
         // 会话标题:居中区(字符串级预截断同旧约束——taffy 无绝对宽
         // 祖先按 MaxContent 单行测,须物理有界;区宽 = win − 2×inset)
         .child({
@@ -207,7 +209,11 @@ fn panel_toggle_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .justify_center()
         .rounded(px(8.))
         .cursor_pointer()
-        .text_color(if open { theme::LABEL() } else { theme::LABEL_3() })
+        .text_color(if open {
+            theme::LABEL()
+        } else {
+            theme::LABEL_3()
+        })
         .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL()))
         .child(fixed(IconName::PanelRight, 14.))
         .on_click(move |_, _, cx| {

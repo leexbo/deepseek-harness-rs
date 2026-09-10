@@ -3,14 +3,14 @@
 //! 可自定义文本;提交(整批)或放弃(取消)。应答经 host.respond 回填,
 //! 工具结果作为同一 tool-call 的 tool/result。
 
+use gpui_kit::component::IconName;
+use gpui_kit::component::StyledExt;
+use gpui_kit::component::input::Textarea;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
     Styled, Window, div, px,
 };
-use gpui_kit::component::IconName;
-use gpui_kit::component::StyledExt;
-use gpui_kit::component::input::Textarea;
 
 use crate::kits::icons::fixed;
 use crate::kits::theme;
@@ -89,9 +89,17 @@ pub fn render(
                 .px(px(10.))
                 .py(px(8.))
                 .cursor_pointer()
-                .bg(if is_sel { theme::DOCK() } else { theme::LAYER() })
+                .bg(if is_sel {
+                    theme::DOCK()
+                } else {
+                    theme::LAYER()
+                })
                 .border_1()
-                .border_color(if is_sel { theme::BRAND() } else { theme::BORDER() })
+                .border_color(if is_sel {
+                    theme::BRAND()
+                } else {
+                    theme::BORDER()
+                })
                 .on_click({
                     let l = label.clone();
                     move |_, _, cx| {
@@ -105,7 +113,11 @@ pub fn render(
                         .flex_shrink_0()
                         .rounded_full()
                         .border_1()
-                        .border_color(if is_sel { theme::BRAND() } else { theme::CAPTION() })
+                        .border_color(if is_sel {
+                            theme::BRAND()
+                        } else {
+                            theme::CAPTION()
+                        })
                         .flex()
                         .items_center()
                         .justify_center()

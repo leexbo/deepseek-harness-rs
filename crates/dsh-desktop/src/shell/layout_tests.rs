@@ -321,7 +321,7 @@ fn tool_read_expanded_keeps_collapse_and_inspect_jumps(cx: &mut TestAppContext) 
         system_prompt: None,
         tools_catalog: None,
         schema_detail: None,
-                    source: None,
+        source: None,
     };
     cx.update(|app| {
         store.update(app, |st, _| {
@@ -372,19 +372,16 @@ fn tool_read_expanded_keeps_collapse_and_inspect_jumps(cx: &mut TestAppContext) 
         store.update(app, |st, cx| st.inspect_call("call:55", cx));
     });
     redraw(cx, &mut wcx);
-    let (active, insp, pending): (Option<PanelTab>, Option<InspectTarget>, bool) = cx.update(|app| {
-        let st = store.read(app);
-        (
-            st.panel_active_tab,
-            st.trajectory.inspector,
-            st.trajectory.inspect_locate.is_some(),
-        )
-    });
-    assert_eq!(
-        active,
-        Some(PanelTab::Trajectory),
-        "Inspect 开轨迹面板标签"
-    );
+    let (active, insp, pending): (Option<PanelTab>, Option<InspectTarget>, bool) =
+        cx.update(|app| {
+            let st = store.read(app);
+            (
+                st.panel_active_tab,
+                st.trajectory.inspector,
+                st.trajectory.inspect_locate.is_some(),
+            )
+        });
+    assert_eq!(active, Some(PanelTab::Trajectory), "Inspect 开轨迹面板标签");
     assert_eq!(insp, None, "记录未到位,暂不选中(延迟定位)");
     assert!(pending, "待定位 seq 已登记");
 
@@ -599,7 +596,9 @@ fn at_completion_rows_truncate_and_cap(cx: &mut TestAppContext) {
         });
     });
     // 聚焦 composer 输入「@」,触发补全(Change → update_at_completion)
-    let bounds = wcx.debug_bounds("composer-hit").expect("composer 输入区缺失");
+    let bounds = wcx
+        .debug_bounds("composer-hit")
+        .expect("composer 输入区缺失");
     wcx.simulate_click(
         gpui_kit::Point {
             x: bounds.origin.x + bounds.size.width / 2.,
@@ -631,15 +630,29 @@ fn at_completion_rows_truncate_and_cap(cx: &mut TestAppContext) {
     // ① 截断:行高保持定高,截断包装层(-text)不得超一行
     // (无截断时文本换行,该层高度为多行 ≈ 行高 3 倍)
     for i in [0usize, 1, 19] {
-        let row = wcx.debug_bounds(row_sel(i)).unwrap_or_else(|| panic!("会话行 {i} 未渲染"));
-        assert!(row.size.height <= px(32.), "行 {i} 高度 {} 超 32px", row.size.height);
-        let text_sel: &'static str =
-            Box::leak(format!("{}-text", row_sel(i)).into_boxed_str());
-        let text = wcx.debug_bounds(text_sel).unwrap_or_else(|| panic!("行 {i} 文本层缺失"));
-        assert!(text.size.height <= px(24.), "行 {i} 文本层高 {} = 多行(截断失效)", text.size.height);
+        let row = wcx
+            .debug_bounds(row_sel(i))
+            .unwrap_or_else(|| panic!("会话行 {i} 未渲染"));
+        assert!(
+            row.size.height <= px(32.),
+            "行 {i} 高度 {} 超 32px",
+            row.size.height
+        );
+        let text_sel: &'static str = Box::leak(format!("{}-text", row_sel(i)).into_boxed_str());
+        let text = wcx
+            .debug_bounds(text_sel)
+            .unwrap_or_else(|| panic!("行 {i} 文本层缺失"));
+        assert!(
+            text.size.height <= px(24.),
+            "行 {i} 文本层高 {} = 多行(截断失效)",
+            text.size.height
+        );
     }
     // 行间不重叠
-    let (a, b) = (wcx.debug_bounds(row_sel(0)).unwrap(), wcx.debug_bounds(row_sel(1)).unwrap());
+    let (a, b) = (
+        wcx.debug_bounds(row_sel(0)).unwrap(),
+        wcx.debug_bounds(row_sel(1)).unwrap(),
+    );
     assert!(
         b.origin.y >= a.origin.y + a.size.height - px(1.),
         "行 1 与行 0 竖向重叠"
@@ -1024,7 +1037,11 @@ fn mermaid_viewer_drag_panning(cx: &mut TestAppContext) {
         x: canvas.origin.x + canvas.size.width / 2.,
         y: canvas.origin.y + canvas.size.height / 2.,
     };
-    wcx.simulate_mouse_down(center, gpui_kit::MouseButton::Left, gpui_kit::Modifiers::default());
+    wcx.simulate_mouse_down(
+        center,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
     cx.run_until_parked();
     wcx.simulate_mouse_move(
         gpui_kit::Point {
@@ -1137,8 +1154,7 @@ fn menu_harness_opts(
         std::fs::write(ws.join("AGENTS.md"), "# 项目规范\n\n用 Rust。").expect("write AGENTS.md");
     }
     let (bridge, frames_rx) =
-        HostBridge::new_at(ws, true, "", Some(root.join("sessions")))
-            .expect("桥构建失败");
+        HostBridge::new_at(ws, true, "", Some(root.join("sessions"))).expect("桥构建失败");
     let store_cell = std::rc::Rc::new(std::cell::RefCell::new(None::<Entity<AppStore>>));
     let store_capture = store_cell.clone();
     let (_view, wcx) = cx.add_window_view(|window, cx| {
@@ -1307,20 +1323,14 @@ fn composer_menu_open_select_permission(cx: &mut TestAppContext) {
                     .get(&id)
                     .map(|c| c.permission.clone())
             });
-            if cached.as_deref() == Some("full-access")
-                || std::time::Instant::now() >= deadline
-            {
+            if cached.as_deref() == Some("full-access") || std::time::Instant::now() >= deadline {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         cached
     };
-    assert_eq!(
-        cached.as_deref(),
-        Some("full-access"),
-        "配置缓存未回写"
-    );
+    assert_eq!(cached.as_deref(), Some("full-access"), "配置缓存未回写");
     let menu = cx.update(|app| store.read(app).chat.composer_menu);
     assert_eq!(
         menu,
@@ -1342,7 +1352,8 @@ fn billing_auto_refresh_quiet_writes_cache(cx: &mut TestAppContext) {
         let (mut stream, _) = listener.accept().unwrap();
         let mut buf = [0u8; 2048];
         let _ = std::io::Read::read(&mut stream, &mut buf);
-        let body = r#"{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"9.52"}]}"#;
+        let body =
+            r#"{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"9.52"}]}"#;
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
@@ -1374,7 +1385,11 @@ fn billing_auto_refresh_quiet_writes_cache(cx: &mut TestAppContext) {
             .as_str()
             .map(str::to_string)
     });
-    assert_eq!(default_pid.as_deref(), Some("deepseek"), "harness 默认 provider 应为 deepseek");
+    assert_eq!(
+        default_pid.as_deref(),
+        Some("deepseek"),
+        "harness 默认 provider 应为 deepseek"
+    );
 
     // 触发静默自动刷新(与 turn/end 同一入口;60s 防抖首放行)
     cx.update(|app| store.update(app, |s, cx| s.auto_refresh_billing(cx)));
@@ -1397,7 +1412,11 @@ fn billing_auto_refresh_quiet_writes_cache(cx: &mut TestAppContext) {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert_eq!(cached_kind.as_deref(), Some("balance"), "自动刷新未写入 billing_cache");
+    assert_eq!(
+        cached_kind.as_deref(),
+        Some("balance"),
+        "自动刷新未写入 billing_cache"
+    );
     server.join().unwrap();
     // 静默纪律:自动路径不得落设置页通告(手动刷新才有「计费已更新」)
     let notice = cx.update(|app| store.read(app).settings.settings_notice.clone());
@@ -1612,17 +1631,12 @@ fn trajectory_ledger_rows_inspector_and_tabs(cx: &mut TestAppContext) {
         wcx.debug_bounds("load-earlier").is_none(),
         "无更早记录不应有加载钮"
     );
-    let rp = wcx
-        .debug_bounds("right-panel")
-        .expect("面板列缺失");
+    let rp = wcx.debug_bounds("right-panel").expect("面板列缺失");
     let ts = wcx
         .debug_bounds("trajectory-scroll")
         .expect("台账滚动区缺失");
     let gap = f32::from(rp.bottom() - ts.bottom());
-    assert!(
-        gap < 40.,
-        "台账应贴面板底缘(全高列),底缘差 {gap}px"
-    );
+    assert!(gap < 40., "台账应贴面板底缘(全高列),底缘差 {gap}px");
 
     // 工具栏动作钮接线:Turns(⊞/⊟ action 钮)点击 → 全局折叠生效
     click_sel(&mut wcx, "traj-toolbar-turns");
@@ -2028,13 +2042,21 @@ fn sidebar_resize_drag(cx: &mut TestAppContext) {
         x: start.x + gpui_kit::px(60.),
         y: start.y,
     };
-    wcx.simulate_mouse_down(start, gpui_kit::MouseButton::Left, gpui_kit::Modifiers::default());
+    wcx.simulate_mouse_down(
+        start,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
     wcx.simulate_mouse_move(
         end,
         Some(gpui_kit::MouseButton::Left),
         gpui_kit::Modifiers::default(),
     );
-    wcx.simulate_mouse_up(end, gpui_kit::MouseButton::Left, gpui_kit::Modifiers::default());
+    wcx.simulate_mouse_up(
+        end,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
     redraw(cx, &mut wcx);
 
     let after_w = cx.update(|app| store.read(app).sidebar_px);
@@ -2245,7 +2267,10 @@ fn panel_resize_negotiation_collapses_sidebar(cx: &mut TestAppContext) {
         });
     });
     let px0 = cx.update(|app| store.read(app).panel_px);
-    assert!((px0 - 540.).abs() < 1., "窄于下限应抬到 PANEL_MIN,px0={px0}");
+    assert!(
+        (px0 - 540.).abs() < 1.,
+        "窄于下限应抬到 PANEL_MIN,px0={px0}"
+    );
     assert!(
         !cx.update(|app| store.read(app).sidebar_collapsed),
         "触下限不越上限,不应收左栏"
@@ -2300,7 +2325,11 @@ fn panel_drag_widens_via_mouse_and_negotiates(cx: &mut TestAppContext) {
 
     // 面板默认 = 下限 540。按下 → 左移 100(want 640 > 展开态上限 572)
     // → 自动收左栏,面板 640(≤ 收起态上限 796)
-    wcx.simulate_mouse_down(start, gpui_kit::MouseButton::Left, gpui_kit::Modifiers::default());
+    wcx.simulate_mouse_down(
+        start,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
     wcx.run_until_parked();
     wcx.refresh().expect("按下后刷新失败");
     wcx.run_until_parked();
@@ -2482,9 +2511,7 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
 /// 条 thumb 压着文字右缘)。锁:消息列左缘须让过锚点带最宽刻度(起点
 /// 24 + 激活 26),右缘须让开滚动条槽(content 右缘 − SCROLLBAR_GUTTER)。
 #[gpui_kit::test]
-fn narrow_window_gutters_keep_anchors_and_scrollbar_out_of_text(
-    cx: &mut TestAppContext,
-) {
+fn narrow_window_gutters_keep_anchors_and_scrollbar_out_of_text(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "edge-gutters");
     // 多条长消息:内容可滚(导航轨显示)+ node-0 在场
     cx.update(|app| {
@@ -2566,10 +2593,7 @@ fn full_track_scrollbar_reaches_true_bottom(cx: &mut TestAppContext) {
         let viewport = f32::from(st.chat.chat_list.viewport_bounds().size.height);
         let track = st.chat.track_h;
         let max_off = f32::from(st.chat.chat_list.max_offset_for_scrollbar().y);
-        assert!(
-            max_off > 200.,
-            "测试前提:内容明显可滚,max_off={max_off}"
-        );
+        assert!(max_off > 200., "测试前提:内容明显可滚,max_off={max_off}");
         assert!(
             track > viewport + 100.,
             "轨道应明显长于列表视口(全列),track={track} viewport={viewport}"
@@ -2608,7 +2632,10 @@ fn panel_tab_lifecycle_and_empty_menu(cx: &mut TestAppContext) {
         wcx.debug_bounds("panel-tab-plan").is_some(),
         "标签条应有计划标签"
     );
-    assert!(wcx.debug_bounds("panel-plan-view").is_some(), "计划视图应在场");
+    assert!(
+        wcx.debug_bounds("panel-plan-view").is_some(),
+        "计划视图应在场"
+    );
     // 「+」紧随标签条之后(不挂右缘控制组)
     let tab = wcx.debug_bounds("panel-tab-plan").expect("计划标签应在场");
     let plus = wcx.debug_bounds("panel-plus").expect("「+」应在场");
@@ -2771,10 +2798,7 @@ fn panel_plan_shortcut_binding(cx: &mut TestAppContext) {
         cx.update(|_: &mut gpui_kit::App| {});
         cx.run_until_parked();
     };
-    assert!(
-        !cx.update(|app| store.read(app).panel_open),
-        "初始面板应关"
-    );
+    assert!(!cx.update(|app| store.read(app).panel_open), "初始面板应关");
     wcx.simulate_keystrokes("shift-cmd-p");
     redraw(cx, &mut wcx);
     let (open, active) = cx.update(|app| {
@@ -3048,10 +3072,7 @@ fn approval_card_renders_and_answers(cx: &mut TestAppContext) {
     wcx.refresh().expect("刷新失败");
     cx.update(|_: &mut gpui_kit::App| {});
     cx.run_until_parked();
-    assert!(
-        wcx.debug_bounds("approval-card").is_some(),
-        "审批卡未渲染"
-    );
+    assert!(wcx.debug_bounds("approval-card").is_some(), "审批卡未渲染");
     assert!(wcx.debug_bounds("approval-approve").is_some(), "批准钮缺失");
     assert!(wcx.debug_bounds("approval-reject").is_some(), "拒绝钮缺失");
     // 批准一次 → host.respond → pending 清空
@@ -3218,7 +3239,7 @@ fn trajectory_empty_load_earlier_and_turn_collapse(cx: &mut TestAppContext) {
         system_prompt: None,
         tools_catalog: None,
         schema_detail: None,
-                    source: None,
+        source: None,
     };
     cx.update(|app| {
         store.update(app, |st, _| {
@@ -3673,7 +3694,11 @@ fn agents_baseline_keeps_hero_blank(cx: &mut TestAppContext) {
             .state
             .chats
             .get(&id)
-            .map(|c| c.nodes.iter().any(|n| matches!(n, ChatNode::Context { .. })))
+            .map(|c| {
+                c.nodes
+                    .iter()
+                    .any(|n| matches!(n, ChatNode::Context { .. }))
+            })
             .unwrap_or(false);
         (ctx, st.is_blank(&id), st.hero())
     });
@@ -4015,6 +4040,102 @@ fn settings_page_route_end_to_end(cx: &mut TestAppContext) {
     assert!(
         !cx.update(|app| store.read(app).settings.settings_open),
         "设置模式关"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// MCP 添加详情页:表单输入框必须有宽度(弹性行内 wrap 层须持 flex_1;
+/// 输入框塌成小方块的回归锁)+ JSON 粘贴区高度足额
+#[gpui_kit::test]
+fn mcp_detail_inputs_have_width(cx: &mut TestAppContext) {
+    let (_store, mut wcx, root) = menu_harness(cx, "mcpdet");
+    click_sel(&mut wcx, "settings-row");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "settings-nav-MCP");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "mcp-add");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    for sel in ["mcp-id-input", "mcp-command-input", "mcp-cwd-input"] {
+        let b = wcx
+            .debug_bounds(sel)
+            .unwrap_or_else(|| panic!("{sel} 不在场"));
+        assert!(
+            b.size.width >= px(200.),
+            "{sel} 输入框塌陷:宽 {:?}",
+            b.size.width
+        );
+    }
+    // JSON 页签:粘贴区高度足额(内容不被截断)
+    click_sel(&mut wcx, "mcp-tab-json");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    let jb = wcx
+        .debug_bounds("mcp-json-input")
+        .expect("JSON 粘贴区不在场");
+    assert!(
+        jb.size.height >= px(240.),
+        "JSON 粘贴区过矮:{:?}",
+        jb.size.height
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// JSON 编辑器可交互:点击聚焦 + 键入落值(编辑器输入失效回归锁)
+#[gpui_kit::test]
+fn mcp_json_editor_accepts_typing(cx: &mut TestAppContext) {
+    let (_store, mut wcx, root) = menu_harness(cx, "mcptype");
+    click_sel(&mut wcx, "settings-row");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "settings-nav-MCP");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "mcp-add");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "mcp-tab-json");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    // 点击编辑器聚焦,键入,值必须变化
+    let b = wcx
+        .debug_bounds("mcp-json-input")
+        .expect("JSON 粘贴区不在场");
+    wcx.simulate_click(
+        gpui_kit::Point {
+            x: b.origin.x + b.size.width / 2.,
+            y: b.origin.y + b.size.height / 2.,
+        },
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.run_until_parked();
+    wcx.simulate_keystrokes("abc");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    let typed = cx.update(|app| {
+        _store
+            .read(app)
+            .settings
+            .mcp_detail
+            .as_ref()
+            .and_then(|d| d.json_input.as_ref())
+            .map(|input| input.read(app).value().to_string())
+            .unwrap_or_default()
+    });
+    assert!(
+        typed.contains('a'),
+        "键入未落值:编辑器不可交互,value={typed:?}"
     );
     let _ = std::fs::remove_dir_all(root);
 }
@@ -5087,12 +5208,13 @@ fn subagent_tool_expand_body_stays_in_viewport(cx: &mut TestAppContext) {
     // 断言一:展开体完全落在列表视口内(不错乱到消息区之外)
     let inside = bounds_right(io) <= bounds_right(viewport) + gpui_kit::px(1.0)
         && bounds_bottom(io) <= bounds_bottom(viewport) + gpui_kit::px(1.0);
-    assert!(inside, "展开体越出列表视口: io={io:?} viewport={viewport:?}");
+    assert!(
+        inside,
+        "展开体越出列表视口: io={io:?} viewport={viewport:?}"
+    );
 
     // 断言二:不叠绘用户行(行槽高度失真时会叠到别的行上)
-    let user = wcx
-        .debug_bounds("user-bubble-0")
-        .expect("用户行应在场");
+    let user = wcx.debug_bounds("user-bubble-0").expect("用户行应在场");
     let overlap = io.origin.x < bounds_right(user)
         && user.origin.x < bounds_right(io)
         && io.origin.y < bounds_bottom(user)
@@ -5110,7 +5232,11 @@ fn task_bar_switches_between_main_and_subagent(cx: &mut gpui_kit::TestAppContext
         .update(|app| store.read(app).state.current_id.clone())
         .expect("当前会话");
     let child = cx.update(|app| {
-        store.read(app).bridge.host().create_subagent_session(&parent)
+        store
+            .read(app)
+            .bridge
+            .host()
+            .create_subagent_session(&parent)
     });
 
     // 空会话处于 hero 态(聊天栈不渲染):注入一条用户消息进入对话视图
@@ -5147,7 +5273,10 @@ fn task_bar_switches_between_main_and_subagent(cx: &mut gpui_kit::TestAppContext
     cx.update(|_: &mut gpui_kit::App| {});
     cx.run_until_parked();
     assert!(wcx.debug_bounds("task-bar").is_some(), "任务条未出现");
-    assert!(wcx.debug_bounds("task-chip").is_some(), "子代理 chip 未出现");
+    assert!(
+        wcx.debug_bounds("task-chip").is_some(),
+        "子代理 chip 未出现"
+    );
     assert!(
         wcx.debug_bounds("task-chip-main").is_none(),
         "主线视图不应出现主线 chip"

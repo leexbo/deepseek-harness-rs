@@ -115,6 +115,7 @@ flowchart TB
 | `dsh-session` | 事件日志:信封、类型、seq 强制、消息派生、归因查询 | rlib API + WIT `dsh:session` 导出 |
 | `dsh-prompt` | system prompt 组装(纯函数;宿主注入身份/环境/指令文件内容) | `assemble(ctx)` |
 | `dsh-tools` | BashTool(沙箱执行、取消、PTY)+ FileTools(file_read / file_edit / file_search——检索为 ripgrep 引擎:ignore 遍历尊重 .gitignore,grep-searcher 行搜索)+ TodoTool(todo/state)+ PlanTool(exit_plan_mode)+ GoalTool(goal/state)+ SubagentTool(嵌套引擎,独立子日志,能力束窄化)+ SubagentControlTool + JobTool(后台任务 list/read/stop;输出落盘 .dsh/jobs) | `ToolPort` 实现 |
+| `dsh-mcp` | MCP client 桥:stdio server 连接(后台任务,不阻塞装配)与工具桥接(公共名 `mcp__<server>__<tool>`、raw name 走线、整代原子换带、list_changed 重同步、内容投影) | `McpServerPort`(ToolPort 实现) |
 | `dsh-wit` | host 侧 bindgen 与组件契约测试 | 测试套件 |
 | `dsh-example-tool` | 示例工具组件(echo_config / spin):`dsh:tools` world 参考实现与测试物料(rlib + wasm32-wasip2 双产物,照 dsh-session 模式) | WIT `dsh:tools` 导出 |
 | `wit/` | 全部契约定义,唯一契约源 | 七个 WIT 包(§7.6) |
@@ -371,6 +372,10 @@ preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: dsh/v1 / kind:
 沙箱访问模式三态(read-only / workspace-write / full-access),会话值 = 日志中最后一条 `sandbox/mode` 的 fold;审批策略 ask / never 同构(`approval/policy` fold)。两者都是 log-only 旋钮:执行侧工具每次执行实时 fold 同一日志(落档即生效,无需重装配),模型经 runtime-context 快照文本得知策略。
 
 **一次性升级**(bash,拒绝后的重试通道):参数 `sandbox_permissions`(目标档位)+ `justification`(必填一句话),必须成对、仅前台命令。闸门次序 fail-closed:严格加宽检查(目标必须严格更宽,非加宽请求从不问人)→ 审批口在场 → 问询;任一步失败抛逐字错误且零执行。批准 = `allowed-once`:目标模式**只盖本次调用的 policy**,不落 `sandbox/mode` 事件;拒绝/取消对该命令终局。审计对 `approval/asked`/`decided` 在工具执行内直写日志(时序先于其所批准的执行),必须被 open turn 包住;`approval=never` 在问询分发前直接拒绝,不可绕过,仍落审计对。拒绝提示链:Denied 输出 = 拒绝标记 + stderr + 升级提示(审批口在场且存在更宽档位时)。子代理:继承父显式 `sandbox/mode` 覆盖,approval 钉 never——升级确定性被拒。
+
+### 7.13 MCP 桥
+
+`dsh-mcp`(rmcp 官方 Rust SDK)把外部 MCP server(stdio 首批)的工具桥接进工具面。**命名**:公共名 `mcp__<server>__<tool>`(非法字符归一、64 上限,有损追加 sha256 前 12hex 消歧);**raw name 只上 tools/call 线路,公共名永不反解**。**生命周期**:端口池锚宿主(非会话)——设置保存/启停/导入即对照 enabled 清单同步(新增/变更启动或重启,禁用/卸载停机,rmcp `RunningService::cancel` 干净关闭,transport drop 杀子进程);所有会话共享一个 server 一条连接,池以单个聚合 `ToolPort` 装进工具面,`specs` 聚合与按名路由都是动态的(工具清单连上后下一 turn 出现,会话无需重装配);连接失败落设置页通告 + 状态表,失败即止不自动重连(改配置再保存 = 重启端口)。**投影**:text 合并、image/audio/embedded 降级占位、resource_link 转文本、空内容固定占位;`isError` → 工具失败结果。**边界**:只桥 tools(resources/prompts 不桥);MCP 工具不经沙箱与审批闸门(server 由用户配置接入,审批泛化随 hooks 桥);`tools/list_changed` → 整代原子换带(同名 raw 重复整代无效,保留上一代)。
 
 ## 8. 质量场景
 

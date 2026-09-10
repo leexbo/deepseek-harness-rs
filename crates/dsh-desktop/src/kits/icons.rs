@@ -10,8 +10,8 @@
 //! Tab/Select)会强制覆写传入 icon 的尺寸——本 crate 全自绘 div,
 //! 不受影响。所有 Icon 一律经 [`fixed`] 定尺寸。
 
-use gpui_kit::{AssetSource, Result, SharedString, px};
 use gpui_kit::component::{Icon, IconName, IconNamed, Sizable};
+use gpui_kit::{AssetSource, Result, SharedString, px};
 use std::borrow::Cow;
 
 /// dsh 自有图标(仅内置 [`IconName`] 缺失者;内置的直接用 `IconName::X`)

@@ -4,14 +4,14 @@
 //! (edit/remove/steer),变更后 `session/queue` 帧自动广播回填。
 //! `steering` 落位不在本组件(消息流尾部的插队气泡,见 chat_pane)。
 
+use gpui_kit::component::IconName;
+use gpui_kit::component::Sizable;
+use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
-use gpui_kit::component::IconName;
-use gpui_kit::component::Sizable;
-use gpui_kit::component::StyledExt;
 
 use crate::features::chat::{QueueEntry, QueuePlacement};
 use crate::kits::icons::{DshIcon, fixed};

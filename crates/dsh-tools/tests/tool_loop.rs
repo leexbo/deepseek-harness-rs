@@ -695,14 +695,13 @@ async fn subagent_runs_own_session_and_reports_back() {
             "content": "child finished: all done"
         }))],
     ];
-    let factory: dsh_tools::subagent::TransportFactory<FakeProvider> =
-        Arc::new(move || {
-            let mut p = FakeProvider::new();
-            for r in &responses {
-                p.then(r.clone());
-            }
-            Ok(p)
-        });
+    let factory: dsh_tools::subagent::TransportFactory<FakeProvider> = Arc::new(move || {
+        let mut p = FakeProvider::new();
+        for r in &responses {
+            p.then(r.clone());
+        }
+        Ok(p)
+    });
 
     let mut tool = SubagentTool::new(&dir, factory, "test-model".into());
     let registry = tool.registry.clone();
@@ -790,14 +789,13 @@ async fn subagent_cancel_propagates_from_parent() {
             json!({ "content": "unreached" }),
         )],
     ];
-    let factory: dsh_tools::subagent::TransportFactory<FakeProvider> =
-        Arc::new(move || {
-            let mut p = FakeProvider::new();
-            for r in &responses {
-                p.then(r.clone());
-            }
-            Ok(p)
-        });
+    let factory: dsh_tools::subagent::TransportFactory<FakeProvider> = Arc::new(move || {
+        let mut p = FakeProvider::new();
+        for r in &responses {
+            p.then(r.clone());
+        }
+        Ok(p)
+    });
     let mut tool = SubagentTool::new(&dir, factory, "m".into()).with_cancel(parent.clone());
     let delayed = parent.clone();
     tokio::spawn(async move {

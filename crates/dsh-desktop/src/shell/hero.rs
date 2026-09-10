@@ -3,14 +3,14 @@
 //! 两 chip 均为实装下拉:工作区 = 切换/添加(标题栏下拉同源行),
 //! 模式 = preset 选择(describe presets)。
 
+use gpui_kit::component::Icon;
+use gpui_kit::component::IconName;
+use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
-use gpui_kit::component::Icon;
-use gpui_kit::component::IconName;
-use gpui_kit::component::StyledExt;
 
 use crate::features::chat::composer;
 use crate::kits::icons::{self, fixed};
@@ -45,9 +45,11 @@ pub fn render(
         .justify_center()
         // 列对齐容器同款槽 padding(左锚点槽/右滚动条槽)——hero 主卡
         // 与 composer/消息列同中心线
-        .pl(px(crate::shell::metrics::H_PAD + crate::shell::metrics::NAV_GUTTER_W))
+        .pl(px(
+            crate::shell::metrics::H_PAD + crate::shell::metrics::NAV_GUTTER_W
+        ))
         .pr(px(
-            crate::shell::metrics::H_PAD + crate::shell::metrics::SCROLLBAR_GUTTER_W,
+            crate::shell::metrics::H_PAD + crate::shell::metrics::SCROLLBAR_GUTTER_W
         ))
         .pb(px(64.))
         .child(
@@ -62,9 +64,12 @@ pub fn render(
                         .v_flex()
                         .items_center()
                         .gap(px(10.))
-                        .child(div().flex().justify_center().child(
-                            fixed(crate::kits::icons::DshIcon::Logo, 44.).text_color(theme::LABEL()),
-                        ))
+                        .child(
+                            div().flex().justify_center().child(
+                                fixed(crate::kits::icons::DshIcon::Logo, 44.)
+                                    .text_color(theme::LABEL()),
+                            ),
+                        )
                         .child(
                             div()
                                 .text_size(px(15.))

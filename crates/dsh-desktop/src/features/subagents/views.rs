@@ -4,12 +4,12 @@
 //! 点击跳子会话。数据以 jobs 帧权威,子会话清单补位。
 //! (从 ui::topbar 切出;trigger 挂于顶栏标题右侧操作组。)
 
+use gpui_kit::component::{IconName, StyledExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
-    div, px,
+    App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled, div, px,
 };
-use gpui_kit::component::{IconName, StyledExt};
 
 use crate::kits::icons::{DshIcon, fixed};
 use crate::kits::theme;
@@ -158,97 +158,101 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
     // 行元素先建(闭包 move 所有权,避免借用 chips 越过函数尾)
     let list_rows: Vec<gpui_kit::AnyElement> = chips
         .iter()
-            .map(|chip| {
-                let s_chip = store.clone();
-                let chip = chip.clone();
-                let chip_id = chip.session_id.clone();
-                let running = chip.running;
-                let viewing = chip.session_id == current;
-                let timing = duration_text(&chip);
-                div()
-                    .id(gpui_kit::SharedString::from(format!(
-                        "task-row-{}",
-                        chip.session_id
-                    )))
-                    .debug_selector(|| "task-chip".to_string())
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .rounded(px(8.))
-                    .px(px(10.))
-                    .py(px(4.))
-                    .bg(if viewing { theme::DOCK() } else { theme::TRANSPARENT() })
-                    .cursor_pointer()
-                    .hover(|st| st.bg(theme::DOCK()))
-                    .on_click(move |_, _, cx| {
-                        let id = chip_id.clone();
-                        s_chip.update(cx, |st, cx| st.open_session(&id, cx));
-                    })
-                    .when_some(chip.dot, |el, dot| el.child(state_dot(dot)))
-                    .child(
+        .map(|chip| {
+            let s_chip = store.clone();
+            let chip = chip.clone();
+            let chip_id = chip.session_id.clone();
+            let running = chip.running;
+            let viewing = chip.session_id == current;
+            let timing = duration_text(&chip);
+            div()
+                .id(gpui_kit::SharedString::from(format!(
+                    "task-row-{}",
+                    chip.session_id
+                )))
+                .debug_selector(|| "task-chip".to_string())
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .rounded(px(8.))
+                .px(px(10.))
+                .py(px(4.))
+                .bg(if viewing {
+                    theme::DOCK()
+                } else {
+                    theme::TRANSPARENT()
+                })
+                .cursor_pointer()
+                .hover(|st| st.bg(theme::DOCK()))
+                .on_click(move |_, _, cx| {
+                    let id = chip_id.clone();
+                    s_chip.update(cx, |st, cx| st.open_session(&id, cx));
+                })
+                .when_some(chip.dot, |el, dot| el.child(state_dot(dot)))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .flex_1()
+                        .text_size(px(12.))
+                        .text_color(if viewing {
+                            theme::LABEL()
+                        } else {
+                            theme::LABEL_2()
+                        })
+                        .truncate()
+                        .child(chip.label.clone()),
+                )
+                .when(!timing.is_empty(), |el| {
+                    el.child(
                         div()
-                            .min_w(px(0.))
-                            .flex_1()
-                            .text_size(px(12.))
-                            .text_color(if viewing { theme::LABEL() } else { theme::LABEL_2() })
-                            .truncate()
-                            .child(chip.label.clone()),
+                            .flex_shrink_0()
+                            .text_size(px(11.))
+                            .text_color(theme::CAPTION())
+                            .child(timing),
                     )
-                    .when(!timing.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .flex_shrink_0()
-                                .text_size(px(11.))
-                                .text_color(theme::CAPTION())
-                                .child(timing),
-                        )
-                    })
-                    .when(viewing, |el| {
-                        el.child(
-                            fixed(gpui_kit::component::IconName::Check, 12.)
-                                .text_color(theme::BRAND()),
-                        )
-                    })
-                    // 运行中行尾打断钮(自绘方块与 composer 停止钮同款
-                    // 视觉);豁免冒泡——点击打断不触发行切换
-                    .when(running, |el| {
-                        let s_stop = store.clone();
-                        let stop_id = chip.session_id.clone();
-                        el.child(
-                            div()
-                                .id(gpui_kit::SharedString::from(format!(
-                                    "task-stop-{}",
-                                    chip.session_id
-                                )))
-                                .debug_selector(|| "task-stop".to_string())
-                                .flex()
-                                .items_center()
-                                .gap(px(4.))
-                                .h(px(20.))
-                                .px(px(8.))
-                                .rounded(px(10.))
-                                .border_1()
-                                .border_color(theme::BORDER_2())
-                                .cursor_pointer()
-                                .hover(|st| {
-                                    st.bg(theme::DANGER()).border_color(theme::DANGER())
-                                })
-                                .text_size(px(11.))
-                                .text_color(theme::LABEL_2())
-                                .child("打断")
-                                .on_mouse_down(
-                                    gpui_kit::MouseButton::Left,
-                                    |_, _, cx| cx.stop_propagation(),
-                                )
-                                .on_click(move |_, _, cx| {
-                                    cx.stop_propagation();
-                                    let id = stop_id.clone();
-                                    s_stop.update(cx, |st, cx| st.interrupt_subagent(&id, cx));
-                                }),
-                        )
-                    })
-                    .into_any_element()
-            })
+                })
+                .when(viewing, |el| {
+                    el.child(
+                        fixed(gpui_kit::component::IconName::Check, 12.).text_color(theme::BRAND()),
+                    )
+                })
+                // 运行中行尾打断钮(自绘方块与 composer 停止钮同款
+                // 视觉);豁免冒泡——点击打断不触发行切换
+                .when(running, |el| {
+                    let s_stop = store.clone();
+                    let stop_id = chip.session_id.clone();
+                    el.child(
+                        div()
+                            .id(gpui_kit::SharedString::from(format!(
+                                "task-stop-{}",
+                                chip.session_id
+                            )))
+                            .debug_selector(|| "task-stop".to_string())
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .h(px(20.))
+                            .px(px(8.))
+                            .rounded(px(10.))
+                            .border_1()
+                            .border_color(theme::BORDER_2())
+                            .cursor_pointer()
+                            .hover(|st| st.bg(theme::DANGER()).border_color(theme::DANGER()))
+                            .text_size(px(11.))
+                            .text_color(theme::LABEL_2())
+                            .child("打断")
+                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                let id = stop_id.clone();
+                                s_stop.update(cx, |st, cx| st.interrupt_subagent(&id, cx));
+                            }),
+                    )
+                })
+                .into_any_element()
+        })
         .collect();
     let list = open.then(|| {
         div()
@@ -274,4 +278,3 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
             .into_any_element(),
     )
 }
-

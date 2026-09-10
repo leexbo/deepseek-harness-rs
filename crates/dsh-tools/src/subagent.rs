@@ -118,7 +118,9 @@ pub fn settlement_notice(
 
 /// 重启恢复通知(中断重挂时投父)
 fn resumed_notice(child_id: &str) -> (String, Value) {
-    let summary = format!("Background subagent {child_id} was interrupted by a host restart and has been resumed.");
+    let summary = format!(
+        "Background subagent {child_id} was interrupted by a host restart and has been resumed."
+    );
     let text = format!(
         "{summary} Its last turn did not finish; send it a message with `send_message` to continue."
     );
@@ -217,7 +219,12 @@ impl SubagentRegistry {
 
     /// 状态变化通知(guard 释放后调用,防回调重入死锁)
     fn changed(&self) {
-        let hook = self.inner.on_change.lock().expect("on_change 锁中毒").clone();
+        let hook = self
+            .inner
+            .on_change
+            .lock()
+            .expect("on_change 锁中毒")
+            .clone();
         if let Some(hook) = hook {
             hook();
         }
@@ -288,7 +295,10 @@ struct ChildParts {
 }
 
 /// 子代理 system prompt(公共骨架;驻留形态追加回发父指引)
-fn child_system_prompt(child_root: &std::path::Path, parent_link: Option<&ChildParentLink>) -> String {
+fn child_system_prompt(
+    child_root: &std::path::Path,
+    parent_link: Option<&ChildParentLink>,
+) -> String {
     let mut system = format!(
         "You are a dsh subagent executing one task in an isolated workspace ({}). \
 Finish the task and reply with the result only — you cannot ask questions.",
@@ -534,11 +544,9 @@ fn set_status(registry: &SubagentRegistry, session_id: &str, status: &str) {
             Some(rec) => {
                 rec.status = status.into();
                 // idle = 驻留最近一轮结算时刻(续话再跑时被 running 清空)
-                rec.ended_at = matches!(
-                    status,
-                    "idle" | "done" | "failed" | "cancelled" | "stopped"
-                )
-                .then(now_ms);
+                rec.ended_at =
+                    matches!(status, "idle" | "done" | "failed" | "cancelled" | "stopped")
+                        .then(now_ms);
                 true
             }
             None => false,
@@ -710,20 +718,23 @@ where
             }
         };
         let started_at = now_ms();
-        self.registry.lock().expect("records 锁中毒").push(SubagentRecord {
-            id,
-            task: prompt.to_string(),
-            status: "running".into(),
-            session_id: handle.session_id.clone(),
-            session_path: path_str.clone(),
-            background: false,
-            tx: None,
-            steer: None,
-            stop: None,
-            prompt: prompt.to_string(),
-            started_at,
-            ended_at: None,
-        });
+        self.registry
+            .lock()
+            .expect("records 锁中毒")
+            .push(SubagentRecord {
+                id,
+                task: prompt.to_string(),
+                status: "running".into(),
+                session_id: handle.session_id.clone(),
+                session_path: path_str.clone(),
+                background: false,
+                tx: None,
+                steer: None,
+                stop: None,
+                prompt: prompt.to_string(),
+                started_at,
+                ended_at: None,
+            });
         self.registry.changed();
 
         let transport = match (self.transport_factory)() {
@@ -824,20 +835,23 @@ where
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ChildMsg>();
         let stop = Arc::new(tokio::sync::Notify::new());
         let steer = Arc::new(Mutex::new(VecDeque::new()));
-        self.registry.lock().expect("records 锁中毒").push(SubagentRecord {
-            id,
-            task: label.to_string(),
-            status: "running".into(),
-            session_id: session_id.clone(),
-            session_path: path_str,
-            background: true,
-            tx: Some(tx),
-            steer: Some(Arc::clone(&steer)),
-            stop: Some(Arc::clone(&stop)),
-            prompt: prompt.to_string(),
-            started_at: now_ms(),
-            ended_at: None,
-        });
+        self.registry
+            .lock()
+            .expect("records 锁中毒")
+            .push(SubagentRecord {
+                id,
+                task: label.to_string(),
+                status: "running".into(),
+                session_id: session_id.clone(),
+                session_path: path_str,
+                background: true,
+                tx: Some(tx),
+                steer: Some(Arc::clone(&steer)),
+                stop: Some(Arc::clone(&stop)),
+                prompt: prompt.to_string(),
+                started_at: now_ms(),
+                ended_at: None,
+            });
         self.registry.changed();
         tokio::spawn(run_resident_child(ResidentChild {
             handle,
@@ -884,20 +898,23 @@ where
             let stop = Arc::new(tokio::sync::Notify::new());
             let steer = Arc::new(Mutex::new(VecDeque::new()));
             let id = self.next_id();
-            self.registry.lock().expect("records 锁中毒").push(SubagentRecord {
-                id,
-                task: label.clone(),
-                status: "idle".into(),
-                session_id: session_id.clone(),
-                session_path: handle.session_path.display().to_string(),
-                background: true,
-                tx: Some(tx),
-                steer: Some(Arc::clone(&steer)),
-                stop: Some(Arc::clone(&stop)),
-                prompt: prompt.clone(),
-                started_at: now_ms(),
-                ended_at: None,
-            });
+            self.registry
+                .lock()
+                .expect("records 锁中毒")
+                .push(SubagentRecord {
+                    id,
+                    task: label.clone(),
+                    status: "idle".into(),
+                    session_id: session_id.clone(),
+                    session_path: handle.session_path.display().to_string(),
+                    background: true,
+                    tx: Some(tx),
+                    steer: Some(Arc::clone(&steer)),
+                    stop: Some(Arc::clone(&stop)),
+                    prompt: prompt.clone(),
+                    started_at: now_ms(),
+                    ended_at: None,
+                });
             self.registry.changed();
             let release_factory = Arc::clone(&factory);
             let release_id = session_id.clone();
@@ -1109,23 +1126,21 @@ where
             // 运行中 bash 随令牌中断,子代理保持驻留
             let turn_token = CancelToken::new();
             engine.set_cancel(turn_token.clone());
-            let mut tools =
-                match build_child_tools(ChildToolContext {
-                    turn_token: &turn_token,
-                    parts: &parts,
-                    query_port: query_port.clone(),
-                    session_id: &handle.session_id,
-                    parent_link: Some(parent_link.clone()),
-                }) {
-                    Ok(t) => t,
-                    Err(_) => {
-                        set_status(&registry, &handle.session_id, "failed");
-                        let (text, source) =
-                            settlement_notice(&handle.session_id, "error", None);
-                        notify.notify(&parent_id, text, source).await;
-                        return;
-                    }
-                };
+            let mut tools = match build_child_tools(ChildToolContext {
+                turn_token: &turn_token,
+                parts: &parts,
+                query_port: query_port.clone(),
+                session_id: &handle.session_id,
+                parent_link: Some(parent_link.clone()),
+            }) {
+                Ok(t) => t,
+                Err(_) => {
+                    set_status(&registry, &handle.session_id, "failed");
+                    let (text, source) = settlement_notice(&handle.session_id, "error", None);
+                    notify.notify(&parent_id, text, source).await;
+                    return;
+                }
+            };
             let interrupt = {
                 let stop = Arc::clone(&stop);
                 async move {
@@ -1501,9 +1516,7 @@ mod tests {
 
     /// 脚本组工厂:第 n 次调用产一个携第 n 组脚本的 provider(一个子代理
     /// 一次调用;组内多条脚本 = 该子代理的多个 turn 依次消费)
-    fn scripted_factory(
-        groups: &[&[&str]],
-    ) -> (TransportFactory<FakeProvider>, Arc<AtomicUsize>) {
+    fn scripted_factory(groups: &[&[&str]]) -> (TransportFactory<FakeProvider>, Arc<AtomicUsize>) {
         let queue: Vec<Vec<Vec<LlmEvent>>> = groups
             .iter()
             .map(|group| {
@@ -1519,7 +1532,11 @@ mod tests {
         (
             Arc::new(move || {
                 let mut q = queue.lock().unwrap();
-                let group = if q.is_empty() { Vec::new() } else { q.remove(0) };
+                let group = if q.is_empty() {
+                    Vec::new()
+                } else {
+                    q.remove(0)
+                };
                 drop(q);
                 counter.fetch_add(1, Ordering::SeqCst);
                 let mut p = FakeProvider::new();
@@ -1588,7 +1605,10 @@ mod tests {
         wait_for(|| notify.calls.lock().unwrap().len() == 1).await;
         let (parent, text, source) = notify.calls.lock().unwrap()[0].clone();
         assert_eq!(parent, "", "父会话 id 原样透传(未注入 parent_id 时为空)");
-        assert!(text.contains("finished and will do no further work"), "{text}");
+        assert!(
+            text.contains("finished and will do no further work"),
+            "{text}"
+        );
         assert!(text.contains("Its closing message:"), "{text}");
         assert!(text.contains("hello from child"), "{text}");
         assert_eq!(source["kind"], "subagent-settled");
@@ -1610,10 +1630,9 @@ mod tests {
     async fn send_message_drives_continuation_turn() {
         let notify = RecordingNotify::default();
         // 同一子代理两个 turn:初始报告 + 续话回复(工厂一次调用,组内两条)
-        let (factory, _built) =
-            scripted_factory(&[&["first report", "second report after nudge"]]);
-        let mut tool =
-            SubagentTool::new(dir("cont"), factory, "m".into()).with_notify(Arc::new(notify.clone()));
+        let (factory, _built) = scripted_factory(&[&["first report", "second report after nudge"]]);
+        let mut tool = SubagentTool::new(dir("cont"), factory, "m".into())
+            .with_notify(Arc::new(notify.clone()));
         let out = ToolPort::execute(&mut tool, &subagent_call("Two turns", "start")).await;
         let session_id = out
             .output
@@ -1633,7 +1652,10 @@ mod tests {
         )
         .await;
         assert!(sent.success, "{}", sent.output);
-        assert_eq!(sent.output, format!("message delivered to agent {session_id}"));
+        assert_eq!(
+            sent.output,
+            format!("message delivered to agent {session_id}")
+        );
 
         // 续话 turn 结算 → 第二次通知
         wait_for(|| notify.calls.lock().unwrap().len() == 2).await;
@@ -1670,7 +1692,9 @@ mod tests {
                 }),
             )
             .remove(0),
-            vec![LlmEvent::AssistantMessage(json!({ "content": "final after steer" }))],
+            vec![LlmEvent::AssistantMessage(
+                json!({ "content": "final after steer" }),
+            )],
         ];
         let factory: TransportFactory<FakeProvider> = {
             let slot = Arc::new(Mutex::new(Some(group)));
@@ -1683,8 +1707,8 @@ mod tests {
                 Ok(p)
             })
         };
-        let mut tool =
-            SubagentTool::new(dir("steer"), factory, "m".into()).with_notify(Arc::new(notify.clone()));
+        let mut tool = SubagentTool::new(dir("steer"), factory, "m".into())
+            .with_notify(Arc::new(notify.clone()));
         let out = ToolPort::execute(
             &mut tool,
             &ToolCallRequest {
@@ -1793,7 +1817,10 @@ mod tests {
         wait_for(|| notify.calls.lock().unwrap().len() == 2).await;
         assert_eq!(
             notify.kinds(),
-            vec!["subagent-message".to_string(), "subagent-settled".to_string()],
+            vec![
+                "subagent-message".to_string(),
+                "subagent-settled".to_string()
+            ],
             "中途消息先于结算通知"
         );
         let (parent, text, source) = notify.calls.lock().unwrap()[0].clone();
@@ -1872,8 +1899,8 @@ mod tests {
                 Ok(p)
             })
         };
-        let mut tool =
-            SubagentTool::new(dir("intr"), factory, "m".into()).with_notify(Arc::new(notify.clone()));
+        let mut tool = SubagentTool::new(dir("intr"), factory, "m".into())
+            .with_notify(Arc::new(notify.clone()));
         let out = ToolPort::execute(
             &mut tool,
             &ToolCallRequest {
@@ -1999,8 +2026,8 @@ mod tests {
     async fn list_agents_lists_background_only() {
         let notify = RecordingNotify::default();
         let (factory, built) = scripted_factory(&[&["bg result"], &["fg result"]]);
-        let mut tool =
-            SubagentTool::new(dir("list"), factory, "m".into()).with_notify(Arc::new(notify.clone()));
+        let mut tool = SubagentTool::new(dir("list"), factory, "m".into())
+            .with_notify(Arc::new(notify.clone()));
         let bg = ToolPort::execute(&mut tool, &subagent_call("Bg task", "run bg")).await;
         let bg_id = bg
             .output
@@ -2047,18 +2074,21 @@ mod tests {
         let sync_tool = SubagentTool::<FakeProvider>::new(dir("s1"), factory.clone(), "m".into());
         let specs = dsh_agent_loop::ToolPort::specs(&sync_tool);
         assert_eq!(specs.len(), 1);
-        assert!(specs[0]["function"]["parameters"]["properties"]
-            .get("task")
-            .is_some());
-        assert!(specs[0]["function"]["parameters"]["properties"]
-            .get("run_in_background")
-            .is_none());
+        assert!(
+            specs[0]["function"]["parameters"]["properties"]
+                .get("task")
+                .is_some()
+        );
+        assert!(
+            specs[0]["function"]["parameters"]["properties"]
+                .get("run_in_background")
+                .is_none()
+        );
 
         // 有 port:后台形态(description/prompt/run_in_background;默认后台)
         let notify = RecordingNotify::default();
-        let bg_tool =
-            SubagentTool::<FakeProvider>::new(dir("s2"), factory, "m".into())
-                .with_notify(Arc::new(notify));
+        let bg_tool = SubagentTool::<FakeProvider>::new(dir("s2"), factory, "m".into())
+            .with_notify(Arc::new(notify));
         let specs = dsh_agent_loop::ToolPort::specs(&bg_tool);
         assert_eq!(specs.len(), 1);
         let props = specs[0]["function"]["parameters"]["properties"].clone();
@@ -2066,10 +2096,12 @@ mod tests {
         assert!(props.get("prompt").is_some());
         assert!(props.get("task").is_none());
         assert!(props.get("run_in_background").is_some());
-        assert!(specs[0]["function"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("runs in the background by default"));
+        assert!(
+            specs[0]["function"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("runs in the background by default")
+        );
         // send_message 描述须含中途 steer 与父寻址句
         let control = SubagentControlTool::new(SubagentRegistry::default());
         let cspec = dsh_agent_loop::ToolPort::specs(&control)
@@ -2096,7 +2128,10 @@ mod tests {
 
         let (text, _) = settlement_notice("s-3", "error", Some("  "));
         assert!(text.contains("failed before it finished"));
-        assert!(text.contains("It left no closing message."), "空白 closing 视同无");
+        assert!(
+            text.contains("It left no closing message."),
+            "空白 closing 视同无"
+        );
 
         let (text, source) = resumed_notice("s-4");
         assert!(text.contains("was interrupted by a host restart"), "{text}");

@@ -9,9 +9,9 @@ use gpui_kit::component::input::InputState;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use gpui_kit::{AppContext as _, Context, Entity, Window};
 use gpui_kit::component::RopeExt;
 use gpui_kit::component::input::TextareaState;
+use gpui_kit::{AppContext as _, Context, Entity, Window};
 
 use super::projection::{ChatNode, ChatState, RowSlot, build_row_slots};
 use crate::features::attachments::AttachmentToast;
@@ -271,7 +271,11 @@ impl Default for ChatStore {
             nav_reflow: None,
             row_slots: Vec::new(),
             todo_open: false,
-            chat_list: gpui_kit::ListState::new(0, gpui_kit::ListAlignment::Bottom, gpui_kit::px(600.)),
+            chat_list: gpui_kit::ListState::new(
+                0,
+                gpui_kit::ListAlignment::Bottom,
+                gpui_kit::px(600.),
+            ),
             track_h: 0.,
             chat_list_count: 0,
             chat_list_session: None,
@@ -1103,9 +1107,11 @@ impl AppStore {
             // 子代理会话的 turn 跑在父 worker 的驻留任务里,自身令牌
             // 取消无效——分流到宿主打断(与 interrupt_agent 同信号)。
             // 在看谁就停谁。
-            let is_subagent = self.state.sessions.iter().any(|s| {
-                s.session_id == id && s.origin.as_deref() == Some("subagent")
-            });
+            let is_subagent = self
+                .state
+                .sessions
+                .iter()
+                .any(|s| s.session_id == id && s.origin.as_deref() == Some("subagent"));
             if is_subagent {
                 self.bridge.host().interrupt_subagent(&id);
             } else {
@@ -1525,9 +1531,11 @@ impl AppStore {
     /// 等待行才保活 1s 循环。秒数在渲染期由截止时刻推算,timer 只负责
     /// 触发重绘;状态翻转(started/取消)自带 notify,节拍自会收敛退出
     pub(crate) fn sync_retry_tick(&mut self, cx: &mut Context<Self>) {
-        let pending = self
-            .current_chat()
-            .is_some_and(|c| c.retry_deadlines.values().any(|d| *d > std::time::Instant::now()));
+        let pending = self.current_chat().is_some_and(|c| {
+            c.retry_deadlines
+                .values()
+                .any(|d| *d > std::time::Instant::now())
+        });
         if !pending {
             self.chat.retry_tick.take();
             return;
@@ -1544,7 +1552,9 @@ impl AppStore {
                 let gone = this
                     .update(cx, |s, cx| {
                         let pending = s.current_chat().is_some_and(|c| {
-                            c.retry_deadlines.values().any(|d| *d > std::time::Instant::now())
+                            c.retry_deadlines
+                                .values()
+                                .any(|d| *d > std::time::Instant::now())
                         });
                         cx.notify();
                         !pending

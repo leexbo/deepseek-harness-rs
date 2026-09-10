@@ -3,13 +3,13 @@
 //! 反馈是 host sidecar(per-session JSON),不进模型上下文;
 //! 语义:点当前评分 = 删除;点另一评分 = put 带原备注前移。
 
+use gpui_kit::component::IconName;
+use gpui_kit::component::StyledExt;
+use gpui_kit::component::input::Textarea;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
     Styled, div, px,
 };
-use gpui_kit::component::IconName;
-use gpui_kit::component::StyledExt;
-use gpui_kit::component::input::Textarea;
 
 use crate::kits::icons::fixed;
 use crate::kits::theme;
@@ -126,7 +126,11 @@ fn feedback_btn(
         .justify_center()
         .cursor_pointer()
         .hover(|s| s.bg(theme::DOCK()))
-        .text_color(if active { theme::BRAND() } else { theme::CAPTION() })
+        .text_color(if active {
+            theme::BRAND()
+        } else {
+            theme::CAPTION()
+        })
         .on_click(move |_, _, cx| on_click(cx))
         .child(fixed(icon, 12.))
 }
@@ -169,7 +173,9 @@ pub fn render_note_editor(store: &Entity<AppStore>, cx: &mut App) -> Option<impl
                     .bg(theme::LAYER())
                     .p(px(12.))
                     .shadow_md()
-                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation()
+                    })
                     .child(
                         div()
                             .id("fb-note-input")

@@ -14,12 +14,12 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, Rgba, StatefulInteractiveElement,
     Styled, div, px,
 };
-use gpui_kit::component::StyledExt;
 
 use super::projection::ToolState;
 use crate::kits::cache::MemoCache;
@@ -742,7 +742,9 @@ pub(crate) fn render(
                 .pl(px(30.))
                 .pr(px(14.))
                 .py(px(9.))
-                .when(!running, |el| el.border_b_1().border_color(theme::BORDER_2()))
+                .when(!running, |el| {
+                    el.border_b_1().border_color(theme::BORDER_2())
+                })
                 .child(
                     div().v_flex().min_w(px(0.)).flex_1().children(
                         command_lines
@@ -909,7 +911,10 @@ fn empty_output() -> impl IntoElement {
 /// 单输出行(spans 横排;空行保最小行高维持行计数;非交互,无 id)。
 /// 无 SGR 态的行用主标签色(输出基色 = label-primary)
 fn line_el(line: &AnsiLine) -> impl IntoElement {
-    let mut el = div().flex().min_h(px(18.)).line_height(gpui_kit::relative(1.5));
+    let mut el = div()
+        .flex()
+        .min_h(px(18.))
+        .line_height(gpui_kit::relative(1.5));
     for span in line {
         let mut s = div().text_color(
             span.style

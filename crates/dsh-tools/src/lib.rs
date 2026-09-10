@@ -462,7 +462,9 @@ impl ToolPort for BashTool {
             }
             let Some(port) = &self.approval else {
                 return ToolOutput {
-                    output: "sandbox escalation requires approval, but no approval service is composed".into(),
+                    output:
+                        "sandbox escalation requires approval, but no approval service is composed"
+                            .into(),
                     success: false,
                     ..Default::default()
                 };
@@ -599,7 +601,10 @@ fn mode_name(mode: SandboxMode) -> &'static str {
 /// 拒绝标记(`sandboxDenialMarker` 模式插值),
 /// 模型据此识别「沙箱拦截而非命令逻辑错误」
 fn denial_marker(mode: SandboxMode) -> String {
-    format!("[sandbox: file access denied under {} mode]", mode_name(mode))
+    format!(
+        "[sandbox: file access denied under {} mode]",
+        mode_name(mode)
+    )
 }
 
 /// 退出状态 → (success, exit_code, signal):
@@ -685,7 +690,10 @@ mod tests {
         ] {
             let out = ToolPort::execute(
                 &mut tool,
-                &ToolCallRequest { name: "bash".into(), arguments: args },
+                &ToolCallRequest {
+                    name: "bash".into(),
+                    arguments: args,
+                },
             )
             .await;
             assert!(!out.success);
@@ -714,10 +722,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mode = std::sync::Arc::new(std::sync::Mutex::new(SandboxMode::ReadOnly));
         let mode_for_tool = std::sync::Arc::clone(&mode);
-        let mut tool =
-            BashTool::new(&dir).with_mode_source(std::sync::Arc::new(move || {
-                *mode_for_tool.lock().unwrap()
-            }));
+        let mut tool = BashTool::new(&dir)
+            .with_mode_source(std::sync::Arc::new(move || *mode_for_tool.lock().unwrap()));
         let call = |cmd: String| ToolCallRequest {
             name: "bash".into(),
             arguments: json!({ "command": cmd, "description": "Probe write" }),
@@ -804,8 +810,7 @@ mod tests {
         let probe = |n: &str| format!("touch ~/dsh-esc-probe-{n}-{}", std::process::id());
 
         // ① 拒绝:逐字文本 + 零执行(文件不存在)
-        let rejected =
-            ToolPort::execute(&mut tool, &esc_call(probe("rejected"))).await;
+        let rejected = ToolPort::execute(&mut tool, &esc_call(probe("rejected"))).await;
         assert!(!rejected.success);
         assert!(
             rejected
@@ -816,8 +821,11 @@ mod tests {
         );
         let home = std::env::var("HOME").unwrap();
         assert!(
-            !std::path::Path::new(&format!("{home}/dsh-esc-probe-rejected-{}", std::process::id()))
-                .exists(),
+            !std::path::Path::new(&format!(
+                "{home}/dsh-esc-probe-rejected-{}",
+                std::process::id()
+            ))
+            .exists(),
             "被拒命令不得落盘"
         );
 
@@ -826,8 +834,11 @@ mod tests {
         let ok = ToolPort::execute(&mut tool, &esc_call(probe("allowed"))).await;
         assert!(ok.success, "批准后应以宽策略执行:{:?}", ok.output);
         assert!(
-            std::path::Path::new(&format!("{home}/dsh-esc-probe-allowed-{}", std::process::id()))
-                .exists(),
+            std::path::Path::new(&format!(
+                "{home}/dsh-esc-probe-allowed-{}",
+                std::process::id()
+            ))
+            .exists(),
             "宽策略写应落盘"
         );
 
@@ -839,11 +850,12 @@ mod tests {
         };
         let back = ToolPort::execute(&mut tool, &plain_call).await;
         assert!(!back.success, "无参执行应回到会话模式(被拦)");
-        assert!(back.output.contains("workspace-write mode"), "{:?}", back.output);
         assert!(
-            !consulted.load(Ordering::Relaxed),
-            "无参执行不得咨询审批口"
+            back.output.contains("workspace-write mode"),
+            "{:?}",
+            back.output
         );
+        assert!(!consulted.load(Ordering::Relaxed), "无参执行不得咨询审批口");
 
         // ④ 非加宽请求(同级):从不问人,逐字拒绝
         *mode.lock().unwrap() = SandboxMode::ReadOnly;
@@ -865,7 +877,10 @@ mod tests {
         );
         assert!(!consulted.load(Ordering::Relaxed), "非加宽请求从不问人");
         let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_file(format!("{home}/dsh-esc-probe-allowed-{}", std::process::id()));
+        let _ = std::fs::remove_file(format!(
+            "{home}/dsh-esc-probe-allowed-{}",
+            std::process::id()
+        ));
     }
 
     /// 校验逐字:两参不成对 / justification 空 / 未知档位——错误文案照源,
@@ -896,7 +911,10 @@ mod tests {
         for (args, expect) in cases {
             let out = ToolPort::execute(
                 &mut tool,
-                &ToolCallRequest { name: "bash".into(), arguments: args },
+                &ToolCallRequest {
+                    name: "bash".into(),
+                    arguments: args,
+                },
             )
             .await;
             assert!(!out.success);

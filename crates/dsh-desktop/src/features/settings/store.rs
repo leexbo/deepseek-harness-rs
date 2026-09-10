@@ -2,12 +2,12 @@
 //! (增删改/钥匙串/探测)、通用区偏好下拉(preset/权限/语言/busy-enter)
 //! 与全权确认。视图见 features::settings::views。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use gpui_kit::{AppContext, Context, Entity, Window};
 use gpui_kit::component::IndexPath;
-use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::component::input::{EditorState, InputEvent, InputState};
 use gpui_kit::component::select::{SelectEvent, SelectState};
+use gpui_kit::{AppContext, Context, Entity, Window};
 
 use crate::shell::store::AppStore;
 
@@ -27,6 +27,8 @@ pub enum SettingsNav {
     General,
     /// 模型与 Provider
     Models,
+    /// MCP Servers
+    Mcp,
     /// 关于
     About,
 }
@@ -62,6 +64,10 @@ pub(crate) struct SettingsStore {
     pub set_form_dialect: String,
     /// 设置页导航(两栏壳:左 nav + 单区内容)
     pub settings_nav: SettingsNav,
+    /// MCP 分区详情页(None = 列表页;Some = 详情:新增/编辑/JSON 导入)
+    pub mcp_detail: Option<McpDetailState>,
+    /// MCP server 最近连接状态(server id → (status, error);mcp/status 帧维护)
+    pub mcp_status_by_id: HashMap<String, (String, String)>,
     /// 行内编辑中的 provider id(编辑卡在行卡内展开)
     pub editing_provider: Option<String>,
     /// 添加卡开态
@@ -144,6 +150,8 @@ impl Default for SettingsStore {
             set_form_model: None,
             set_form_dialect: "openai-chat".into(),
             settings_nav: SettingsNav::Models,
+            mcp_detail: None,
+            mcp_status_by_id: HashMap::new(),
             editing_provider: None,
             adding_provider: false,
             dismissed_setup: HashSet::new(),
@@ -724,7 +732,12 @@ impl AppStore {
     /// 设置页内通告(单槽覆盖;ok = 绿色成功 / 否则红色失败)。
     /// **4s 自动清除**——反馈的持久形态在数据本身(计费行/卡片),
     /// 通告只是瞬态提示,不留常驻
-    fn set_settings_notice(&mut self, ok: bool, msg: impl Into<String>, cx: &mut Context<Self>) {
+    pub(crate) fn set_settings_notice(
+        &mut self,
+        ok: bool,
+        msg: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
         self.settings.settings_notice_seq = self.settings.settings_notice_seq.wrapping_add(1);
         let seq = self.settings.settings_notice_seq;
         self.settings.settings_notice = Some((ok, msg.into()));
@@ -883,9 +896,8 @@ impl AppStore {
             return;
         };
         let configured = snap["providers"].as_array().is_some_and(|ps| {
-            ps.iter().any(|p| {
-                p["id"].as_str() == Some(pid.as_str()) && p["billing"].is_object()
-            })
+            ps.iter()
+                .any(|p| p["id"].as_str() == Some(pid.as_str()) && p["billing"].is_object())
         });
         if !configured {
             return;
@@ -896,7 +908,9 @@ impl AppStore {
         let store = cx.entity().clone();
         let host = self.bridge.host().clone();
         let ws = self.bridge.host().workspace().to_path_buf();
-        let rx = self.bridge.call(async move { host.fetch_billing(&pid, &ws).await });
+        let rx = self
+            .bridge
+            .call(async move { host.fetch_billing(&pid, &ws).await });
         cx.spawn(async move |_this, cx| {
             let result = rx.await.unwrap_or_else(|e| Err(format!("{e}")));
             store.update(cx, |s, cx| {
@@ -1131,5 +1145,405 @@ impl AppStore {
             window,
             cx,
         );
+    }
+}
+
+/// MCP 详情页状态(新增 / 编辑 / JSON 导入三态共用载体)
+#[derive(Clone)]
+pub struct McpDetailState {
+    /// 编辑中的 server id(None = 新增;编辑态 id 锁定)
+    pub editing: Option<String>,
+    /// 页签:表单 / JSON 粘贴
+    pub mode: McpDetailMode,
+    /// 启用开关表单值
+    pub form_enabled: bool,
+    /// 表单:id(仅新增可输入;编辑态身份锁定)
+    pub form_id: Option<Entity<InputState>>,
+    pub form_command: Option<Entity<InputState>>,
+    pub form_cwd: Option<Entity<InputState>>,
+    /// 参数(每参数一条;空格分隔单行会吞含空格的参数)
+    pub form_args: Vec<Entity<InputState>>,
+    /// 单次调用超时 MS(空 = 默认 60000)
+    pub form_timeout: Option<Entity<InputState>>,
+    /// 动态环境变量键值对列表
+    pub form_env: Vec<(Entity<InputState>, Entity<InputState>)>,
+    /// JSON 粘贴区输入
+    pub json_input: Option<Entity<EditorState>>,
+    /// JSON 页签预填文本(编辑模式 = 当前配置;新建 = None 显示占位示例)
+    pub json_draft: Option<String>,
+    /// JSON 实时解析预览(None = 未解析;Err = 错误文案)
+    pub json_preview: Option<Result<Vec<dsh_core::settings::McpServerEntry>, String>>,
+}
+
+/// 详情页页签
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpDetailMode {
+    /// 表单(逐字段)
+    Form,
+    /// JSON 粘贴导入
+    Json,
+}
+
+/// ── MCP Servers 设置分区(列表 ↔ 详情页)─────────────────────────
+impl AppStore {
+    /// 打开详情页(新增模式:id 可输入;JSON 页签不激活)
+    pub fn open_mcp_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let form_id = Some(cx.new(|cx| InputState::new(window, cx).placeholder("server 名")));
+        let form_command =
+            Some(cx.new(|cx| InputState::new(window, cx).placeholder("启动命令(如 npx)")));
+        let form_cwd = Some(cx.new(|cx| InputState::new(window, cx).placeholder("工作目录(可选)")));
+        let form_timeout = Some(cx.new(|cx| InputState::new(window, cx).placeholder("60000")));
+        self.settings.mcp_detail = Some(McpDetailState {
+            editing: None,
+            mode: McpDetailMode::Form,
+            form_enabled: true,
+            form_id,
+            form_command,
+            form_cwd,
+            form_args: Vec::new(),
+            form_timeout,
+            form_env: Vec::new(),
+            json_input: None,
+            json_draft: None,
+            json_preview: None,
+        });
+        cx.notify();
+    }
+
+    /// 打开详情页(编辑模式:按 id 从快照预填;id 锁定只读)
+    pub fn open_mcp_edit(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.settings.settings_snapshot["mcpServers"]
+            .as_array()
+            .and_then(|list| list.iter().find(|e| e["id"] == *id).cloned())
+            .and_then(|v| serde_json::from_value::<dsh_core::settings::McpServerEntry>(v).ok())
+        else {
+            return;
+        };
+        let form_id = Some(cx.new(|cx| InputState::new(window, cx).placeholder("server 名")));
+        let form_command = Some(cx.new(|cx| InputState::new(window, cx)));
+        form_command.as_ref().unwrap().update(cx, |s, cx| {
+            s.set_value(entry.command.clone(), window, cx);
+        });
+        let form_cwd = Some(cx.new(|cx| InputState::new(window, cx).placeholder("工作目录(可选)")));
+        if let Some(cwd) = &entry.cwd {
+            form_cwd.as_ref().unwrap().update(cx, |s, cx| {
+                s.set_value(cwd.clone(), window, cx);
+            });
+        }
+        let mut form_args = Vec::new();
+        for a in &entry.args {
+            let input = cx.new(|cx| InputState::new(window, cx));
+            input.update(cx, |s, cx| s.set_value(a.clone(), window, cx));
+            form_args.push(input);
+        }
+        let form_timeout = Some(cx.new(|cx| InputState::new(window, cx).placeholder("60000")));
+        if let Some(ms) = entry.tool_call_timeout_ms {
+            form_timeout.as_ref().unwrap().update(cx, |s, cx| {
+                s.set_value(ms.to_string(), window, cx);
+            });
+        }
+        let mut form_env = Vec::new();
+        for (k, v) in &entry.env {
+            let k_in = cx.new(|cx| InputState::new(window, cx));
+            k_in.update(cx, |s, cx| s.set_value(k.clone(), window, cx));
+            let v_in = cx.new(|cx| InputState::new(window, cx));
+            v_in.update(cx, |s, cx| s.set_value(v.clone(), window, cx));
+            form_env.push((k_in, v_in));
+        }
+        // JSON 页签预填:当前配置回显为 mcpServers 形态(去 id/enabled——
+        // 编辑态身份在标题锁定,启停在表单)
+        let mut body = serde_json::to_value(&entry).unwrap_or(serde_json::json!({}));
+        if let Some(map) = body.as_object_mut() {
+            map.remove("id");
+            map.remove("enabled");
+        }
+        let json_draft = serde_json::to_string_pretty(&serde_json::json!({
+            "mcpServers": { entry.id.clone(): body }
+        }))
+        .ok();
+        self.settings.mcp_detail = Some(McpDetailState {
+            editing: Some(id.to_string()),
+            mode: McpDetailMode::Form,
+            form_enabled: entry.enabled,
+            form_id,
+            form_command,
+            form_cwd,
+            form_args,
+            form_timeout,
+            form_env,
+            json_input: None,
+            json_draft,
+            json_preview: None,
+        });
+        cx.notify();
+    }
+
+    /// 返回列表页(弃草稿)
+    pub fn close_mcp_detail(&mut self, cx: &mut Context<Self>) {
+        self.settings.mcp_detail = None;
+        cx.notify();
+    }
+
+    /// 添加一条参数输入
+    pub fn add_mcp_arg(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(detail) = self.settings.mcp_detail.as_mut() else {
+            return;
+        };
+        detail
+            .form_args
+            .push(cx.new(|cx| InputState::new(window, cx)));
+        cx.notify();
+    }
+
+    /// 移除一条参数输入
+    pub fn remove_mcp_arg(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(detail) = self.settings.mcp_detail.as_mut() else {
+            return;
+        };
+        if ix < detail.form_args.len() {
+            detail.form_args.remove(ix);
+            cx.notify();
+        }
+    }
+
+    /// 添加一组环境变量键值输入
+    pub fn add_mcp_env(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(detail) = self.settings.mcp_detail.as_mut() else {
+            return;
+        };
+        let k = cx.new(|cx| InputState::new(window, cx).placeholder("KEY"));
+        let v = cx.new(|cx| InputState::new(window, cx).placeholder("VALUE"));
+        detail.form_env.push((k, v));
+        cx.notify();
+    }
+
+    /// 移除一组环境变量键值输入
+    pub fn remove_mcp_env(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(detail) = self.settings.mcp_detail.as_mut() else {
+            return;
+        };
+        if ix < detail.form_env.len() {
+            detail.form_env.remove(ix);
+            cx.notify();
+        }
+    }
+
+    /// 翻转详情页启用开关
+    pub fn toggle_mcp_form_enabled(&mut self, cx: &mut Context<Self>) {
+        let Some(detail) = self.settings.mcp_detail.as_mut() else {
+            return;
+        };
+        detail.form_enabled = !detail.form_enabled;
+        cx.notify();
+    }
+
+    /// 切换详情页页签(表单 ↔ JSON;切到 JSON 时懒建粘贴区)
+    pub fn switch_mcp_mode(
+        &mut self,
+        mode: McpDetailMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(detail) = self.settings.mcp_detail.as_mut() else {
+            return;
+        };
+        detail.mode = mode;
+        if mode == McpDetailMode::Json && detail.json_input.is_none() {
+            // 文档标准用法:创建时 default_value 预填(编辑模式 = 当前
+            // 配置);新增模式无草稿 → placeholder 显示示例
+            let draft = detail.json_draft.clone();
+            let input = cx.new(|cx| {
+                let state = EditorState::new(window, cx).language("json");
+                match draft {
+                    Some(text) => state.default_value(text),
+                    None => state.placeholder(
+                        "{\n  \"mcpServers\": {\n    \"filesystem\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"~/dir\"]\n    }\n  }\n}",
+                    ),
+                }
+            });
+            cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    let text = input.read(cx).value().to_string();
+                    let preview = dsh_core::settings::parse_mcp_servers_json(&text);
+                    let Some(d) = this.settings.mcp_detail.as_mut() else {
+                        return;
+                    };
+                    d.json_preview = Some(preview);
+                }
+                cx.notify();
+            })
+            .detach();
+            detail.json_input = Some(input);
+        }
+        if mode == McpDetailMode::Form {
+            detail.json_input = None;
+            detail.json_preview = None;
+        }
+        cx.notify();
+    }
+
+    /// 导入 JSON(逐条 upsert;任一非法整体拒绝,错误进页内通告)
+    pub fn import_mcp_json(&mut self, cx: &mut Context<Self>) {
+        let Some(detail) = self.settings.mcp_detail.as_ref() else {
+            return;
+        };
+        let Some(input) = &detail.json_input else {
+            return;
+        };
+        let text = input.read(cx).value().to_string();
+        match self.bridge.host().import_mcp_servers_json(&text) {
+            Ok(n) => {
+                self.settings.mcp_detail = None;
+                self.settings.settings_notice = Some((true, format!("已导入 {n} 个 MCP server")));
+                self.settings_refresh(cx);
+            }
+            Err(e) => {
+                self.settings.settings_notice = Some((false, e.message));
+                cx.notify();
+            }
+        }
+    }
+
+    /// 统一保存:表单态提交字段,JSON 态解析导入(同一个保存动作)
+    pub fn save_mcp_detail(&mut self, cx: &mut Context<Self>) {
+        let mode = self
+            .settings
+            .mcp_detail
+            .as_ref()
+            .map(|d| d.mode)
+            .unwrap_or(McpDetailMode::Form);
+        match mode {
+            McpDetailMode::Form => self.submit_mcp_server(cx),
+            McpDetailMode::Json => self.import_mcp_json(cx),
+        }
+    }
+
+    /// 编辑态卸载:删条目并返回列表
+    pub fn uninstall_mcp_detail(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self
+            .settings
+            .mcp_detail
+            .as_ref()
+            .and_then(|d| d.editing.clone())
+        else {
+            return;
+        };
+        if self.bridge.host().remove_mcp_server(&id).is_ok() {
+            self.settings.mcp_detail = None;
+            self.settings_refresh(cx);
+        }
+        cx.notify();
+    }
+
+    /// 提交 MCP server(新增 = 新 id upsert;编辑 = 同 id 覆盖)。
+    /// args 单行空格分隔;env 键值对(键空跳过);启停随列表开关
+    pub fn submit_mcp_server(&mut self, cx: &mut Context<Self>) {
+        let Some(detail) = self.settings.mcp_detail.as_ref() else {
+            return;
+        };
+        let id = match &detail.editing {
+            Some(id) => id.clone(),
+            None => detail
+                .form_id
+                .as_ref()
+                .map(|i| i.read(cx).value().trim().to_string())
+                .unwrap_or_default(),
+        };
+        if id.is_empty() {
+            self.push_mcp_form_notice("id 不能为空", cx);
+            return;
+        }
+        let Some(cmd_in) = &detail.form_command else {
+            return;
+        };
+        let command = cmd_in.read(cx).value().trim().to_string();
+        if command.is_empty() {
+            self.push_mcp_form_notice("command 不能为空", cx);
+            return;
+        }
+        let args: Vec<String> = detail
+            .form_args
+            .iter()
+            .map(|i| i.read(cx).value().trim().to_string())
+            .filter(|v| !v.is_empty())
+            .collect();
+        let timeout = match detail
+            .form_timeout
+            .as_ref()
+            .map(|i| i.read(cx).value().trim().to_string())
+        {
+            Some(t) if t.is_empty() => None,
+            Some(t) => match t.parse::<u64>() {
+                Ok(ms) => Some(ms),
+                Err(_) => {
+                    self.push_mcp_form_notice("超时 MS 须为非负整数", cx);
+                    return;
+                }
+            },
+            None => None,
+        };
+        let mut env = std::collections::BTreeMap::new();
+        for (k, v) in &detail.form_env {
+            let key = k.read(cx).value().trim().to_string();
+            if key.is_empty() {
+                continue;
+            }
+            env.insert(key, v.read(cx).value().to_string());
+        }
+        let cwd = detail
+            .form_cwd
+            .as_ref()
+            .map(|i| i.read(cx).value().trim().to_string())
+            .filter(|c| !c.is_empty());
+        let entry = dsh_core::settings::McpServerEntry {
+            id,
+            enabled: detail.form_enabled,
+            command,
+            args,
+            env,
+            cwd,
+            tool_call_timeout_ms: timeout,
+        };
+        match self.bridge.host().upsert_mcp_server(entry) {
+            Ok(()) => {
+                self.settings.mcp_detail = None;
+                self.settings_refresh(cx);
+            }
+            Err(e) => {
+                self.settings.settings_notice = Some((false, e.message));
+                cx.notify();
+            }
+        }
+    }
+
+    fn push_mcp_form_notice(&mut self, msg: &str, cx: &mut Context<Self>) {
+        if let Some(detail) = self.settings.mcp_detail.as_mut() {
+            detail.json_preview = Some(Err(msg.to_string()));
+        }
+        cx.notify();
+    }
+
+    /// 启停 MCP server(enabled 翻转,upsert 落盘)
+    pub fn toggle_mcp_server(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(mut entry) = self.settings.settings_snapshot["mcpServers"]
+            .as_array()
+            .and_then(|list| list.iter().find(|e| e["id"] == *id).cloned())
+            .and_then(|v| serde_json::from_value::<dsh_core::settings::McpServerEntry>(v).ok())
+        else {
+            return;
+        };
+        entry.enabled = !entry.enabled;
+        if self.bridge.host().upsert_mcp_server(entry).is_ok() {
+            self.settings_refresh(cx);
+        }
+        cx.notify();
+    }
+
+    /// 卸载 MCP server(删除注册条目;端口池同步停机,工具面即时收敛)
+    pub fn remove_mcp_server(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.bridge.host().remove_mcp_server(id).is_ok() {
+            self.settings_refresh(cx);
+        }
+        cx.notify();
     }
 }

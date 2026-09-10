@@ -30,16 +30,16 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
+use gpui_kit::component::IconName;
 use gpui_kit::{
     AnyElement, App, FontWeight, ImageCacheError, ImageSource, InteractiveElement, IntoElement,
     ParentElement, Rgba, SharedString, StatefulInteractiveElement, Styled, StyledImage, Window,
     div, img, px,
 };
-use gpui_kit::component::IconName;
 
 use super::icons::{DshIcon, fixed};
 use super::theme;
-use super::theme::{palette_of, Palette};
+use super::theme::{Palette, palette_of};
 
 /// 卡片控件态快照(消息流 per-card map;kits 无状态,不直接引用
 /// AppStore——宿主注入状态与动作,本模块只按快照渲染)。
@@ -632,27 +632,12 @@ fn theme_variables_in(p: &Palette) -> serde_json::Value {
     put(&mut vars, "quadrantTitleFill", p.label);
     put(&mut vars, "quadrantXAxisTextFill", p.label);
     put(&mut vars, "quadrantYAxisTextFill", p.label);
-    put(
-        &mut vars,
-        "quadrantExternalBorderStrokeFill",
-        p.border_2,
-    );
-    put(
-        &mut vars,
-        "quadrantInternalBorderStrokeFill",
-        p.border_2,
-    );
+    put(&mut vars, "quadrantExternalBorderStrokeFill", p.border_2);
+    put(&mut vars, "quadrantInternalBorderStrokeFill", p.border_2);
     // gitGraph/pie 的 8 组系列色(与 zed 的 cScale*/pieN 同键;
     // dsh 无分支主题色,取调色板系列一色一轮;运行时取值随主题盘)
     let series = [
-        p.brand,
-        p.success,
-        p.warn,
-        p.danger,
-        p.ongoing,
-        p.label_3,
-        p.caption,
-        p.border_2,
+        p.brand, p.success, p.warn, p.danger, p.ongoing, p.label_3, p.caption, p.border_2,
     ];
     for (i, &c) in series.iter().enumerate() {
         put(&mut vars, &format!("cScale{i}"), c);

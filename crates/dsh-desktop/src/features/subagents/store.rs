@@ -16,7 +16,9 @@ pub(crate) struct SubagentsStore {
 
 impl Default for SubagentsStore {
     fn default() -> Self {
-        Self { task_bar_open: true }
+        Self {
+            task_bar_open: true,
+        }
     }
 }
 
@@ -60,11 +62,7 @@ impl AppStore {
         self.state
             .jobs_by_id
             .get(session_id)
-            .map(|jobs| {
-                jobs.iter()
-                    .filter(|j| j["status"] == "running")
-                    .count()
-            })
+            .map(|jobs| jobs.iter().filter(|j| j["status"] == "running").count())
             .unwrap_or(0)
     }
 
@@ -77,10 +75,7 @@ impl AppStore {
                 let status = j["status"].as_str().unwrap_or("completed");
                 rows.push(LineageRow {
                     session_id: j["id"].as_str().unwrap_or_default().to_string(),
-                    label: j["label"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
+                    label: j["label"].as_str().unwrap_or_default().to_string(),
                     running: status == "running",
                     dot: Some(match status {
                         "running" => "running",

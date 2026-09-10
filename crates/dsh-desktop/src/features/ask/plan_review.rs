@@ -6,14 +6,14 @@
 //! 有反馈 = 拒绝+反馈经引导轮直送模型,空反馈 = 仅拒绝);
 //! ✕ = 取消请求回到对话。
 
+use gpui_kit::component::IconName;
+use gpui_kit::component::StyledExt;
+use gpui_kit::component::input::Textarea;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
     Styled, Window, div, px,
 };
-use gpui_kit::component::IconName;
-use gpui_kit::component::StyledExt;
-use gpui_kit::component::input::Textarea;
 
 use crate::kits::icons::{DshIcon, fixed};
 use crate::kits::theme;
@@ -182,9 +182,11 @@ pub fn render(
                     })
                     .when(selection == Some(false), |el| el.bg(theme::DOCK()))
                     .cursor_pointer()
-                    .child(fixed(DshIcon::Pencil, 14.).flex_shrink_0().text_color(
-                        theme::CAPTION(),
-                    ))
+                    .child(
+                        fixed(DshIcon::Pencil, 14.)
+                            .flex_shrink_0()
+                            .text_color(theme::CAPTION()),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -227,42 +229,37 @@ pub fn render(
             // 底部动作条:批准主钮(选择后可用;选择→批准
             // 两步,防误触一键批准)
             .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .child(
-                        div()
-                            .id("plan-confirm")
-                            .debug_selector(|| "plan-confirm".to_string())
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .h(px(30.))
-                            .min_w(px(72.))
-                            .px(px(14.))
-                            .rounded(px(15.))
-                            .text_size(px(13.))
-                            .when_some(selection, |el, _| {
-                                el.bg(theme::LABEL())
-                                    .text_color(theme::LAYER())
-                                    .cursor_pointer()
-                                    .on_click(move |_, _, cx| {
-                                        submit.update(cx, |st, cx| {
-                                            st.submit_plan_selection(cx)
-                                        });
-                                    })
-                            })
-                            .when(selection.is_none(), |el| {
-                                el.border_1()
-                                    .border_color(theme::BORDER())
-                                    .text_color(theme::CAPTION())
-                            })
-                            .child(if selection == Some(false) {
-                                "提交"
-                            } else {
-                                "批准"
-                            }),
-                    ),
+                div().flex().justify_end().child(
+                    div()
+                        .id("plan-confirm")
+                        .debug_selector(|| "plan-confirm".to_string())
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .h(px(30.))
+                        .min_w(px(72.))
+                        .px(px(14.))
+                        .rounded(px(15.))
+                        .text_size(px(13.))
+                        .when_some(selection, |el, _| {
+                            el.bg(theme::LABEL())
+                                .text_color(theme::LAYER())
+                                .cursor_pointer()
+                                .on_click(move |_, _, cx| {
+                                    submit.update(cx, |st, cx| st.submit_plan_selection(cx));
+                                })
+                        })
+                        .when(selection.is_none(), |el| {
+                            el.border_1()
+                                .border_color(theme::BORDER())
+                                .text_color(theme::CAPTION())
+                        })
+                        .child(if selection == Some(false) {
+                            "提交"
+                        } else {
+                            "批准"
+                        }),
+                ),
             ),
     )
 }

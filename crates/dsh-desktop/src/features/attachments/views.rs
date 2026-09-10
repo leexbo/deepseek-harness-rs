@@ -9,12 +9,12 @@
 //! 叠于内容上。语义:草稿图直接预览 bytes,历史图经 `read_attachment`
 //! 异步解码缓存(`image_cache`)。
 
-use gpui_kit::{
-    App, Entity, Image, InteractiveElement, IntoElement, ObjectFit, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, StyledImage, div, img, px, rgba,
-};
 use gpui_kit::component::IconName;
 use gpui_kit::component::StyledExt;
+use gpui_kit::{
+    App, Entity, Image, InteractiveElement, IntoElement, ObjectFit, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, StyledImage, div, img, px, rgba,
+};
 
 use crate::kits::icons::fixed;
 use crate::kits::theme;

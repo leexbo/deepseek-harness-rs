@@ -92,6 +92,10 @@ impl HostBridge {
         for frame in host.mux_baseline() {
             let _ = frames_tx.unbounded_send(frame);
         }
+        // 启动即同步 MCP 端口池:存量 enabled 清单恢复连接(设置页保存
+        // 即启动;此后 upsert/toggle/remove/import 各自动同步)
+        let sync_host = host.clone();
+        runtime.spawn(async move { sync_host.sync_mcp_ports() });
         Ok((
             Self {
                 host,

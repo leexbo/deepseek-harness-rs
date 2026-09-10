@@ -130,7 +130,10 @@ pub fn apply_frame(state: &mut StoreState, frame: ServerRequest) -> Vec<Effect> 
             let Some(id) = frame.payload["sessionId"].as_str() else {
                 return vec![];
             };
-            let jobs = frame.payload["jobs"].as_array().cloned().unwrap_or_default();
+            let jobs = frame.payload["jobs"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
             state.jobs_by_id.insert(id.to_string(), jobs);
             vec![]
         }
@@ -183,8 +186,7 @@ pub fn apply_frame(state: &mut StoreState, frame: ServerRequest) -> Vec<Effect> 
                 f.session_id,
                 f.questions.len()
             );
-            if f
-                .questions
+            if f.questions
                 .first()
                 .and_then(|q| q.intent.as_ref())
                 .and_then(|i| i["kind"].as_str())
@@ -399,7 +401,10 @@ mod tests {
         let Some(p) = &st.pending_approval else {
             panic!("应路由到 pending_approval");
         };
-        assert_eq!(p.question.data.as_ref().unwrap()["targetMode"], "full-access");
+        assert_eq!(
+            p.question.data.as_ref().unwrap()["targetMode"],
+            "full-access"
+        );
         assert!(st.pending_plan.is_none(), "不与 plan 通道混");
         assert!(st.pending_ask.is_none(), "不与 ask 通道混");
         apply_frame(&mut st, frame("question/resolved", serde_json::json!({})));

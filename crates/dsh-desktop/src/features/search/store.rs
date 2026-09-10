@@ -2,8 +2,8 @@
 //! 数据、跳转定位(先登记 seq,轨迹数据就绪后由 locate_search_hit
 //! 收尾)。命中面板视图见 features::search::views。
 
-use gpui_kit::{AppContext, Context, Entity, Window};
 use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::{AppContext, Context, Entity, Window};
 
 use crate::shell::panel::PanelTab;
 use crate::shell::store::AppStore;

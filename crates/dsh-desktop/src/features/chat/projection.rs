@@ -272,7 +272,8 @@ impl ChatState {
         // 清孤儿 born(被折叠掉的头窗节点;防跨会话累积)
         let live: std::collections::HashSet<&str> = self.nodes.iter().map(ChatNode::key).collect();
         self.node_born.retain(|k, _| live.contains(k.as_str()));
-        self.retry_deadlines.retain(|k, _| live.contains(k.as_str()));
+        self.retry_deadlines
+            .retain(|k, _| live.contains(k.as_str()));
     }
 
     /// 应用单个客方事件
@@ -400,12 +401,15 @@ impl ChatState {
             }
             // 退避结束、重发开始:最后一个等待中的重试行翻转「已重试」
             "llm/retry-started" => {
-                if let Some(ChatNode::Retry { state, .. }) = self
-                    .nodes
-                    .iter_mut()
-                    .rev()
-                    .find(|n| matches!(n, ChatNode::Retry { state: RetryState::Waiting, .. }))
-                {
+                if let Some(ChatNode::Retry { state, .. }) = self.nodes.iter_mut().rev().find(|n| {
+                    matches!(
+                        n,
+                        ChatNode::Retry {
+                            state: RetryState::Waiting,
+                            ..
+                        }
+                    )
+                }) {
                     *state = RetryState::Started;
                 }
             }
@@ -1774,15 +1778,13 @@ mod tests {
     /// 占位)= 不可见;有正文/有思考/流式中都可见
     #[test]
     fn invisible_node_only_for_empty_finalized_assistant() {
-        let mk = |text: &str, reasoning: &str, streaming: bool| {
-            ChatNode::Assistant {
-                key: "a:1:1".into(),
-                text: text.into(),
-                reasoning: reasoning.into(),
-                streaming,
-                usage: None,
-                message_id: String::new(),
-            }
+        let mk = |text: &str, reasoning: &str, streaming: bool| ChatNode::Assistant {
+            key: "a:1:1".into(),
+            text: text.into(),
+            reasoning: reasoning.into(),
+            streaming,
+            usage: None,
+            message_id: String::new(),
         };
         assert!(invisible_node(&mk("", "", false)));
         assert!(!invisible_node(&mk("先看一下", "", false)));
@@ -1837,7 +1839,11 @@ mod tests {
                         "content": [ { "type": "text", "text": "计划如下" } ] },
                 }),
             ),
-            ev("turn/end", 7, json!({ "turn": 1, "reason": { "kind": "done" } })),
+            ev(
+                "turn/end",
+                7,
+                json!({ "turn": 1, "reason": { "kind": "done" } }),
+            ),
         ];
         let nodes = project(evs);
         // 0 基线注入, 1 用户消息, 2 轮内注入, 3 call, 4 答复, 5 turn-end
@@ -2073,47 +2079,73 @@ mod tests {
     fn retry_row_state_evolution() {
         let mut st = ChatState::default();
         st.apply(&ev("turn/start", 1, json!({ "turn": 1 })));
-        st.apply(&ev("llm/retry", 2, json!({
-            "turn": 1, "step": 1, "retry": 1, "maxRetries": 5,
-            "delayMs": 1500, "code": "TRANSPORT", "message": "连接失败",
-        })));
+        st.apply(&ev(
+            "llm/retry",
+            2,
+            json!({
+                "turn": 1, "step": 1, "retry": 1, "maxRetries": 5,
+                "delayMs": 1500, "code": "TRANSPORT", "message": "连接失败",
+            }),
+        ));
         assert!(st.nodes.last().is_some_and(|n| matches!(
             n,
-            ChatNode::Retry { state: RetryState::Waiting, retry: 1, max_retries: 5, delay_ms: 1500, .. }
+            ChatNode::Retry {
+                state: RetryState::Waiting,
+                retry: 1,
+                max_retries: 5,
+                delay_ms: 1500,
+                ..
+            }
         )));
         assert!(
             st.retry_deadlines.contains_key("retry:2"),
             "直播帧应记退避截止时刻"
         );
         // started:最后一个等待行翻转
-        st.apply(&ev("llm/retry-started", 3, json!({ "turn": 1, "step": 1, "retry": 1 })));
+        st.apply(&ev(
+            "llm/retry-started",
+            3,
+            json!({ "turn": 1, "step": 1, "retry": 1 }),
+        ));
         assert!(st.nodes.iter().all(|n| matches!(
             n,
-            ChatNode::Retry { state: RetryState::Started, .. }
+            ChatNode::Retry {
+                state: RetryState::Started,
+                ..
+            }
         )));
 
         // 等待中被取消 → 「已取消」
         let mut st2 = ChatState::default();
-        st2.apply(&ev("llm/retry", 1, json!({ "retry": 1, "maxRetries": 5, "delayMs": 8000 })));
+        st2.apply(&ev(
+            "llm/retry",
+            1,
+            json!({ "retry": 1, "maxRetries": 5, "delayMs": 8000 }),
+        ));
         st2.apply(&ev(
             "turn/end",
             2,
             json!({ "turn": 1, "reason": { "kind": "aborted", "reason": { "kind": "legacy" } } }),
         ));
-        assert!(st2.nodes.iter().any(|n| matches!(
-            n,
-            ChatNode::Retry { state: RetryState::Cancelled, .. }
-        )), "取消后等待行应翻转「已取消」");
+        assert!(
+            st2.nodes.iter().any(|n| matches!(
+                n,
+                ChatNode::Retry {
+                    state: RetryState::Cancelled,
+                    ..
+                }
+            )),
+            "取消后等待行应翻转「已取消」"
+        );
 
         // 重放路径:merge 不记截止时刻(倒计时为静态排定值)
         let mut hist = ChatState::default();
-        hist.merge_history(vec![
-            ev("llm/retry", 1, json!({ "retry": 1, "maxRetries": 5, "delayMs": 8000 })),
-        ]);
-        assert!(
-            hist.retry_deadlines.is_empty(),
-            "历史载入不记倒计时截止"
-        );
+        hist.merge_history(vec![ev(
+            "llm/retry",
+            1,
+            json!({ "retry": 1, "maxRetries": 5, "delayMs": 8000 }),
+        )]);
+        assert!(hist.retry_deadlines.is_empty(), "历史载入不记倒计时截止");
     }
 
     /// stream-reset 清空该步流式缓冲(重试丢弃语义):已拼 chunk 清空、
@@ -2128,7 +2160,11 @@ mod tests {
                 json!({ "turn": 1, "step": 1, "chunk": { "type": "text-delta", "index": 0, "text": text } }),
             ));
         }
-        st.apply(&ev("assistant/stream-reset", 9, json!({ "turn": 1, "step": 1 })));
+        st.apply(&ev(
+            "assistant/stream-reset",
+            9,
+            json!({ "turn": 1, "step": 1 }),
+        ));
         match &st.nodes[0] {
             ChatNode::Assistant {
                 text,
@@ -2158,10 +2194,14 @@ mod tests {
         let evs = vec![
             ev("turn/start", 1, json!({ "turn": 1 })),
             ev("user/message", 2, json!({ "content": "hi" })),
-            ev("llm/retry", 3, json!({
-                "turn": 1, "step": 1, "retry": 1, "maxRetries": 5,
-                "delayMs": 500, "code": "TIMEOUT", "message": "读超时",
-            })),
+            ev(
+                "llm/retry",
+                3,
+                json!({
+                    "turn": 1, "step": 1, "retry": 1, "maxRetries": 5,
+                    "delayMs": 500, "code": "TIMEOUT", "message": "读超时",
+                }),
+            ),
             ev(
                 "assistant/message",
                 4,
@@ -2171,7 +2211,11 @@ mod tests {
                         "content": [ { "type": "text", "text": "答案" } ] },
                 }),
             ),
-            ev("turn/end", 5, json!({ "turn": 1, "reason": { "kind": "completed" } })),
+            ev(
+                "turn/end",
+                5,
+                json!({ "turn": 1, "reason": { "kind": "completed" } }),
+            ),
         ];
         let mut st = ChatState::default();
         for e in &evs {

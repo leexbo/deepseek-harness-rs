@@ -9,12 +9,13 @@
 //! 回落内置默认——设置可重配,不值得拒启(与 fail-closed 不冲突:缺席
 //! 凭据的失败发生在装配层,那里才拒绝)。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// 设置文件 schema 版本(结构性变更时递增;旧版本文件按损坏旁置,
 /// 首个升级迁移需求出现时再写版本间迁移)
@@ -202,6 +203,112 @@ pub struct SettingsFile {
     /// 外观偏好(light / dark / system;源 ui-theme AppearanceRow 对应物)
     #[serde(default = "default_appearance")]
     pub appearance: String,
+    /// MCP server 注册表(enabled 才会在 attach 时桥接;缺失 = 空)
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerEntry>,
+}
+
+/// MCP server 注册表条目(首批仅 stdio 传输)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct McpServerEntry {
+    /// server 名(工具公共名成分 `mcp__<id>__<tool>`;唯一)
+    pub id: String,
+    /// 是否随会话挂载
+    pub enabled: bool,
+    /// stdio 启动命令
+    pub command: String,
+    /// 启动参数
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// 附加环境变量(与清洗后的父环境合并,显式优先)
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// 工作目录(缺省 = 继承)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// 单次调用超时 ms(缺省 60000,照源 toolCallTimeoutMs)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_timeout_ms: Option<u64>,
+}
+
+/// 解析 mcpServers JSON(兼容 Claude Code / Codex 形状):
+/// `{"mcpServers": {"<名>": {"command","args","env","cwd"}}}` 为标准形态;
+/// 单 server 亦可直接给 `{"id"|"name", "command", ...}`。任一条目缺 command
+/// 或 id 非法 → 整体拒绝(fail-closed,不做部分导入)。
+pub fn parse_mcp_servers_json(text: &str) -> Result<Vec<McpServerEntry>, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("JSON 解析失败:{e}"))?;
+    let map: serde_json::Map<String, Value> =
+        if let Some(m) = v.get("mcpServers").and_then(|m| m.as_object()) {
+            m.clone()
+        } else if v.get("command").is_some() || v.get("id").is_some() || v.get("name").is_some() {
+            // 单 server 形态:名字取 id/name 字段;匿名报错
+            let name = v
+                .get("id")
+                .or_else(|| v.get("name"))
+                .and_then(|n| n.as_str())
+                .ok_or_else(|| "单 server 形态需要 id 或 name 字段".to_string())?;
+            let mut single = serde_json::Map::new();
+            single.insert(name.to_string(), v.clone());
+            single
+        } else {
+            return Err("缺少 mcpServers 映射".into());
+        };
+    if map.is_empty() {
+        return Err("mcpServers 为空".into());
+    }
+    let mut out = Vec::new();
+    for (name, spec) in &map {
+        let command = spec
+            .get("command")
+            .and_then(|c| c.as_str())
+            .ok_or_else(|| format!("{name}: 缺少 command"))?
+            .to_string();
+        let args = spec
+            .get("args")
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .map(|x| x.as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let env = spec
+            .get("env")
+            .and_then(|e| e.as_object())
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let cwd = spec.get("cwd").and_then(|c| c.as_str()).map(str::to_owned);
+        out.push(McpServerEntry {
+            id: name.clone(),
+            enabled: true,
+            command,
+            args,
+            env,
+            cwd,
+            tool_call_timeout_ms: None,
+        });
+    }
+    Ok(out)
+}
+
+impl Default for McpServerEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            enabled: true,
+            command: String::new(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: None,
+            tool_call_timeout_ms: None,
+        }
+    }
 }
 
 /// language 缺省值
@@ -247,6 +354,7 @@ impl Default for SettingsFile {
             busy_enter: default_busy_enter(),
             language: default_language(),
             appearance: default_appearance(),
+            mcp_servers: Vec::new(),
         }
     }
 }

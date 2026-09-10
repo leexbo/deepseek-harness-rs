@@ -3,15 +3,15 @@
 //! 时发送钮变停止。底排:+ 命令菜单(模式选择)/ Plan chip(计划
 //! 模式激活时)/ 权限下拉 / 模型·思考等级下拉。
 
+use gpui_kit::component::Icon;
+use gpui_kit::component::IconName;
+use gpui_kit::component::StyledExt;
+use gpui_kit::component::input::Textarea;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
-use gpui_kit::component::Icon;
-use gpui_kit::component::IconName;
-use gpui_kit::component::StyledExt;
-use gpui_kit::component::input::Textarea;
 
 use super::store::ComposerMenu;
 use crate::features::attachments;
@@ -70,9 +70,12 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         })
         // 命令行(命令菜单点选带参命令;/命令品牌色与输入文字区分,
         // × 移除;发送时拼接 /name args)
-        .children(st.chat.pending_command.as_ref().map(|c| {
-            command_line(store, &c.name, cx)
-        }))
+        .children(
+            st.chat
+                .pending_command
+                .as_ref()
+                .map(|c| command_line(store, &c.name, cx)),
+        )
         .children(st.chat.composer_input.as_ref().map(|e| {
             let input = div()
                 .id("composer-scroll")
@@ -139,11 +142,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
 /// 命令行(输入卡内、输入框上缘):`/name` 品牌色 + 参数 hint 灰字 +
 /// × 移除钮。命令与输入文字的区分载体——命令是结构化前缀不是正文,
 /// 发送时与输入框文本拼接(/name args)走既有文本路径
-fn command_line(
-    store: &Entity<AppStore>,
-    name: &str,
-    _cx: &App,
-) -> gpui_kit::AnyElement {
+fn command_line(store: &Entity<AppStore>, name: &str, _cx: &App) -> gpui_kit::AnyElement {
     let s = store.clone();
     let mut row = div()
         .flex()
@@ -193,7 +192,8 @@ fn command_line(
 }
 
 /// @ 补全菜单锚点(输入卡上缘 absolute;供键盘/点击选中)
-fn at_completion_anchor(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {    let st = store.read(cx);
+fn at_completion_anchor(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
+    let st = store.read(cx);
     let Some(at) = st.chat.at_completion.clone() else {
         return div().into_any_element();
     };
@@ -279,31 +279,28 @@ fn bottom_row(
             anchor_bottom,
         ))
         // 「+」与模式 chips 之间的细竖线分组
-        .child(div().w(px(1.)).h(px(16.)).flex_shrink_0().bg(theme::BORDER()))
+        .child(
+            div()
+                .w(px(1.))
+                .h(px(16.))
+                .flex_shrink_0()
+                .bg(theme::BORDER()),
+        )
         // 权限 chip:卡片**根级渲染**(shell/mod.rs,同 +/行/工作区菜单;
         // 内联浮层叠进输入卡子树会透视,根级无此问题)。
         // 这里只放 chip + 渲染期 bounds 捕获(根级锚定的定位分子)
-        .child(
-            div()
-                .relative()
-                .flex_shrink_0()
-                .child(perm_trigger)
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .child({
-                            let cap = store.clone();
-                            gpui_kit::canvas(
-                                move |b, _, cx| {
-                                    cap.update(cx, |st, _| st.chat.perm_chip_bounds = Some(b));
-                                },
-                                |_, _, _, _| {},
-                            )
-                            .size_full()
-                        }),
-                ),
-        )
+        .child(div().relative().flex_shrink_0().child(perm_trigger).child(
+            div().absolute().inset_0().child({
+                let cap = store.clone();
+                gpui_kit::canvas(
+                    move |b, _, cx| {
+                        cap.update(cx, |st, _| st.chat.perm_chip_bounds = Some(b));
+                    },
+                    |_, _, _, _| {},
+                )
+                .size_full()
+            }),
+        ))
         // 计划模式 chip(仅激活态渲染,退出即整个消失;进入唯一入口=
         // 命令菜单「plan」行)
         .children(plan_mode.then(|| plan_chip(store, st.chat.plan_chip_hovered)))

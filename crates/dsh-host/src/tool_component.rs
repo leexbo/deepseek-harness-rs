@@ -108,11 +108,11 @@ impl WasmTool {
             .call_config_schema(&mut store)
             .map_err(|e| WasmToolError::Schema(e.to_string()))?
             .map_err(WasmToolError::Schema)?;
-        let schema: Value =
-            serde_json::from_slice(&schema_bytes).map_err(|e| WasmToolError::Schema(e.to_string()))?;
+        let schema: Value = serde_json::from_slice(&schema_bytes)
+            .map_err(|e| WasmToolError::Schema(e.to_string()))?;
         validate_config(&schema, config).map_err(|e| WasmToolError::Config(e.to_string()))?;
-        let config_bytes = serde_json::to_vec(config)
-            .map_err(|e| WasmToolError::Config(e.to_string()))?;
+        let config_bytes =
+            serde_json::to_vec(config).map_err(|e| WasmToolError::Config(e.to_string()))?;
         lifecycle
             .call_init(&mut store, &config_bytes)
             .map_err(|e| WasmToolError::Init(e.to_string()))?

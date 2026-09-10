@@ -297,7 +297,8 @@ mod tests {
 
     /// 语言映射:常见名/扩展名命中(TS 无语法按 JS 近似),未知名回退 None
     #[test]
-    fn lang_mapping() {        let lines = ["fn main() {}"];
+    fn lang_mapping() {
+        let lines = ["fn main() {}"];
         assert!(highlight_window("t", Some("rust"), &lines).is_some());
         assert!(highlight_window("t", Some("rs"), &lines).is_some());
         assert!(highlight_window("t", Some("py"), &lines).is_some());

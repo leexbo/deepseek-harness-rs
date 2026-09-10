@@ -9,15 +9,15 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use dsh_core::trajectory::{TrajectoryRecord, TrajectoryRequest, TrajectoryUsage};
+use gpui_kit::component::input::Input;
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{Icon, IconName, Sizable as _, StyledExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Bounds, CursorStyle, Div, Entity, InteractiveElement, IntoElement, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Rgba, ScrollWheelEvent,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
-use gpui_kit::component::input::Input;
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{Icon, IconName, Sizable as _, StyledExt};
 
 use crate::features::trajectory::{InspectTarget, TrajectoryView};
 use crate::kits::icons::{DshIcon, fixed};
@@ -121,7 +121,10 @@ fn kind_colors(kind: &str) -> (Rgba, Rgba) {
         // USER:business 蓝前景 + 蓝 15% 底
         "user" => (theme::BRAND(), mix(theme::BRAND(), theme::BASE(), 0.15)),
         // ASSISTANT:解码紫前景 + 紫 15% 底
-        "message" => (ASSISTANT_VIOLET(), mix(ASSISTANT_VIOLET(), theme::BASE(), 0.15)),
+        "message" => (
+            ASSISTANT_VIOLET(),
+            mix(ASSISTANT_VIOLET(), theme::BASE(), 0.15),
+        ),
         // TOOL:琥珀前景 + 琥珀 15% 底
         "tool" => (TOOL_AMBER(), mix(TOOL_AMBER(), theme::BASE(), 0.15)),
         // CONTEXT:success 绿前景 + 绿 15% 底(源 tagContext:success 主色混合)
@@ -733,7 +736,8 @@ fn toggle_button(
                 .text_color(theme::LABEL())
         })
         .when(!pressed, |el| {
-            el.text_color(theme::LABEL_3()).hover(|s| s.bg(theme::BORDER()))
+            el.text_color(theme::LABEL_3())
+                .hover(|s| s.bg(theme::BORDER()))
         })
         .child(icon)
         .child(label.to_string())
@@ -1470,7 +1474,9 @@ fn record_row(
         .h(px(30.))
         .flex_shrink_0()
         .items_center()
-        .when(turn_start, |el| el.border_t_2().border_color(theme::BORDER()))
+        .when(turn_start, |el| {
+            el.border_t_2().border_color(theme::BORDER())
+        })
         .when(selected, |el| el.bg(theme::LAYER()))
         .when(!selected, |el| el.hover(|st| st.bg(theme::LAYER())))
         .cursor_pointer()
@@ -1993,7 +1999,10 @@ fn jkind_color(kind: JKind) -> Rgba {
 // 固有宽 flex 子项,长行溢出裁切不折行(同源单行语义)。
 
 fn jt_span(color: Rgba, text: impl Into<String>) -> gpui_kit::AnyElement {
-    div().text_color(color).child(text.into()).into_any_element()
+    div()
+        .text_color(color)
+        .child(text.into())
+        .into_any_element()
 }
 
 fn jt_row(depth: usize, children: Vec<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
@@ -2006,18 +2015,12 @@ fn jt_row(depth: usize, children: Vec<gpui_kit::AnyElement>) -> gpui_kit::AnyEle
 }
 
 fn json_brackets(v: &serde_json::Value) -> (&'static str, &'static str) {
-    if v.is_array() {
-        ("[", "]")
-    } else {
-        ("{", "}")
-    }
+    if v.is_array() { ("[", "]") } else { ("{", "}") }
 }
 
 fn json_entries(v: &serde_json::Value) -> Vec<(String, &serde_json::Value)> {
     match v {
-        serde_json::Value::Object(m) => {
-            m.iter().map(|(k, val)| (k.clone(), val)).collect()
-        }
+        serde_json::Value::Object(m) => m.iter().map(|(k, val)| (k.clone(), val)).collect(),
         serde_json::Value::Array(a) => a
             .iter()
             .enumerate()
@@ -2180,7 +2183,12 @@ fn json_tree_rows(
         for (i, (k, v)) in entries.into_iter().enumerate() {
             let child_path = jt_child_path(&key_path, &k, i, is_array);
             rows.extend(json_tree_rows(
-                ctx, child_path, Some(&k), v, i == n - 1, depth + 1,
+                ctx,
+                child_path,
+                Some(&k),
+                v,
+                i == n - 1,
+                depth + 1,
             ));
         }
     }
@@ -2188,12 +2196,7 @@ fn json_tree_rows(
 }
 
 /// JSON 树整体(顶层 `{` / children / `}`;调用方保证 object/array)
-fn json_tree_block(
-    store: &Entity<AppStore>,
-    s: &Snap,
-    ix: u64,
-    value: &serde_json::Value,
-) -> Div {
+fn json_tree_block(store: &Entity<AppStore>, s: &Snap, ix: u64, value: &serde_json::Value) -> Div {
     let ctx = JtCtx { store, s, ix };
     let is_array = value.is_array();
     let entries = json_entries(value);
@@ -2616,7 +2619,11 @@ fn payload_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
             Ok(v) if v.is_object() || v.is_array() => {
                 div().child(json_tree_block(store, s, r.index, &v))
             }
-            _ => div().child(code_block("mono-payload", &pretty_json(p), theme::LABEL_3())),
+            _ => div().child(code_block(
+                "mono-payload",
+                &pretty_json(p),
+                theme::LABEL_3(),
+            )),
         },
     }
 }
@@ -2972,14 +2979,10 @@ fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryReco
         );
     }
     if let Some(o) = &r.output_detail {
-        col = col.child(
-            div()
-                .mt(px(6.))
-                .child(crate::kits::markdown::render(
-                    &format!("traj-preview-{}", r.index),
-                    o,
-                )),
-        );
+        col = col.child(div().mt(px(6.)).child(crate::kits::markdown::render(
+            &format!("traj-preview-{}", r.index),
+            o,
+        )));
     }
     if r.output_detail.is_none() && r.thinking_detail.is_none() {
         col = col.child(empty_text("No content"));
@@ -3085,8 +3088,10 @@ fn preview_tab_body(r: &TrajectoryRecord) -> Div {
     let mut col = div().debug_selector(move || key.clone()).v_flex();
     match r.payload.as_deref() {
         Some(text) if !text.is_empty() => {
-            col = col
-                .child(crate::kits::markdown::render(&format!("traj-preview-{}", r.index), text));
+            col = col.child(crate::kits::markdown::render(
+                &format!("traj-preview-{}", r.index),
+                text,
+            ));
         }
         _ => col = col.child(empty_text("No content")),
     }
@@ -3458,9 +3463,11 @@ fn schema_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div 
         );
     }
     match parameters {
-        Some(p) if p.is_object() || p.is_array() => col = col
-            .child(section("sec-schema-params", "Parameters"))
-            .child(json_tree_block(store, s, r.index, &p)),
+        Some(p) if p.is_object() || p.is_array() => {
+            col = col
+                .child(section("sec-schema-params", "Parameters"))
+                .child(json_tree_block(store, s, r.index, &p))
+        }
         Some(p) => {
             let pretty = serde_json::to_string_pretty(&p).unwrap_or_default();
             col = col
@@ -3500,7 +3507,7 @@ mod tests {
             system_prompt: None,
             tools_catalog: None,
             schema_detail: None,
-                    source: None,
+            source: None,
         }
     }
 

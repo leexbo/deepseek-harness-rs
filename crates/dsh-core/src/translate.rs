@@ -639,12 +639,14 @@ mod tests {
         tr.translate(&ev("turn/start", 1, json!({})));
         tr.translate(&ev("step/start", 2, json!({})));
         let retry = tr
-            .translate(
-                &ev("llm/retry", 3, json!({
+            .translate(&ev(
+                "llm/retry",
+                3,
+                json!({
                     "retry": 1, "maxRetries": 5, "delayMs": 500,
                     "code": "TRANSPORT", "message": "连接失败",
-                })),
-            )
+                }),
+            ))
             .expect("llm/retry");
         assert_eq!(retry.ty, "llm/retry");
         assert_eq!(retry.data["retry"], 1);

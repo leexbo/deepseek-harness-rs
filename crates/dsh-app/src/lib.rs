@@ -216,7 +216,10 @@ pub struct PromptParts {
 /// `subagent_background` = subagent 装配为后台形态(结算通知 port 在场)时
 /// 追加源 tool:subagent 节(见 mount::tool_prompt_sections_with)。
 pub fn prompt_parts(resolved: &Resolved, subagent_background: bool) -> PromptParts {
-    let persona = resolved.preset.mount("persona").map(MountSpec::config_object);
+    let persona = resolved
+        .preset
+        .mount("persona")
+        .map(MountSpec::config_object);
     let interpolate = |text: &str| {
         text.replace("{{model}}", &resolved.model)
             .replace("{{cwd}}", &resolved.workspace.display().to_string())
@@ -360,8 +363,10 @@ pub fn build_tools(
     notify_port: Option<std::sync::Arc<dyn dsh_tools::subagent::SettlementNotificationPort>>,
     current_session: Option<&str>,
     subagent_bridge: Option<std::sync::Arc<dsh_tools::subagent::SubagentBridge>>,
+    // 宿主侧追加工具(MCP server 桥等;与 preset 装配的工具同池,重名 fail-fast)
+    mut extra_tools: Vec<Box<dyn dsh_agent_loop::tools::ToolPortObj>>,
 ) -> Result<ToolSet> {
-    let tools = assemble(
+    let mut tools = assemble(
         resolved,
         api_key,
         log,
@@ -377,6 +382,7 @@ pub fn build_tools(
         current_session,
         subagent_bridge,
     )?;
+    tools.append(&mut extra_tools);
     ToolSet::new(tools).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
@@ -627,10 +633,12 @@ mod tests {
         assert!(parts.identity.contains("working directory is /tmp/ws"));
         assert!(!parts.identity.contains("{{"), "插值必须落值");
         // 工具指南节随装配收集,system 组装为无标题段落
-        assert!(parts
-            .tool_sections
-            .iter()
-            .any(|s| s.contains("[exit code: N]")));
+        assert!(
+            parts
+                .tool_sections
+                .iter()
+                .any(|s| s.contains("[exit code: N]"))
+        );
         let log = crate::fresh_log();
         let header = crate::build_header(&parts, &log.lock().expect("测试日志锁"));
         assert!(header.system.contains("Check the [exit code: N] marker"));

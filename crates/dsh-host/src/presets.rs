@@ -101,19 +101,18 @@ impl PresetManifest {
         let mut found: Option<Self> = None;
         for doc in serde_norway::Deserializer::from_str(text) {
             // 空文档(纯 `---` 段)跳过;k8s manifest 同语义
-            let value = serde_norway::Value::deserialize(doc)
-                .map_err(|source| PresetError::Invalid {
+            let value =
+                serde_norway::Value::deserialize(doc).map_err(|source| PresetError::Invalid {
                     path: path.into(),
                     source,
                 })?;
             if value.is_null() {
                 continue;
             }
-            let manifest = Self::deserialize(value)
-                .map_err(|source| PresetError::Invalid {
-                    path: path.into(),
-                    source,
-                })?;
+            let manifest = Self::deserialize(value).map_err(|source| PresetError::Invalid {
+                path: path.into(),
+                source,
+            })?;
             if found.is_some() {
                 return Err(PresetError::Unsupported {
                     path: path.into(),
@@ -161,8 +160,8 @@ impl PresetManifest {
     pub fn load(workspace: &Path, id: &str) -> Result<Self, PresetError> {
         let user = workspace.join(format!("presets/{id}.yaml"));
         if user.is_file() {
-            let text = std::fs::read_to_string(&user)
-                .map_err(|_| PresetError::Unknown(id.to_string()))?;
+            let text =
+                std::fs::read_to_string(&user).map_err(|_| PresetError::Unknown(id.to_string()))?;
             let path = user.display().to_string();
             let manifest = Self::parse(&text, &path)?;
             manifest.check_name(id, &path)?;
@@ -375,7 +374,10 @@ spec:
     disabled: false
 "#,
         ] {
-            assert!(PresetManifest::parse(text, "<test>").is_err(), "未知键应拒绝");
+            assert!(
+                PresetManifest::parse(text, "<test>").is_err(),
+                "未知键应拒绝"
+            );
         }
     }
 
@@ -425,7 +427,10 @@ spec:
                 "未知 kind",
             ),
         ] {
-            assert!(PresetManifest::parse(text, "<test>").is_err(), "{why} 应拒绝");
+            assert!(
+                PresetManifest::parse(text, "<test>").is_err(),
+                "{why} 应拒绝"
+            );
         }
     }
 
@@ -440,7 +445,10 @@ spec:
         )
         .unwrap();
         let err = PresetManifest::load(&dir, "alpha").unwrap_err();
-        assert!(matches!(err, PresetError::NameMismatch { .. }), "name 不符应拒绝: {err}");
+        assert!(
+            matches!(err, PresetError::NameMismatch { .. }),
+            "name 不符应拒绝: {err}"
+        );
     }
 
     #[test]

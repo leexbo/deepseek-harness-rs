@@ -4,12 +4,12 @@
 //! 文本)。交互 = 一步两钮(批准一次 / 拒绝,✕ = 取消)——源语义:被拒
 //! 对该命令终局,无反馈通道;批准只盖本次执行,不落 sandbox/mode。
 
+use gpui_kit::component::IconName;
+use gpui_kit::component::StyledExt;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
     Styled, div, px,
 };
-use gpui_kit::component::IconName;
-use gpui_kit::component::StyledExt;
 
 use crate::kits::icons::fixed;
 use crate::kits::theme;
@@ -58,7 +58,9 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                         div()
                             .text_size(px(11.))
                             .text_color(theme::CAPTION())
-                            .child(format!("{tool_name} · {current_mode} → {target_mode}(仅本次)")),
+                            .child(format!(
+                                "{tool_name} · {current_mode} → {target_mode}(仅本次)"
+                            )),
                     )
                     .child(div().flex_1())
                     .child(

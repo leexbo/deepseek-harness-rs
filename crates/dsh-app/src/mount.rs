@@ -16,11 +16,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, bail};
-use dsh_agent_loop::ToolPortObj;
-use dsh_host::validate_config;
-use dsh_host::PresetManifest;
-use dsh_session::EventLog;
 use dsh_agent_loop::CancelToken;
+use dsh_agent_loop::ToolPortObj;
+use dsh_host::PresetManifest;
+use dsh_host::validate_config;
+use dsh_session::EventLog;
 use serde_json::{Value, json};
 
 use crate::Resolved;
@@ -64,8 +64,7 @@ pub struct MountContext<'a> {
     /// 归属会话槽位 id(复合形态;ask 问答卡会话门控用)
     pub current_session: Option<&'a str>,
     /// 子代理宿主桥(jobs 帧 + 子会话事件实时流;缺 = CLI)
-    pub subagent_bridge:
-        Option<Arc<dsh_tools::subagent::SubagentBridge>>,
+    pub subagent_bridge: Option<Arc<dsh_tools::subagent::SubagentBridge>>,
     /// 在场组件集合(jobs↔bash 接线判别)
     present: HashSet<&'a str>,
     /// 装配器级共享件
@@ -244,10 +243,11 @@ fn mount_persona(_ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPo
     Ok(vec![])
 }
 
-    /// bash:持久 shell(策略执行时从动态源解析——read-only 走只读沙箱
-    /// 策略,读命令可用、写被内核拦;jobs 在场时装备后台任务能力)
+/// bash:持久 shell(策略执行时从动态源解析——read-only 走只读沙箱
+/// 策略,读命令可用、写被内核拦;jobs 在场时装备后台任务能力)
 fn mount_bash(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj>>> {
-    let mut bash = dsh_tools::BashTool::new(&ctx.resolved.workspace).with_cancel(ctx.cancel.clone());
+    let mut bash =
+        dsh_tools::BashTool::new(&ctx.resolved.workspace).with_cancel(ctx.cancel.clone());
     match &ctx.mode_source {
         Some(src) => {
             bash = bash.with_mode_source(Arc::clone(src));
@@ -299,12 +299,16 @@ fn mount_todo_write(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn Tool
 
 /// plan:计划模式工具(共享日志)
 fn mount_plan(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj>>> {
-    Ok(vec![Box::new(dsh_tools::PlanTool::new(Arc::clone(ctx.log)))])
+    Ok(vec![Box::new(dsh_tools::PlanTool::new(Arc::clone(
+        ctx.log,
+    )))])
 }
 
 /// goal:目标工具(共享日志)
 fn mount_goal(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj>>> {
-    Ok(vec![Box::new(dsh_tools::GoalTool::new(Arc::clone(ctx.log)))])
+    Ok(vec![Box::new(dsh_tools::GoalTool::new(Arc::clone(
+        ctx.log,
+    )))])
 }
 
 /// 子代理独立传输工厂(subagent/workflow 各持一份)。工厂形态——
@@ -400,18 +404,17 @@ fn mount_ask(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj
     // 归属会话 = 调用方传入的**槽位 id**(非默认工作区为 "<ws>/<stem>" 复合
     // 形式;此前从文件路径反推裸 stem,与桌面当前会话复合 id 不相等 →
     // question/requested 帧被问答卡会话门控整批跳过 = 不弹窗)
-    let current = ctx
-        .current_session
-        .map(String::from)
-        .unwrap_or_else(|| {
-            ctx.resolved
-                .session
-                .rsplit('/')
-                .nth(1)
-                .unwrap_or_default()
-                .to_string()
-        });
-    Ok(vec![Box::new(dsh_tools::AskQuestionTool::new(port, &current))])
+    let current = ctx.current_session.map(String::from).unwrap_or_else(|| {
+        ctx.resolved
+            .session
+            .rsplit('/')
+            .nth(1)
+            .unwrap_or_default()
+            .to_string()
+    });
+    Ok(vec![Box::new(dsh_tools::AskQuestionTool::new(
+        port, &current,
+    ))])
 }
 
 // ---- source 三态判别 ----
@@ -547,20 +550,8 @@ mod tests {
         let log = crate::fresh_log();
         let cancel = CancelToken::new();
         let tools = assemble(
-            resolved,
-            "key",
-            &log,
-            &cancel,
-            false,
-            permission,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            resolved, "key", &log, &cancel, false, permission, None, None, None, None, None, None,
+            None, None,
         )
         .unwrap();
         tools
@@ -572,8 +563,9 @@ mod tests {
 
     #[test]
     fn standard_assembles_full_toolset() {
-        let preset = dsh_host::PresetManifest::load(std::path::Path::new("/nonexistent"), "standard")
-            .unwrap();
+        let preset =
+            dsh_host::PresetManifest::load(std::path::Path::new("/nonexistent"), "standard")
+                .unwrap();
         let resolved = Resolved {
             preset,
             ..resolved_with("")
@@ -599,16 +591,23 @@ mod tests {
             "workflow",
             "ralph",
         ] {
-            assert!(names.contains(&expect.to_string()), "{expect} 缺席:{names:?}");
+            assert!(
+                names.contains(&expect.to_string()),
+                "{expect} 缺席:{names:?}"
+            );
         }
         assert_eq!(names.len(), 14, "standard 装载 14 工具声明:{names:?}");
-        assert!(!names.iter().any(|n| n == "session_query"), "无 port 应跳过");
+        assert!(
+            !names.iter().any(|n| n == "session_query"),
+            "无 port 应跳过"
+        );
     }
 
     #[test]
     fn minimal_assembles_bash_files_only() {
-        let preset = dsh_host::PresetManifest::load(std::path::Path::new("/nonexistent"), "minimal")
-            .unwrap();
+        let preset =
+            dsh_host::PresetManifest::load(std::path::Path::new("/nonexistent"), "minimal")
+                .unwrap();
         let resolved = Resolved {
             preset,
             ..resolved_with("")

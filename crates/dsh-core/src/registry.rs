@@ -502,6 +502,18 @@ pub struct AppHost {
     mux: broadcast::Sender<ServerRequest>,
     host: broadcast::Sender<ServerRequest>,
     pending: Mutex<HashMap<String, PendingInteraction>>,
+    /// MCP server 最近一次连接状态(server id → (status, error);端口回调更新)
+    mcp_status: Mutex<HashMap<String, (String, String)>>,
+    /// MCP 宿主级端口池(server id → 端口;所有会话共享一条连接,保存即生效)
+    mcp_pool: dsh_mcp::McpPoolPort,
+    /// MCP 端口句柄(id → 配置快照 + cancel;sync 换代对比与停机用)
+    mcp_handles: Mutex<HashMap<String, McpPortHandle>>,
+    /// MCP 连接任务后台 runtime(宿主同步方法可被无 tokio 上下文的线程
+    /// 直调——桌面 GPUI 回调;连接任务锚宿主而非调用方 runtime)
+    mcp_rt: tokio::runtime::Handle,
+    /// 仅保活:mcp_rt 为自建 runtime 时持有到宿主销毁
+    #[allow(dead_code)]
+    mcp_rt_keepalive: Option<tokio::runtime::Runtime>,
     /// fake 模式脚本(每次 stream 调用消费一段;测试注入)
     fake_script: Mutex<Vec<Vec<LlmEvent>>>,
     /// fake 模式 LLM 标题输出(测试注入;None = fake 不生成标题,保持回退)。
@@ -522,6 +534,27 @@ pub struct AppHost {
 /// fake 演示用的模型清单(演示数据;真实模式不落此分支)
 fn demo_models() -> Vec<String> {
     vec!["deepseek-v4-flash".into(), "deepseek-v4-pro".into()]
+}
+
+/// MCP 端口句柄:sync 用来对比配置是否变更(变更 → 重启端口)并持有
+/// 停机令牌(禁用/移除/替换时 cancel)
+struct McpPortHandle {
+    config: dsh_mcp::McpServerConfig,
+    cancel: dsh_agent_loop::CancelToken,
+}
+
+/// settings 条目 → stdio 端口配置(纯映射)
+fn mcp_config_of(entry: &crate::settings::McpServerEntry) -> dsh_mcp::McpServerConfig {
+    dsh_mcp::McpServerConfig {
+        server_name: entry.id.clone(),
+        command: entry.command.clone(),
+        args: entry.args.clone(),
+        env: entry.env.clone(),
+        cwd: entry.cwd.as_ref().map(std::path::PathBuf::from),
+        tool_call_timeout: std::time::Duration::from_millis(
+            entry.tool_call_timeout_ms.unwrap_or(60_000),
+        ),
+    }
 }
 
 /// 演示回声脚本(--fake 演示模式且未注入测试脚本时,按会话生成):
@@ -937,6 +970,21 @@ impl AppHost {
         // 附件存储根与会话根同域(内容寻址对象,目录懒建)
         let attachments = dsh_host::AttachmentStore::new(sessions_root.join("attachments/v1"));
         let feedback = MessageFeedbackStore::new(sessions_root.join("feedback"));
+        // MCP 连接任务后台 runtime:构造可能发生在无 tokio 上下文的线程
+        // (桌面 GPUI 同步直调),此时自建专用 runtime 保活;已在 runtime
+        // 内(CLI/测试)则复用当前 handle
+        let (mcp_rt, mcp_rt_keepalive) = match tokio::runtime::Handle::try_current() {
+            Ok(h) => (h, None),
+            Err(_) => {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .enable_all()
+                    .build()
+                    .map_err(|e| anyhow::anyhow!("MCP 后台 runtime 构建失败: {e}"))?;
+                let h = rt.handle().clone();
+                (h, Some(rt))
+            }
+        };
         // 迁移旧布局(工作区根/工作区 .dshrs)到 ~/.dshrs(幂等)
         std::fs::create_dir_all(&sessions_root).ok();
         for ws in &workspaces {
@@ -964,6 +1012,11 @@ impl AppHost {
             mux,
             host,
             pending: Mutex::new(HashMap::new()),
+            mcp_status: Mutex::new(HashMap::new()),
+            mcp_pool: dsh_mcp::McpPoolPort::new(),
+            mcp_handles: Mutex::new(HashMap::new()),
+            mcp_rt,
+            mcp_rt_keepalive,
             fake_script: Mutex::new(Vec::new()),
             models_cache: Mutex::new(HashMap::new()),
             search: tokio::sync::Mutex::new(None),
@@ -1062,7 +1115,9 @@ impl AppHost {
                 .insert(provider.id.clone(), demo_models());
             return;
         }
-        let fetched = self.fetch_provider_models(&provider, &self.default_workspace()).await;
+        let fetched = self
+            .fetch_provider_models(&provider, &self.default_workspace())
+            .await;
         if !fetched.is_empty() {
             self.models_cache
                 .lock()
@@ -1079,7 +1134,8 @@ impl AppHost {
         let fetched = if self.fake && provider_id == self.default_provider().id {
             demo_models()
         } else {
-            self.fetch_provider_models(&provider, &self.default_workspace()).await
+            self.fetch_provider_models(&provider, &self.default_workspace())
+                .await
         };
         self.models_cache
             .lock()
@@ -1928,8 +1984,10 @@ impl AppHost {
             .iter()
             .map(|p| {
                 let mut v = serde_json::to_value(p).unwrap_or(Value::Null);
-                v["credentialReady"] =
-                Value::Bool(self.resolve_provider_key(p, &self.default_workspace()).is_some());
+                v["credentialReady"] = Value::Bool(
+                    self.resolve_provider_key(p, &self.default_workspace())
+                        .is_some(),
+                );
                 v["modelsCached"] = Value::Bool(!self.models_for(&p.id).is_empty());
                 v
             })
@@ -1937,6 +1995,8 @@ impl AppHost {
         json!({
             "onboarded": file.onboarded,
             "providers": providers,
+            "mcpServers": serde_json::to_value(&file.mcp_servers).unwrap_or(Value::Null),
+            "mcpStatus": self.mcp_server_status(),
             "workspaces": serde_json::to_value(&file.workspaces).unwrap_or(Value::Null),
             "defaultProvider": self.default_provider().id,
             "busyEnter": file.busy_enter,
@@ -2027,6 +2087,195 @@ impl AppHost {
     /// provider 注册表(设置页 Models 区)
     pub fn providers(&self) -> Vec<ProviderEntry> {
         self.settings.read().providers
+    }
+
+    /// MCP server 注册表(设置页清单;enabled 才随 attach 桥接)
+    pub fn mcp_servers(&self) -> Vec<crate::settings::McpServerEntry> {
+        self.settings.read().mcp_servers.clone()
+    }
+
+    /// MCP server 最近连接状态(设置页/详情页状态行;attach 回调更新)
+    pub fn mcp_server_status(&self) -> serde_json::Value {
+        let map = self.mcp_status.lock().expect("mcp_status 锁中毒");
+        json!({
+            "servers": map
+                .iter()
+                .map(|(id, (status, error))| {
+                    json!({ "id": id, "status": status, "error": error })
+                })
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    /// 新增/更新 MCP server(id 是工具公共名成分:ASCII 字母/数字/下划线/
+    /// 连字符;command 必填)。保存即生效:端口池对照 enabled 清单同步,
+    /// 启用 → 立即连接,所有会话共享
+    pub fn upsert_mcp_server(
+        self: &Arc<Self>,
+        entry: crate::settings::McpServerEntry,
+    ) -> Result<(), RpcError> {
+        self.upsert_mcp_server_entry(entry)?;
+        self.sync_mcp_ports();
+        Ok(())
+    }
+
+    /// 校验 + 落盘(不触端口;import 批量导入时避免逐条启停)
+    fn upsert_mcp_server_entry(
+        &self,
+        entry: crate::settings::McpServerEntry,
+    ) -> Result<(), RpcError> {
+        if entry.id.is_empty()
+            || !entry
+                .id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(RpcError::bad_request(
+                "id 仅限 ASCII 字母/数字/下划线/连字符",
+            ));
+        }
+        if entry.command.trim().is_empty() {
+            return Err(RpcError::bad_request("command 不能为空"));
+        }
+        self.settings
+            .update(
+                |s| match s.mcp_servers.iter_mut().find(|e| e.id == entry.id) {
+                    Some(existing) => *existing = entry.clone(),
+                    None => s.mcp_servers.push(entry.clone()),
+                },
+            )
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
+    }
+
+    /// 从 JSON 批量导入 MCP servers(mcpServers 映射或单 server 形态;
+    /// 任一条目非法整体拒绝)。返回导入数量。导入完成统一同步端口池。
+    pub fn import_mcp_servers_json(self: &Arc<Self>, text: &str) -> Result<usize, RpcError> {
+        let entries =
+            crate::settings::parse_mcp_servers_json(text).map_err(RpcError::bad_request)?;
+        let count = entries.len();
+        for entry in entries {
+            self.upsert_mcp_server_entry(entry)?;
+        }
+        self.sync_mcp_ports();
+        Ok(count)
+    }
+
+    /// 移除 MCP server(端口立即停机,工具面随池收敛消失)
+    pub fn remove_mcp_server(self: &Arc<Self>, id: &str) -> Result<(), RpcError> {
+        self.settings
+            .update(|s| s.mcp_servers.retain(|e| e.id != id))
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        self.sync_mcp_ports();
+        Ok(())
+    }
+
+    /// 端口池对照 settings enabled 清单同步:禁用/移除的端口停机并移除,
+    /// 新增/配置变更的端口启动/重启(未变的不动)。设置动作与真实会话
+    /// attach 前各调一次(attach 兜底恢复进程启动后尚未连接的存量清单)
+    pub fn sync_mcp_ports(self: &Arc<Self>) {
+        let enabled: Vec<crate::settings::McpServerEntry> = self
+            .settings
+            .read()
+            .mcp_servers
+            .iter()
+            .filter(|e| e.enabled)
+            .cloned()
+            .collect();
+        let wanted: std::collections::HashSet<&str> =
+            enabled.iter().map(|e| e.id.as_str()).collect();
+        let set_status = |id: &str, status: &str, error: &str| {
+            self.mcp_status
+                .lock()
+                .expect("mcp_status 锁中毒")
+                .insert(id.to_string(), (status.to_string(), error.to_string()));
+            let _ = self.mux.send(frame(
+                "mcp/status",
+                json!({ "server": id, "status": status, "error": error }),
+            ));
+        };
+        // 停机:池中已不在 enabled 清单的端口(快照先行——for 表达式的
+        // 锁 guard 会覆盖整个循环体,循环内再锁即自死锁)
+        let held: Vec<String> = self
+            .mcp_handles
+            .lock()
+            .expect("mcp_handles 锁中毒")
+            .keys()
+            .cloned()
+            .collect();
+        for id in held {
+            if !wanted.contains(id.as_str()) {
+                if let Some(h) = self
+                    .mcp_handles
+                    .lock()
+                    .expect("mcp_handles 锁中毒")
+                    .remove(&id)
+                {
+                    h.cancel.cancel();
+                }
+                if let Some(port) = self.mcp_pool.remove(&id) {
+                    port.shutdown();
+                }
+                set_status(&id, "stopped", "");
+            }
+        }
+        // 启动/重启:新增或配置变更
+        for entry in enabled {
+            let config = mcp_config_of(&entry);
+            let stale = match self
+                .mcp_handles
+                .lock()
+                .expect("mcp_handles 锁中毒")
+                .get(&entry.id)
+            {
+                Some(h) => h.config != config,
+                None => true,
+            };
+            if !stale {
+                continue;
+            }
+            // 旧端口停机(有则换新)
+            if let Some(h) = self
+                .mcp_handles
+                .lock()
+                .expect("mcp_handles 锁中毒")
+                .remove(&entry.id)
+            {
+                h.cancel.cancel();
+            }
+            if let Some(port) = self.mcp_pool.remove(&entry.id) {
+                port.shutdown();
+            }
+            // 启动:后台连接(状态回调直写宿主状态表 + 三态帧广播)
+            let cancel = dsh_agent_loop::CancelToken::new();
+            let cb_host = Arc::clone(self);
+            let cb_id = entry.id.clone();
+            let on_status: dsh_mcp::StatusCallback = Arc::new(move |event| {
+                let (status, error) = match &event {
+                    dsh_mcp::McpStatusEvent::Connecting => ("connecting", ""),
+                    dsh_mcp::McpStatusEvent::Ready => ("ready", ""),
+                    dsh_mcp::McpStatusEvent::Failed(e) => ("failed", e.as_str()),
+                };
+                cb_host
+                    .mcp_status
+                    .lock()
+                    .expect("mcp_status 锁中毒")
+                    .insert(cb_id.clone(), (status.into(), error.into()));
+                let _ = cb_host.mux.send(frame(
+                    "mcp/status",
+                    json!({ "server": cb_id, "status": status, "error": error }),
+                ));
+            });
+            let port = {
+                // 连接任务锚宿主后台 runtime(调用线程可能无 tokio 上下文)
+                let _enter = self.mcp_rt.enter();
+                dsh_mcp::McpServerPort::start(config.clone(), cancel.clone(), Some(on_status))
+            };
+            self.mcp_pool.upsert(entry.id.clone(), port);
+            self.mcp_handles
+                .lock()
+                .expect("mcp_handles 锁中毒")
+                .insert(entry.id.clone(), McpPortHandle { config, cancel });
+        }
     }
 
     /// 新增/更新 provider(校验 id 形态、base_url 协议、方言、引用可解析;
@@ -2817,17 +3066,22 @@ impl AppHost {
             // set_permission 落档即对下一次执行生效,无需重装配(源语义)
             let mode_log = Arc::clone(&l);
             let mode_source: dsh_tools::ModeSource = Arc::new(move || {
-                crate::permission::sandbox_mode_of_name(
-                    crate::permission::sandbox_mode_of(
-                        &mode_log
-                            .lock()
-                            .expect("log 锁中毒")
-                            .iter()
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                    ),
-                )
+                crate::permission::sandbox_mode_of_name(crate::permission::sandbox_mode_of(
+                    &mode_log
+                        .lock()
+                        .expect("log 锁中毒")
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                ))
             });
+            // MCP servers:宿主级端口池(设置保存即连接,所有会话共享一条
+            // 连接)。attach 前同步一次,兜底恢复进程启动后尚未连接的存量
+            // enabled 清单;池是动态聚合端口——连接就绪/工具代换带后,下一
+            // turn specs 自然生效,会话无需重装配
+            self_arc.sync_mcp_ports();
+            let mcp_tools: Vec<Box<dyn dsh_agent_loop::tools::ToolPortObj>> =
+                vec![Box::new(self_arc.mcp_pool.clone())];
             let tools = dsh_app::build_tools(
                 &resolved,
                 &key,
@@ -2857,9 +3111,11 @@ impl AppHost {
                 Some(Arc::new(dsh_tools::subagent::SubagentBridge {
                     jobs: {
                         let host = self_arc.clone() as Arc<AppHost>;
-                        Arc::new(move |pid: &str, reg: dsh_tools::subagent::SubagentRegistry| {
-                            AppHost::bind_jobs(&host, pid, reg);
-                        })
+                        Arc::new(
+                            move |pid: &str, reg: dsh_tools::subagent::SubagentRegistry| {
+                                AppHost::bind_jobs(&host, pid, reg);
+                            },
+                        )
                     },
                     events: {
                         let host = self_arc.clone() as Arc<AppHost>;
@@ -2868,6 +3124,7 @@ impl AppHost {
                         })
                     },
                 })),
+                mcp_tools,
             )
             .map_err(|e| RpcError::internal(format!("工具组装失败:{e}")))?;
             (
@@ -3998,7 +4255,11 @@ impl AppHost {
 
     /// 接线子代理注册表为某父会话的 jobs 源:登记弱引用并挂观察
     /// 回调——注册表任何状态变化即向 mux 重广播该父的 jobs 快照。
-    pub fn bind_jobs(self: &Arc<Self>, parent_id: &str, registry: dsh_tools::subagent::SubagentRegistry) {
+    pub fn bind_jobs(
+        self: &Arc<Self>,
+        parent_id: &str,
+        registry: dsh_tools::subagent::SubagentRegistry,
+    ) {
         registry.set_on_change(Some(Arc::new({
             let host = Arc::downgrade(self);
             let parent = parent_id.to_string();
@@ -4027,9 +4288,7 @@ impl AppHost {
                 let records = registry.lock().expect("records 锁中毒");
                 records
                     .iter()
-                    .find(|rec| {
-                        rec.session_id == child_session_id && rec.status == "running"
-                    })
+                    .find(|rec| rec.session_id == child_session_id && rec.status == "running")
                     .and_then(|rec| rec.stop.clone())
             };
             // notify_one 许可语义:与等待注册的竞态窗口不丢信号
@@ -4417,7 +4676,8 @@ const PLAN_CANCEL_GUIDE: &str = "用户取消了计划审批,想在聊天里继�
 
 /// 批准引导轮文案(修复「批准后没有后续动作」:批准此前
 /// 只切回 standard 模式不启动任何 turn;现经引导轮驱动模型即刻开工)
-const PLAN_APPROVED_GUIDE: &str = "用户已批准该计划。请开始执行:按计划逐步实施,边做边简要汇报进展。";
+const PLAN_APPROVED_GUIDE: &str =
+    "用户已批准该计划。请开始执行:按计划逐步实施,边做边简要汇报进展。";
 
 /// 拒绝带反馈的引导轮文案:修改意见直送模型(审批是 turn 后流程,
 /// 模型无工具结果可读——队列注入是唯一送达通道)
@@ -4608,8 +4868,7 @@ fn repair_dangling_calls(log: &Arc<Mutex<EventLog>>, backend: &dsh_host::JsonlBa
                         .unwrap_or_default();
                 }
                 "tool/call" => {
-                    let name =
-                        ev.data.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let name = ev.data.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     let id = last_tools
                         .iter_mut()
                         .find(|(used, _, n)| !*used && n == name)
@@ -5007,7 +5266,12 @@ impl dsh_tools::subagent::SessionFactory for SessionFactoryImpl {
     fn resumable_children(
         &self,
         parent: &str,
-    ) -> Vec<(dsh_tools::subagent::SubagentSessionHandle, bool, String, String)> {
+    ) -> Vec<(
+        dsh_tools::subagent::SubagentSessionHandle,
+        bool,
+        String,
+        String,
+    )> {
         let mut out = Vec::new();
         for s in self.0.list_sessions() {
             if s.origin.as_deref() != Some("subagent")
@@ -5275,11 +5539,11 @@ async fn pump_loop(
                                 start: at,
                                 removed: 0,
                                 inserted: vec![SpliceItem {
-                                id,
-                                text,
-                                images,
-                                source: None,
-                            }],
+                                    id,
+                                    text,
+                                    images,
+                                    source: None,
+                                }],
                             }
                         }
                         PromptMode::Steer => {
@@ -5297,11 +5561,11 @@ async fn pump_loop(
                                 start: at,
                                 removed: 0,
                                 inserted: vec![SpliceItem {
-                                id,
-                                text,
-                                images,
-                                source: None,
-                            }],
+                                    id,
+                                    text,
+                                    images,
+                                    source: None,
+                                }],
                             }
                         }
                     }
@@ -5387,8 +5651,7 @@ fn handle_driver_cmd(
             }
         }
         DriverCmd::SetApproval(policy) => {
-            if let Ok(seq) = session.session_event("approval/policy", json!({ "policy": policy }))
-            {
+            if let Ok(seq) = session.session_event("approval/policy", json!({ "policy": policy })) {
                 broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
             }
         }
@@ -5422,9 +5685,7 @@ async fn driver_loop(
                 // 与 turn 后一致:取消后注入引导轮(见下「待审计划」注释)
                 inject_plan_guide_turn(&session_id, inner, &host0, PLAN_CANCEL_GUIDE);
             }
-            PlanReviewOutcome::Declined {
-                feedback: Some(fb),
-            } => {
+            PlanReviewOutcome::Declined { feedback: Some(fb) } => {
                 inject_plan_guide_turn(&session_id, inner, &host0, &plan_decline_guide(&fb));
             }
             PlanReviewOutcome::Approved => {
@@ -5544,7 +5805,13 @@ async fn driver_loop(
             "agent/inbox/spliced",
             json!({ "target": target, "start": 0, "removedCount": 1, "inserted": [] }),
         ) {
-            broadcast_event(&provider_info, &inner.log, &session_id, &host0.mux, Some(seq));
+            broadcast_event(
+                &provider_info,
+                &inner.log,
+                &session_id,
+                &host0.mux,
+                Some(seq),
+            );
         }
         // 队列帧(认领后待运行条目已出队)
         let _ = host0.mux.send(queue_frame(&session_id, inner));
@@ -5710,9 +5977,7 @@ async fn driver_loop(
                 PlanReviewOutcome::Cancelled => {
                     inject_plan_guide_turn(&session_id, inner, &host0, PLAN_CANCEL_GUIDE);
                 }
-                PlanReviewOutcome::Declined {
-                    feedback: Some(fb),
-                } => {
+                PlanReviewOutcome::Declined { feedback: Some(fb) } => {
                     inject_plan_guide_turn(&session_id, inner, &host0, &plan_decline_guide(&fb));
                 }
                 // 批准 = 模式已切回 standard + 注入「开工」引导轮:
@@ -5735,8 +6000,7 @@ mod tests {
     /// 收口;已闭合 turn 的悬挂调用只补 result;再跑幂等零追加。
     #[test]
     fn repair_dangling_calls_closes_dangling_tool_call_and_turn() {
-        let dir =
-            std::env::temp_dir().join(format!("dsh-core-repair-{}", Uuid::new_v4().simple()));
+        let dir = std::env::temp_dir().join(format!("dsh-core-repair-{}", Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         let backend = dsh_host::JsonlBackend::open(dir.join("s.jsonl")).unwrap();
 
@@ -5772,7 +6036,11 @@ mod tests {
             assert_eq!(r.r#type, "tool/result");
             assert_eq!(r.data["call"], serde_json::json!(3), "配对键 = call seq");
             assert_eq!(r.data["id"], serde_json::json!("callu_1"));
-            assert_eq!(r.data["success"], serde_json::json!(false), "必须显式 false");
+            assert_eq!(
+                r.data["success"],
+                serde_json::json!(false),
+                "必须显式 false"
+            );
             assert_eq!(
                 r.data["output"],
                 serde_json::json!(dsh_session::events::DANGLING_TOOL_PLACEHOLDER)
@@ -5791,7 +6059,10 @@ mod tests {
             let mut l = log2.lock().unwrap();
             for (ty, data) in [
                 ("turn/start", serde_json::json!({})),
-                ("tool/call", serde_json::json!({ "name": "bash", "arguments": {} })),
+                (
+                    "tool/call",
+                    serde_json::json!({ "name": "bash", "arguments": {} }),
+                ),
                 ("turn/end", serde_json::json!({ "cancelled": "token" })),
             ] {
                 l.append(EventEnvelope::new(ty, 0, data)).unwrap();
@@ -5804,7 +6075,11 @@ mod tests {
             assert_eq!(evs.len(), 4, "只追加合成 result");
             assert_eq!(evs[3].r#type, "tool/result");
             assert_eq!(evs[3].data["call"], serde_json::json!(2));
-            assert_eq!(evs[3].data["id"], serde_json::json!(""), "无 assistant 时容忍空 id");
+            assert_eq!(
+                evs[3].data["id"],
+                serde_json::json!(""),
+                "无 assistant 时容忍空 id"
+            );
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -5919,6 +6194,62 @@ mod tests {
             .join(project_key(&ws.display().to_string()))
     }
 
+    fn mcp_entry(id: &str, enabled: bool, cmd: &str) -> crate::settings::McpServerEntry {
+        crate::settings::McpServerEntry {
+            id: id.into(),
+            enabled,
+            command: cmd.into(),
+            args: vec![],
+            env: Default::default(),
+            cwd: None,
+            tool_call_timeout_ms: None,
+        }
+    }
+
+    /// 轮询状态表中该 server 的状态(100ms × 50)
+    fn mcp_status_of(host: &AppHost, id: &str) -> Option<String> {
+        host.mcp_server_status()["servers"]
+            .as_array()?
+            .iter()
+            .find(|s| s["id"].as_str() == Some(id))
+            .and_then(|s| s["status"].as_str().map(String::from))
+    }
+
+    /// 端口池 sync 三分支:启用 → 立即启动(无效命令快速 failed 可观测);
+    /// 禁用 → 停机移除(stopped);移除 → 池清。保存即生效,不再等重开会话
+    #[tokio::test]
+    async fn mcp_port_pool_sync_starts_stops_and_replaces() {
+        let host = temp_host("mcp-sync");
+        // 启用(无效命令 → 启动后快速失败)
+        host.upsert_mcp_server(mcp_entry("srv", true, "/nonexistent-mcp-cmd"))
+            .unwrap();
+        let mut status = String::new();
+        for _ in 0..50 {
+            status = mcp_status_of(&host, "srv").unwrap_or_default();
+            if status == "failed" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(status, "failed", "无效命令应快速失败");
+        assert_eq!(host.mcp_pool.server_ids(), vec!["srv".to_string()]);
+        // 禁用 → 停机移除,状态落 stopped
+        host.upsert_mcp_server(mcp_entry("srv", false, "/nonexistent-mcp-cmd"))
+            .unwrap();
+        assert!(host.mcp_pool.server_ids().is_empty(), "禁用应移出端口池");
+        assert_eq!(
+            mcp_status_of(&host, "srv").as_deref(),
+            Some("stopped"),
+            "禁用应广播停机"
+        );
+        // 重新启用(配置变更)→ 端口重启;移除 → 池清
+        host.upsert_mcp_server(mcp_entry("srv", true, "/another-missing"))
+            .unwrap();
+        assert_eq!(host.mcp_pool.server_ids(), vec!["srv".to_string()]);
+        host.remove_mcp_server("srv").unwrap();
+        assert!(host.mcp_pool.server_ids().is_empty());
+    }
+
     fn script(msgs: &[&str]) -> Vec<Vec<LlmEvent>> {
         msgs.iter()
             .map(|m| {
@@ -6012,8 +6343,7 @@ mod tests {
             .await
             .unwrap();
         recv_until(&mut mux, |f| {
-            f.method == "session/event"
-                && f.payload["event"]["type"] == "turn/end"
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
         })
         .await
         .expect("首 turn 结束");
@@ -6068,16 +6398,19 @@ mod tests {
             .unwrap_or_default();
         let notice = events
             .iter()
-            .find(|e| {
-                e.r#type == "user/message"
-                    && e.data["source"]["kind"] == "subagent-settled"
-            })
+            .find(|e| e.r#type == "user/message" && e.data["source"]["kind"] == "subagent-settled")
             .expect("通知必须以染色 user/message 落档");
         assert_eq!(notice.data["source"]["form"], "notice");
         assert_eq!(notice.data["source"]["senderSessionId"], "s-x");
         let notice_text = notice.data["content"].as_str().unwrap_or_default();
-        assert!(notice_text.contains("Background subagent s-x finished"), "{notice_text}");
-        assert!(notice_text.contains("Its closing message:"), "{notice_text}");
+        assert!(
+            notice_text.contains("Background subagent s-x finished"),
+            "{notice_text}"
+        );
+        assert!(
+            notice_text.contains("Its closing message:"),
+            "{notice_text}"
+        );
         // 通知后的 assistant 回复 = 模型确实看到了通知并推进 turn
         let notice_seq = notice.seq;
         assert!(events.iter().any(|e| {
@@ -6220,17 +6553,12 @@ mod tests {
         assert_eq!(plugin_ctx(), 1, "策略未变不重发快照");
 
         // 切 full-access → 文本变 → 重发
-        host.set_permission(&id, "full-access")
-            .await
-            .unwrap();
+        host.set_permission(&id, "full-access").await.unwrap();
         wait_log_sandbox(&host, &id, "full-access").await;
         run_turn(&host, &mut mux, &id, "third").await;
         assert_eq!(plugin_ctx(), 2, "策略变更重发快照");
         let text = std::fs::read_to_string(host.session_log_path(&id)).unwrap();
-        assert!(
-            text.contains("full-access"),
-            "变更后快照含新 sandbox 文本"
-        );
+        assert!(text.contains("full-access"), "变更后快照含新 sandbox 文本");
     }
 
     /// 新会话 pin 默认权限预设(pinInitialPermission)——首轮 turn 前
@@ -6239,8 +6567,7 @@ mod tests {
     #[tokio::test]
     async fn new_session_pins_default_permission_preset() {
         let host = temp_host("pin-perm");
-        host.set_default_permission_preset("full-access")
-            .unwrap();
+        host.set_default_permission_preset("full-access").unwrap();
         host.set_fake_script(script(&["hi"]));
         let mut mux = host.mux_subscribe();
         let id = host.create_session(None, None, None);
@@ -7372,20 +7699,16 @@ mod tests {
         );
         host.respond(
             &f.rpc_id,
-            &RpcResult::Ok(
-                json!({ "sessionId": id, "answer": { "approved": true } }),
-            ),
+            &RpcResult::Ok(json!({ "sessionId": id, "answer": { "approved": true } })),
         );
         let outcome = task.await.unwrap();
         assert_eq!(outcome, dsh_tools::ApprovalOutcome::AllowedOnce);
         assert!(
-            wait_log_approval(&host, &id, "\"approval/decided\"").await
-                && {
-                    let text =
-                        std::fs::read_to_string(host.session_log_path(&id)).unwrap_or_default();
-                    text.contains("\"allowed-once\"") && text.contains("\"approval/asked\"")
-                },
-                "审计对(asked + decided allowed-once)应落盘"
+            wait_log_approval(&host, &id, "\"approval/decided\"").await && {
+                let text = std::fs::read_to_string(host.session_log_path(&id)).unwrap_or_default();
+                text.contains("\"allowed-once\"") && text.contains("\"approval/asked\"")
+            },
+            "审计对(asked + decided allowed-once)应落盘"
         );
     }
 
@@ -7408,9 +7731,7 @@ mod tests {
             .expect("审批问询帧应广播");
         host.respond(
             &f.rpc_id,
-            &RpcResult::Ok(
-                json!({ "sessionId": id, "answer": { "approved": false } }),
-            ),
+            &RpcResult::Ok(json!({ "sessionId": id, "answer": { "approved": false } })),
         );
         let outcome = task.await.unwrap();
         assert_eq!(outcome, dsh_tools::ApprovalOutcome::Rejected);
@@ -7441,14 +7762,9 @@ mod tests {
             .running
             .store(true, std::sync::atomic::Ordering::Relaxed);
         let mut mux = host.mux_subscribe();
-        let outcome = host
-            .request_escalation(&id, escalation_req())
-            .await;
+        let outcome = host.request_escalation(&id, escalation_req()).await;
         assert_eq!(outcome, dsh_tools::ApprovalOutcome::Rejected);
-        assert!(
-            mux.try_recv().is_err(),
-            "never 会话不得发出问询帧"
-        );
+        assert!(mux.try_recv().is_err(), "never 会话不得发出问询帧");
         assert!(
             wait_log_approval(&host, &id, "\"rejected\"").await,
             "审计对仍应落盘"
@@ -7479,10 +7795,7 @@ mod tests {
             wait_log_approval(&host, &id, "\"cancelled\"").await,
             "守卫应落 decided(cancelled)"
         );
-        assert!(
-            host.pending.lock().unwrap().is_empty(),
-            "pending 不得悬挂"
-        );
+        assert!(host.pending.lock().unwrap().is_empty(), "pending 不得悬挂");
     }
 
     /// ZIP 导出(根 + fork 后代血缘序;解包校验条目集)
@@ -8101,7 +8414,8 @@ mod tests {
         let base = |p: &Path| p.file_name().unwrap().to_str().unwrap().to_string();
         let host = temp_host("ws-head");
         let launch = host.workspace().to_path_buf();
-        let other = std::env::temp_dir().join(format!("dsh-core-wshead-{}", Uuid::new_v4().simple()));
+        let other =
+            std::env::temp_dir().join(format!("dsh-core-wshead-{}", Uuid::new_v4().simple()));
         std::fs::create_dir_all(&other).unwrap();
         host.add_workspace(other.display().to_string().as_str())
             .unwrap();
@@ -8272,8 +8586,7 @@ mod tests {
         );
 
         // 扫描:两子会话都返回;中断者 interrupted=true 且带 label
-        let children =
-            dsh_tools::subagent::SessionFactory::resumable_children(&factory, &parent);
+        let children = dsh_tools::subagent::SessionFactory::resumable_children(&factory, &parent);
         assert_eq!(children.len(), 2);
         let intr = children
             .iter()
@@ -8384,17 +8697,17 @@ mod tests {
             let calls = notify.calls.lock().unwrap();
             let (_, text, _) = &calls[1];
             assert!(text.contains("resumed reply"), "{text}");
-            assert!(text.contains("finished and will do no further work"), "{text}");
+            assert!(
+                text.contains("finished and will do no further work"),
+                "{text}"
+            );
         }
 
         // 子日志:续话 turn 落档 + settled 标记追加(下次重启=已结算态)
         let events = dsh_host::persistence::jsonl::load_jsonl(&host.slot_path(&interrupted_child))
             .expect("子日志可整份解码");
         assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.r#type == "turn/start")
-                .count(),
+            events.iter().filter(|e| e.r#type == "turn/start").count(),
             2,
             "重挂前 1 个 + 续话 1 个 turn"
         );
@@ -8403,7 +8716,6 @@ mod tests {
             Some("subagent/settled"),
             "结算标记落档"
         );
-        
     }
 
     /// 轮询等注册表有 n 个 idle 驻留(重挂异步)
@@ -8536,9 +8848,11 @@ mod tests {
         )
         .with_parent_id(&parent)
         .with_notify(Arc::new(notify))
-        .with_event_sink(Arc::new(move |sid: &str, ev: &dsh_session::EventEnvelope| {
-            host_for_sink.relay_subagent_event(sid, ev);
-        }));
+        .with_event_sink(Arc::new(
+            move |sid: &str, ev: &dsh_session::EventEnvelope| {
+                host_for_sink.relay_subagent_event(sid, ev);
+            },
+        ));
         let mut mux = host.mux_subscribe();
 
         let out = dsh_agent_loop::ToolPort::execute(&mut tool, &{
@@ -8560,8 +8874,9 @@ mod tests {
         let mut seen_reply = false;
         for _ in 0..2000 {
             match mux.try_recv() {
-                Ok(f) if f.method == "session/event"
-                    && f.payload["sessionId"] == serde_json::json!(child) =>
+                Ok(f)
+                    if f.method == "session/event"
+                        && f.payload["sessionId"] == serde_json::json!(child) =>
                 {
                     let ty = f.payload["event"]["type"].as_str().unwrap_or_default();
                     if ty == "turn/start" {
@@ -8573,7 +8888,9 @@ mod tests {
                             .as_array()
                             .is_some_and(|blocks| {
                                 blocks.iter().any(|b| {
-                                    b["text"].as_str().is_some_and(|t| t.contains("streamed child reply"))
+                                    b["text"]
+                                        .as_str()
+                                        .is_some_and(|t| t.contains("streamed child reply"))
                                 })
                             })
                     {
