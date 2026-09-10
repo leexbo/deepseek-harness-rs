@@ -122,6 +122,15 @@ pub fn sandbox_mode_of_name(name: &str) -> dsh_sandbox::SandboxMode {
     }
 }
 
+/// 执行侧模式 → 机器值(升级请求/审计文案的桥)
+pub fn sandbox_mode_name(mode: dsh_sandbox::SandboxMode) -> &'static str {
+    match mode {
+        dsh_sandbox::SandboxMode::ReadOnly => "read-only",
+        dsh_sandbox::SandboxMode::WorkspaceWrite => "workspace-write",
+        dsh_sandbox::SandboxMode::FullAccess => "full-access",
+    }
+}
+
 /// 会话当前审批策略(fold 最后一个已知 `approval/policy`;无则默认 ask)。
 pub fn approval_policy_of(events: &[EventEnvelope]) -> &'static str {
     last_known(

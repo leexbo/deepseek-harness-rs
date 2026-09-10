@@ -86,6 +86,7 @@ async fn preset_mounts_external_wasm_tool() {
         None,
         None,
         None,
+        None,
     )
     .expect("装配");
 
@@ -128,6 +129,7 @@ async fn broken_wasm_mount_fails_fast_at_assembly() {
         &CancelToken::new(),
         false,
         "workspace-write",
+        None,
         None,
         None,
         None,

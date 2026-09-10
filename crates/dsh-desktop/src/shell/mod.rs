@@ -273,6 +273,7 @@ impl Render for WorkspaceView {
                                                     window,
                                                     cx,
                                                 ))
+                                                .children(ask::render_approval(&self.store, cx))
                                                 .children(ask::render_question(
                                                     &self.store,
                                                     window,

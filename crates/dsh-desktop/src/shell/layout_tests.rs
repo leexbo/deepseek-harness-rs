@@ -2122,6 +2122,7 @@ fn plan_review_compact_card_two_options(cx: &mut TestAppContext) {
                         options: None,
                         multi_select: None,
                         intent: Some(serde_json::json!("plan-review")),
+                        data: None,
                     },
                 });
             });
@@ -3004,6 +3005,61 @@ fn ask_option_long_ascii_description_stays_in_card(cx: &mut TestAppContext) {
     assert!(
         opt_right <= card_right + 1.0,
         "选项行右缘 {opt_right} 超出卡片右缘 {card_right}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 沙箱升级审批卡:渲染(一步两钮)+ 应答(批准 → pending 清空)
+#[gpui_kit::test]
+fn approval_card_renders_and_answers(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "approval");
+    // 底部栈需要非空会话(hero 态不渲染问答/审批卡)
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.entry(id.clone()).or_default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:seed".into(),
+                text: "先聊着".into(),
+                images: vec![],
+            });
+            st.state.pending_approval = Some(crate::shell::reducer::PendingApproval {
+                rpc_id: "rpc-approval".into(),
+                session_id: id,
+                question: dsh_core::proto::Question {
+                    id: "audit-1".into(),
+                    question: "命令需要写工作区外的用户目录".into(),
+                    header: Some("沙箱升级审批".into()),
+                    detail: None,
+                    options: None,
+                    multi_select: Some(false),
+                    intent: Some(serde_json::json!({ "kind": "sandbox-escalation" })),
+                    data: Some(serde_json::json!({
+                        "toolName": "bash",
+                        "command": "touch ~/out",
+                        "currentMode": "workspace-write",
+                        "targetMode": "full-access",
+                    })),
+                },
+            });
+        });
+    });
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("approval-card").is_some(),
+        "审批卡未渲染"
+    );
+    assert!(wcx.debug_bounds("approval-approve").is_some(), "批准钮缺失");
+    assert!(wcx.debug_bounds("approval-reject").is_some(), "拒绝钮缺失");
+    // 批准一次 → host.respond → pending 清空
+    click_sel(&mut wcx, "approval-approve");
+    cx.run_until_parked();
+    assert!(
+        cx.update(|app| store.read(app).state.pending_approval.is_none()),
+        "批准后 pending 应清空"
     );
     let _ = std::fs::remove_dir_all(root);
 }

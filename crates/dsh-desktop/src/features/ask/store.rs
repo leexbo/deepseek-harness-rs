@@ -172,6 +172,36 @@ impl AppStore {
         cx.notify();
     }
 
+    /// 沙箱升级审批(allow-once / rejected;应答形状见 registry respond
+    /// Approval 分支 value["answer"]["approved"])
+    pub fn answer_approval(&mut self, approve: bool, cx: &mut Context<Self>) {
+        let Some(p) = self.state.pending_approval.take() else {
+            return;
+        };
+        let result = RpcResult::Ok(serde_json::json!({
+            "sessionId": p.session_id,
+            "answer": { "approved": approve },
+        }));
+        self.bridge.host().respond(&p.rpc_id, &result);
+        cx.notify();
+    }
+
+    /// 取消审批(✕ → cancelled;模型收到逐字取消文案,审计对收口)
+    pub fn dismiss_approval(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.state.pending_approval.take() else {
+            return;
+        };
+        self.bridge.host().respond(
+            &p.rpc_id,
+            &RpcResult::Err(dsh_core::proto::RpcError {
+                code: "cancelled".into(),
+                message: "用户取消,回到对话".into(),
+                details: serde_json::Value::Null,
+            }),
+        );
+        cx.notify();
+    }
+
     /// 放弃整组问题(取消;respond ok:false → host reject)
     pub fn cancel_ask(&mut self, cx: &mut Context<Self>) {
         let Some(ask) = self.state.pending_ask.take() else {

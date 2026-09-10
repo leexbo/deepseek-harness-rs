@@ -439,9 +439,12 @@ pub struct Question {
     /// 多选
     #[serde(skip_serializing_if = "Option::is_none")]
     pub multi_select: Option<bool>,
-    /// 意图(plan-review)
+    /// 意图(plan-review / sandbox-escalation)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intent: Option<Value>,
+    /// 结构化载荷(沙箱升级审批 = 命令/模式/事由;问题面不解释)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 /// `question/requested` 载荷
@@ -612,6 +615,7 @@ mod tests {
                 }]),
                 multi_select: Some(false),
                 intent: Some(json!({ "kind": "plan-review", "approve": "批准" })),
+                data: None,
             }],
         };
         let v = serde_json::to_value(&q).unwrap();
