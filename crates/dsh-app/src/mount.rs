@@ -50,6 +50,9 @@ pub struct MountContext<'a> {
     /// 会话权限模式动态源(有 = 工具执行时实时解析,权限切换落档即
     /// 生效;缺 = 装配期静态 permission)
     pub mode_source: Option<dsh_tools::ModeSource>,
+    /// 宿主审批闸门(有 = bash 支持 sandbox_permissions 一次性升级;
+    /// 缺 = CLI/测试装配,带参逐字拒绝)
+    pub approval: Option<Arc<dyn dsh_tools::ApprovalPort>>,
     /// session_query 宿主 port(缺 = 该组件跳过)
     pub query_port: Option<Arc<dyn dsh_tools::session_query::SessionQueryPort>>,
     /// ask_user_question 宿主 port(缺 = 该组件跳过)
@@ -241,8 +244,8 @@ fn mount_persona(_ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPo
     Ok(vec![])
 }
 
-/// bash:持久 shell(策略执行时从动态源解析——read-only 走只读沙箱
-/// 策略,读命令可用、写被内核拦;jobs 在场时装备后台任务能力)
+    /// bash:持久 shell(策略执行时从动态源解析——read-only 走只读沙箱
+    /// 策略,读命令可用、写被内核拦;jobs 在场时装备后台任务能力)
 fn mount_bash(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj>>> {
     let mut bash = dsh_tools::BashTool::new(&ctx.resolved.workspace).with_cancel(ctx.cancel.clone());
     match &ctx.mode_source {
@@ -258,6 +261,9 @@ fn mount_bash(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortOb
                 bash = bash.with_policy(dsh_sandbox::SandboxPolicy::read_only());
             }
         }
+    }
+    if let Some(port) = &ctx.approval {
+        bash = bash.with_approval_port(Arc::clone(port));
     }
     if ctx.present("jobs") {
         bash = bash.with_jobs(ctx.jobs_registry());
@@ -451,6 +457,7 @@ pub fn assemble(
     pty: bool,
     permission: &str,
     mode_source: Option<dsh_tools::ModeSource>,
+    approval_port: Option<Arc<dyn dsh_tools::ApprovalPort>>,
     query_port: Option<Arc<dyn dsh_tools::session_query::SessionQueryPort>>,
     ask_port: Option<Arc<dyn dsh_tools::AskQuestionPort>>,
     session_factory: Option<Arc<dyn dsh_tools::subagent::SessionFactory>>,
@@ -473,6 +480,7 @@ pub fn assemble(
         pty,
         permission,
         mode_source,
+        approval: approval_port,
         query_port,
         ask_port,
         session_factory,
@@ -545,6 +553,7 @@ mod tests {
             &cancel,
             false,
             permission,
+            None,
             None,
             None,
             None,
@@ -687,6 +696,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         ) else {
             panic!("未知组件源应拒绝");
         };
@@ -704,6 +714,7 @@ mod tests {
             &CancelToken::new(),
             false,
             "workspace-write",
+            None,
             None,
             None,
             None,

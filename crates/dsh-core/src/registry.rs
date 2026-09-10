@@ -243,18 +243,28 @@ struct SessionSlot {
     running: std::sync::atomic::AtomicBool,
 }
 
-/// 未决问题(计划审批)
-struct PendingQuestion {
-    #[allow(dead_code)]
-    session_id: String,
-    /// 批准选项标签(应答按标签判别;plan 用)
-    approve_label: String,
-    /// plan 审批应答通道(QuestionAnswer 三元)
-    tx: Option<oneshot::Sender<QuestionAnswer>>,
-    /// ask_user_question 应答通道(工具结果 JSON 文本)
-    answer_tx: Option<oneshot::Sender<Result<String, String>>>,
+/// 未决交互(plan 审批 / ask 问答 / 沙箱升级审批):kind 决定应答判别与
+/// 回填形态,respond match 穷尽(编译期锁住路由,替代字符串判别)
+struct PendingInteraction {
+    kind: PendingKind,
     /// 重放用的请求帧(mux 重连时同 rpcId 重发)
     frame: ServerRequest,
+}
+
+enum PendingKind {
+    /// 计划审批应答(QuestionAnswer 三元;approve_label 应答判别)
+    Plan {
+        approve_label: String,
+        tx: oneshot::Sender<QuestionAnswer>,
+    },
+    /// ask_user_question 应答(工具结果 JSON 文本)
+    Ask {
+        tx: oneshot::Sender<Result<String, String>>,
+    },
+    /// 沙箱升级审批裁决
+    Approval {
+        tx: oneshot::Sender<dsh_tools::ApprovalOutcome>,
+    },
 }
 
 /// 计划审批应答
@@ -491,7 +501,7 @@ pub struct AppHost {
     title_gen_inflight: std::sync::Mutex<std::collections::HashSet<String>>,
     mux: broadcast::Sender<ServerRequest>,
     host: broadcast::Sender<ServerRequest>,
-    pending: Mutex<HashMap<String, PendingQuestion>>,
+    pending: Mutex<HashMap<String, PendingInteraction>>,
     /// fake 模式脚本(每次 stream 调用消费一段;测试注入)
     fake_script: Mutex<Vec<Vec<LlmEvent>>>,
     /// fake 模式 LLM 标题输出(测试注入;None = fake 不生成标题,保持回退)。
@@ -2832,6 +2842,13 @@ impl AppHost {
                         .collect::<Vec<_>>(),
                 ),
                 Some(mode_source),
+                Some({
+                    let host = self_arc.clone();
+                    Arc::new(ApprovalPortImpl {
+                        host,
+                        session_id: id.to_string(),
+                    }) as Arc<dyn dsh_tools::ApprovalPort>
+                }),
                 Some(Arc::new(SessionQueryPortImpl(self_arc.clone()))),
                 Some(Arc::new(AskQuestionPortImpl(self_arc.clone()))),
                 Some(Arc::new(SessionFactoryImpl(self_arc.clone()))),
@@ -3434,6 +3451,7 @@ impl AppHost {
                 ),
                 multi_select: Some(q.multi_select),
                 intent: None,
+                data: None,
             })
             .collect();
         let request = crate::proto::QuestionRequestedFrame {
@@ -3449,17 +3467,140 @@ impl AppHost {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().expect("pending 锁中毒").insert(
             rpc_id.clone(),
-            PendingQuestion {
-                session_id: session_id.into(),
-                approve_label: String::new(),
-                tx: None,
-                answer_tx: Some(tx),
+            PendingInteraction {
+                kind: PendingKind::Ask { tx },
                 frame: frame.clone(),
             },
         );
         let _ = self.mux.send(frame);
         rx.await
             .map_err(|_| "ask_user_question 未被应答".to_string())?
+    }
+
+    /// 沙箱升级审批(闸门宿主面):审计对 splice 直写(asked → 问询 →
+    /// decided,时序先于其所批准的执行);approval=never 入口即拒
+    /// (不问任何应答方,照源不可绕过);闲时调用拒绝不落档(照源:
+    /// 审批必须被 open turn 包住)。
+    pub async fn request_escalation(
+        self: &Arc<Self>,
+        session_id: &str,
+        req: dsh_tools::EscalationRequest,
+    ) -> dsh_tools::ApprovalOutcome {
+        use dsh_tools::ApprovalOutcome;
+        // open turn 校验:闸门只能由运行中的工具发起(闲时不问不落档)
+        let (log, backend) = {
+            let slots = self.sessions.read().expect("sessions 锁中毒");
+            let Some(slot) = slots.get(session_id) else {
+                return ApprovalOutcome::Unavailable;
+            };
+            if !slot.running.load(std::sync::atomic::Ordering::Relaxed) {
+                return ApprovalOutcome::Unavailable;
+            }
+            let inner = slot.inner.get().expect("running 会话必已附着");
+            (Arc::clone(&inner.log), inner.backend.clone())
+        };
+
+        // 审计对:asked(理由自包含,审计与审批卡同源)
+        let reason = format!(
+            "escalate sandbox to {}: {}",
+            crate::permission::sandbox_mode_name(req.target_mode),
+            req.justification
+        );
+        let audit_id = Uuid::now_v7().to_string();
+        eprintln!("P3a: splice asked 前");
+        // 守卫持独立克隆(闭包借用原值;守卫的生命周期覆盖 await)
+        let guard_log = Arc::clone(&log);
+        let guard_backend = backend.clone();
+        let splice = |ev: EventEnvelope| splice_event(&log, &backend, ev);
+        let asked = splice(EventEnvelope::new(
+            "approval/asked",
+            now_ms() as i64,
+            json!({
+                "id": audit_id,
+                "toolName": req.tool_name,
+                "reason": reason,
+            }),
+        ));
+        eprintln!("P3b: asked={asked}");
+        if !asked {
+            // 落账失败绝不返回决定(照源审计原子性)
+            return ApprovalOutcome::Unavailable;
+        }
+
+        // approval=never:入口即拒(不可绕过),仍落 decided 收口
+        let policy_now = self.session_approval(session_id);
+        eprintln!("P3c: policy={policy_now}");
+        if policy_now == "never" {
+            splice(decided_envelope(&audit_id, "rejected"));
+            eprintln!("P3d: decided 落档,返回 Rejected");
+            return ApprovalOutcome::Rejected;
+        }
+
+        // 问询(骑问答通道;intent 分流桌面审批卡,data = 结构化载荷)
+        let current_mode = self.session_sandbox_mode(session_id);
+        let rpc_id = Uuid::now_v7().to_string();
+        let question = crate::proto::Question {
+            id: audit_id.clone(),
+            question: req.justification.clone(),
+            header: Some("沙箱升级审批".into()),
+            detail: None,
+            options: None,
+            multi_select: Some(false),
+            intent: Some(json!({ "kind": "sandbox-escalation" })),
+            data: Some(json!({
+                "toolName": req.tool_name,
+                "command": req.command,
+                "currentMode": current_mode,
+                "targetMode": crate::permission::sandbox_mode_name(req.target_mode),
+            })),
+        };
+        let request = crate::proto::QuestionRequestedFrame {
+            session_id: session_id.into(),
+            questions: vec![question],
+        };
+        let request_frame = ServerRequest {
+            r#type: "server-request".into(),
+            rpc_id: rpc_id.clone(),
+            method: "question/requested".into(),
+            payload: serde_json::to_value(&request).unwrap_or(Value::Null),
+        };
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().expect("pending 锁中毒").insert(
+            rpc_id.clone(),
+            PendingInteraction {
+                kind: PendingKind::Approval { tx },
+                frame: request_frame.clone(),
+            },
+        );
+        let _ = self.mux.send(request_frame);
+
+        // drop 守卫:port future 被丢弃(turn 取消/中断)→ 清 pending +
+        // 落 decided(cancelled) 收口(升级路径不复制 ask 通道悬挂缺陷)
+        let mut guard = ApprovalGuard {
+            host: Arc::clone(self),
+            session_id: session_id.into(),
+            rpc_id: rpc_id.clone(),
+            audit_id: audit_id.clone(),
+            log: guard_log,
+            backend: guard_backend,
+            disarmed: false,
+        };
+        let outcome = match rx.await {
+            Ok(o) => o,
+            Err(_) => ApprovalOutcome::Cancelled,
+        };
+        guard.disarmed = true;
+        splice(decided_envelope(&audit_id, outcome_name(outcome)));
+        let _ = self.mux.send(frame(
+            "question/resolved",
+            serde_json::to_value(crate::proto::QuestionResolvedFrame {
+                session_id: session_id.into(),
+                question_rpc_id: rpc_id,
+                outcome: outcome_name(outcome).into(),
+            })
+            .unwrap_or(Value::Null),
+        ));
+        outcome
     }
 
     /// 从 JSON 数组发起问答(帧形状与工具面一致;桌面端到端测试入口)。
@@ -4084,86 +4225,107 @@ impl AppHost {
             };
         };
         // ask_user_question 应答(answer_tx = 工具结果 JSON 文本)
-        if let Some(ask_tx) = p.answer_tx {
-            let text = match result {
-                RpcResult::Ok(value) => {
-                    // {sessionId, answer:{answers:[{id, selected[], custom?}]}}
-                    match encode_answers(value) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            // 形状不符 = 拒答,不 resolve(保留 pending?已 remove。
-                            // 这里超纲——直接以错误回给模型,不重复挂起)
-                            return RespondReceipt {
-                                accepted: false,
-                                reason: Some(e),
-                            };
+        match p.kind {
+            PendingKind::Ask { tx } => {
+                let text = match result {
+                    RpcResult::Ok(value) => {
+                        // {sessionId, answer:{answers:[{id, selected[], custom?}]}}
+                        match encode_answers(value) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                // 形状不符 = 拒答,不 resolve(保留 pending?已 remove。
+                                // 这里超纲——直接以错误回给模型,不重复挂起)
+                                return RespondReceipt {
+                                    accepted: false,
+                                    reason: Some(e),
+                                };
+                            }
                         }
                     }
-                }
-                RpcResult::Err(_) => {
+                    RpcResult::Err(_) => {
+                        return RespondReceipt {
+                            accepted: false,
+                            reason: Some("cancelled".into()),
+                        };
+                    }
+                };
+                if tx.send(Ok(text)).is_err() {
                     return RespondReceipt {
                         accepted: false,
-                        reason: Some("cancelled".into()),
+                        reason: Some("bad-response".into()),
                     };
                 }
-            };
-            if ask_tx.send(Ok(text)).is_err() {
-                return RespondReceipt {
-                    accepted: false,
-                    reason: Some("bad-response".into()),
-                };
-            }
-            return RespondReceipt {
-                accepted: true,
-                reason: None,
-            };
-        }
-        // plan 审批应答(tx = QuestionAnswer 三元)
-        let Some(tx) = p.tx else {
-            return RespondReceipt {
-                accepted: false,
-                reason: Some("no-sender".into()),
-            };
-        };
-        let answer = match result {
-            RpcResult::Ok(value) => {
-                // {sessionId, answer:{answers:[{id, selected[], custom?}]}}
-                let answers = value["answer"]["answers"].as_array();
-                let approve = answers.is_some_and(|answers| {
-                    answers.iter().any(|a| {
-                        a["selected"].as_array().is_some_and(|labels| {
-                            labels
-                                .iter()
-                                .any(|l| l.as_str() == Some(p.approve_label.as_str()))
-                        })
-                    })
-                });
-                if approve {
-                    QuestionAnswer::Approve
-                } else {
-                    // 反馈取应答项 custom(「否,并告诉它应该如何做不同」
-                    // 的行内输入;「跳过」不带 custom,空串视同无)
-                    let feedback = answers.and_then(|answers| {
-                        answers
-                            .iter()
-                            .find_map(|a| a["custom"].as_str().map(str::to_owned))
-                    });
-                    QuestionAnswer::Decline {
-                        feedback: feedback.filter(|t| !t.trim().is_empty()),
-                    }
+                RespondReceipt {
+                    accepted: true,
+                    reason: None,
                 }
             }
-            RpcResult::Err(_) => QuestionAnswer::Cancel,
-        };
-        if tx.send(answer).is_err() {
-            return RespondReceipt {
-                accepted: false,
-                reason: Some("bad-response".into()),
-            };
-        }
-        RespondReceipt {
-            accepted: true,
-            reason: None,
+            // 沙箱升级审批应答(approved = allow-once / false = rejected)
+            PendingKind::Approval { tx, .. } => {
+                let outcome = match result {
+                    RpcResult::Ok(value) => {
+                        if value["answer"]["approved"].as_bool() == Some(true) {
+                            dsh_tools::ApprovalOutcome::AllowedOnce
+                        } else {
+                            dsh_tools::ApprovalOutcome::Rejected
+                        }
+                    }
+                    RpcResult::Err(_) => dsh_tools::ApprovalOutcome::Cancelled,
+                };
+                if tx.send(outcome).is_err() {
+                    return RespondReceipt {
+                        accepted: false,
+                        reason: Some("bad-response".into()),
+                    };
+                }
+                RespondReceipt {
+                    accepted: true,
+                    reason: None,
+                }
+            }
+            // plan 审批应答(tx = QuestionAnswer 三元)
+            PendingKind::Plan { approve_label, tx } => {
+                let answer = match result {
+                    RpcResult::Ok(value) => {
+                        // {sessionId, answer:{answers:[{id, selected[], custom?}]}}
+                        let answers = value["answer"]["answers"].as_array();
+                        let approve = answers.is_some_and(|answers| {
+                            answers.iter().any(|a| {
+                                a["selected"].as_array().is_some_and(|labels| {
+                                    labels
+                                        .iter()
+                                        .any(|l| l.as_str() == Some(approve_label.as_str()))
+                                })
+                            })
+                        });
+                        if approve {
+                            QuestionAnswer::Approve
+                        } else {
+                            // 反馈取应答项 custom(「否,并告诉它应该如何做不同」
+                            // 的行内输入;「跳过」不带 custom,空串视同无)
+                            let feedback = answers.and_then(|answers| {
+                                answers
+                                    .iter()
+                                    .find_map(|a| a["custom"].as_str().map(str::to_owned))
+                            });
+                            QuestionAnswer::Decline {
+                                feedback: feedback.filter(|t| !t.trim().is_empty()),
+                            }
+                        }
+                    }
+                    RpcResult::Err(_) => QuestionAnswer::Cancel,
+                };
+                if tx.send(answer).is_err() {
+                    return RespondReceipt {
+                        accepted: false,
+                        reason: Some("bad-response".into()),
+                    };
+                }
+                RespondReceipt {
+                    accepted: true,
+                    reason: None,
+                }
+            }
         }
     }
 }
@@ -4197,6 +4359,7 @@ async fn plan_question(
             ]),
             multi_select: Some(false),
             intent: Some(json!({ "kind": "plan-review", "approve": APPROVE })),
+            data: None,
         }],
     };
     let request_frame = ServerRequest {
@@ -4208,11 +4371,11 @@ async fn plan_question(
     let (tx, rx) = oneshot::channel();
     host.pending.lock().expect("pending 锁中毒").insert(
         rpc_id.clone(),
-        PendingQuestion {
-            session_id: session_id.into(),
-            approve_label: APPROVE.into(),
-            tx: Some(tx),
-            answer_tx: None,
+        PendingInteraction {
+            kind: PendingKind::Plan {
+                approve_label: APPROVE.into(),
+                tx,
+            },
             frame: request_frame.clone(),
         },
     );
@@ -4931,6 +5094,99 @@ impl dsh_tools::AskQuestionPort for AskQuestionPortImpl {
         let session_id = session_id.to_string();
         let questions = questions.to_vec();
         Box::pin(async move { host.ask_questions(&session_id, &questions).await })
+    }
+}
+
+/// 沙箱升级审批闸门(宿主面实现;attach 时按会话注入 bash 工具)
+struct ApprovalPortImpl {
+    host: Arc<AppHost>,
+    session_id: String,
+}
+
+impl dsh_tools::ApprovalPort for ApprovalPortImpl {
+    fn request(
+        &self,
+        req: dsh_tools::EscalationRequest,
+    ) -> Pin<Box<dyn std::future::Future<Output = dsh_tools::ApprovalOutcome> + Send>> {
+        let host = Arc::clone(&self.host);
+        let session_id = self.session_id.clone();
+        Box::pin(async move { host.request_escalation(&session_id, req).await })
+    }
+}
+
+/// 审批 pending 守卫:port future 被丢弃(turn 取消/中断)→ 清 pending +
+/// 落 decided(cancelled) 收口——升级路径不复制 ask 通道的悬挂缺陷
+struct ApprovalGuard {
+    host: Arc<AppHost>,
+    session_id: String,
+    rpc_id: String,
+    audit_id: String,
+    log: Arc<Mutex<EventLog>>,
+    backend: dsh_host::JsonlBackend,
+    /// 正常应答路径置 true(drop 不再收口)
+    disarmed: bool,
+}
+
+impl Drop for ApprovalGuard {
+    fn drop(&mut self) {
+        if self.disarmed {
+            return;
+        }
+        self.host
+            .pending
+            .lock()
+            .expect("pending 锁中毒")
+            .remove(&self.rpc_id);
+        splice_event(
+            &self.log,
+            &self.backend,
+            decided_envelope(&self.audit_id, "cancelled"),
+        );
+        let _ = self.host.mux.send(frame(
+            "question/resolved",
+            serde_json::to_value(crate::proto::QuestionResolvedFrame {
+                session_id: self.session_id.clone(),
+                question_rpc_id: self.rpc_id.clone(),
+                outcome: "cancelled".into(),
+            })
+            .unwrap_or(Value::Null),
+        ));
+    }
+}
+
+/// log-only 事件落档(turn 运行中;锁内定 seq + 落盘;泵侧 splice 同款)
+fn splice_event(
+    log: &Arc<Mutex<EventLog>>,
+    backend: &dsh_host::JsonlBackend,
+    ev: EventEnvelope,
+) -> bool {
+    let committed = log.lock().ok().and_then(|mut l| {
+        let seq = l.append(ev).ok()?;
+        l.get(seq).cloned()
+    });
+    let ok = committed.is_some();
+    if let Some(ev) = committed
+        && let Err(e) = backend.append(&ev)
+    {
+        eprintln!("[dsh-core] 审批事件落盘失败: {e}");
+    }
+    ok
+}
+
+fn decided_envelope(audit_id: &str, outcome: &str) -> EventEnvelope {
+    EventEnvelope::new(
+        "approval/decided",
+        now_ms() as i64,
+        json!({ "id": audit_id, "outcome": outcome }),
+    )
+}
+
+fn outcome_name(outcome: dsh_tools::ApprovalOutcome) -> &'static str {
+    match outcome {
+        dsh_tools::ApprovalOutcome::AllowedOnce => "allowed-once",
+        dsh_tools::ApprovalOutcome::Rejected => "rejected",
+        dsh_tools::ApprovalOutcome::Cancelled => "cancelled",
+        dsh_tools::ApprovalOutcome::Unavailable => "unavailable",
     }
 }
 
@@ -6806,11 +7062,11 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         host.pending.lock().unwrap().insert(
             "q-rpc".into(),
-            PendingQuestion {
-                session_id: "s".into(),
-                approve_label: "批准".into(),
-                tx: Some(tx),
-                answer_tx: None,
+            PendingInteraction {
+                kind: PendingKind::Plan {
+                    approve_label: "批准".into(),
+                    tx,
+                },
                 frame: frame("question/requested", json!({})),
             },
         );
@@ -7062,6 +7318,170 @@ mod tests {
         assert_eq!(
             wait_log_sandbox(&host, &id, "full-access").await,
             "full-access"
+        );
+    }
+
+    /// 等审批审计事件上盘(needle 匹配原始 JSONL 行)
+    async fn wait_log_approval(host: &AppHost, id: &str, needle: &str) -> bool {
+        for _ in 0..50 {
+            let text = std::fs::read_to_string(host.session_log_path(id)).unwrap_or_default();
+            if text.contains(needle) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+        false
+    }
+
+    fn escalation_req() -> dsh_tools::EscalationRequest {
+        dsh_tools::EscalationRequest {
+            tool_name: "bash".into(),
+            call_id: None,
+            command: "touch ~/dsh-esc-e2e".into(),
+            target_mode: dsh_sandbox::SandboxMode::FullAccess,
+            justification: "命令需要写工作区外的用户目录".into(),
+        }
+    }
+
+    /// 升级审批全链路(allow-once):审计对 splice 直写且时序先于裁决
+    /// 返回;应答骑 question/requested·resolved
+    #[tokio::test]
+    async fn escalation_gate_allowed_once_flow() {
+        let host = temp_host("esc-allow");
+        let id = host.create_session(None, None, None);
+        host.set_approval(&id, "ask").await.unwrap();
+        host.get_slot(&id)
+            .unwrap()
+            .running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut mux = host.mux_subscribe();
+        let h = host.clone();
+        let sid = id.clone();
+        let task = tokio::spawn(async move { h.request_escalation(&sid, escalation_req()).await });
+        let f = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("审批问询帧应广播");
+        // intent 与结构化载荷在帧上(桌面审批卡消费面)
+        assert_eq!(
+            f.payload["questions"][0]["intent"]["kind"],
+            "sandbox-escalation"
+        );
+        assert_eq!(
+            f.payload["questions"][0]["data"]["targetMode"],
+            "full-access"
+        );
+        host.respond(
+            &f.rpc_id,
+            &RpcResult::Ok(
+                json!({ "sessionId": id, "answer": { "approved": true } }),
+            ),
+        );
+        let outcome = task.await.unwrap();
+        assert_eq!(outcome, dsh_tools::ApprovalOutcome::AllowedOnce);
+        assert!(
+            wait_log_approval(&host, &id, "\"approval/decided\"").await
+                && {
+                    let text =
+                        std::fs::read_to_string(host.session_log_path(&id)).unwrap_or_default();
+                    text.contains("\"allowed-once\"") && text.contains("\"approval/asked\"")
+                },
+                "审计对(asked + decided allowed-once)应落盘"
+        );
+    }
+
+    /// 升级审批被拒:decided(rejected) 收口;模型收到逐字拒绝文本
+    #[tokio::test]
+    async fn escalation_gate_rejected_flow() {
+        let host = temp_host("esc-reject");
+        let id = host.create_session(None, None, None);
+        host.set_approval(&id, "ask").await.unwrap();
+        host.get_slot(&id)
+            .unwrap()
+            .running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut mux = host.mux_subscribe();
+        let h = host.clone();
+        let sid = id.clone();
+        let task = tokio::spawn(async move { h.request_escalation(&sid, escalation_req()).await });
+        let f = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("审批问询帧应广播");
+        host.respond(
+            &f.rpc_id,
+            &RpcResult::Ok(
+                json!({ "sessionId": id, "answer": { "approved": false } }),
+            ),
+        );
+        let outcome = task.await.unwrap();
+        assert_eq!(outcome, dsh_tools::ApprovalOutcome::Rejected);
+        assert!(
+            wait_log_approval(&host, &id, "\"rejected\"").await,
+            "decided(rejected) 应落盘"
+        );
+    }
+
+    /// approval=never:入口即拒(不问任何应答方,无问询帧),审计对仍落
+    /// (asked + decided rejected)——照源不可绕过语义;子代理钉 never 后
+    /// 升级确定性被拒
+    #[tokio::test]
+    async fn escalation_gate_never_rejects_without_asking() {
+        let host = temp_host("esc-never");
+        let id = host.create_session(None, None, None);
+        host.set_approval(&id, "never").await.unwrap();
+        // Job 经驱动 turn 间隙异步落档:等 approval/policy=never 上盘
+        for _ in 0..50 {
+            if host.session_approval(&id) == "never" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+        assert_eq!(host.session_approval(&id), "never", "策略应已落档");
+        host.get_slot(&id)
+            .unwrap()
+            .running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut mux = host.mux_subscribe();
+        let outcome = host
+            .request_escalation(&id, escalation_req())
+            .await;
+        assert_eq!(outcome, dsh_tools::ApprovalOutcome::Rejected);
+        assert!(
+            mux.try_recv().is_err(),
+            "never 会话不得发出问询帧"
+        );
+        assert!(
+            wait_log_approval(&host, &id, "\"rejected\"").await,
+            "审计对仍应落盘"
+        );
+    }
+
+    /// drop 守卫:port future 被丢弃(turn 取消)→ 清 pending +
+    /// decided(cancelled) 落档(不悬挂)
+    #[tokio::test]
+    async fn escalation_gate_drop_guard_cleans_up() {
+        let host = temp_host("esc-drop");
+        let id = host.create_session(None, None, None);
+        host.set_approval(&id, "ask").await.unwrap();
+        host.get_slot(&id)
+            .unwrap()
+            .running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut mux = host.mux_subscribe();
+        let h = host.clone();
+        let sid = id.clone();
+        let task = tokio::spawn(async move { h.request_escalation(&sid, escalation_req()).await });
+        let f = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("审批问询帧应广播");
+        task.abort(); // 模拟 turn 取消:port future 整体丢弃
+        let _ = f;
+        assert!(
+            wait_log_approval(&host, &id, "\"cancelled\"").await,
+            "守卫应落 decided(cancelled)"
+        );
+        assert!(
+            host.pending.lock().unwrap().is_empty(),
+            "pending 不得悬挂"
         );
     }
 

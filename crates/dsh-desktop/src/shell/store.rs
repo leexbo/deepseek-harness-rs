@@ -138,6 +138,7 @@ impl AppStore {
                 jobs_by_id: HashMap::new(),
                 pending_plan: None,
                 pending_ask: None,
+                pending_approval: None,
             },
             bridge,
             stats_by_id: HashMap::new(),

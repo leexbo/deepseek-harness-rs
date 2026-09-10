@@ -33,6 +33,17 @@ pub struct PendingAsk {
     pub questions: Vec<Question>,
 }
 
+/// 待批沙箱升级(intent = sandbox-escalation;一次两钮,批准 = allow-once)
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingApproval {
+    /// 应答回显键(本帧 rpcId)
+    pub rpc_id: String,
+    /// 所属会话
+    pub session_id: String,
+    /// 问题载荷(audit id / question = justification / data = 命令与模式)
+    pub question: Question,
+}
+
 /// 帧应用后请求的副作用(由 store 执行:重拉清单/宿主信息/统计)
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
@@ -71,6 +82,8 @@ pub struct StoreState {
     pub pending_plan: Option<PendingPlan>,
     /// 通用问答(ask_user_question;question/requested 无 intent;resolved 清空)
     pub pending_ask: Option<PendingAsk>,
+    /// 待批沙箱升级(intent = sandbox-escalation;resolved 清空)
+    pub pending_approval: Option<PendingApproval>,
 }
 
 /// 应用一帧,返回待执行副作用。
@@ -170,7 +183,22 @@ pub fn apply_frame(state: &mut StoreState, frame: ServerRequest) -> Vec<Effect> 
                 f.session_id,
                 f.questions.len()
             );
-            if f.questions.iter().any(|q| q.intent.is_some()) {
+            if f
+                .questions
+                .first()
+                .and_then(|q| q.intent.as_ref())
+                .and_then(|i| i["kind"].as_str())
+                == Some("sandbox-escalation")
+            {
+                // 沙箱升级审批:独立卡(一步两钮;data = 命令/模式载荷)
+                if let Some(q) = f.questions.into_iter().next() {
+                    state.pending_approval = Some(PendingApproval {
+                        rpc_id: frame.rpc_id,
+                        session_id: f.session_id,
+                        question: q,
+                    });
+                }
+            } else if f.questions.iter().any(|q| q.intent.is_some()) {
                 // plan-review:保留既有 plan 审批通道
                 if let Some(q) = f.questions.into_iter().next() {
                     state.pending_plan = Some(PendingPlan {
@@ -192,6 +220,7 @@ pub fn apply_frame(state: &mut StoreState, frame: ServerRequest) -> Vec<Effect> 
         "question/resolved" => {
             state.pending_plan = None;
             state.pending_ask = None;
+            state.pending_approval = None;
             vec![]
         }
         _ => vec![],
@@ -325,6 +354,7 @@ mod tests {
             chats: HashMap::new(),
             pending_plan: None,
             pending_ask: None,
+            pending_approval: None,
         }
     }
 
@@ -348,6 +378,32 @@ mod tests {
             apply_frame(&mut st, frame("host/session-removed", json!({}))),
             vec![Effect::Sessions]
         );
+    }
+
+    /// 沙箱升级审批路由:intent kind = sandbox-escalation → pending_approval
+    /// (不与 plan/ask 混);question/resolved 清空
+    #[test]
+    fn approval_intent_routes_to_pending_approval() {
+        let mut st = state();
+        let payload = serde_json::json!({
+            "sessionId": "s-p",
+            "questions": [{
+                "id": "audit-1",
+                "question": "命令需要写工作区外的用户目录",
+                "intent": { "kind": "sandbox-escalation" },
+                "data": { "toolName": "bash", "command": "touch ~/x",
+                          "currentMode": "workspace-write", "targetMode": "full-access" },
+            }]
+        });
+        apply_frame(&mut st, frame("question/requested", payload));
+        let Some(p) = &st.pending_approval else {
+            panic!("应路由到 pending_approval");
+        };
+        assert_eq!(p.question.data.as_ref().unwrap()["targetMode"], "full-access");
+        assert!(st.pending_plan.is_none(), "不与 plan 通道混");
+        assert!(st.pending_ask.is_none(), "不与 ask 通道混");
+        apply_frame(&mut st, frame("question/resolved", serde_json::json!({})));
+        assert!(st.pending_approval.is_none(), "resolved 应清空");
     }
 
     #[test]

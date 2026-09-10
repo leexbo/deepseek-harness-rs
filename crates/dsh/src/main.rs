@@ -204,6 +204,7 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
             None,
             None,
             None,
+            None,
         )?;
         let session = Session::new(parts, gate, log, tools, backend, session_path, cancel);
         dispatch(session, message).await?;
@@ -470,6 +471,7 @@ async fn serve(common: CommonOpts) -> anyhow::Result<()> {
         common.pty,
         "workspace-write",
         // CLI 静态装配:无动态权限源
+        None,
         None,
         None,
         None,

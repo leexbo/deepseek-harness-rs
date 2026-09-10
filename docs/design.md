@@ -220,6 +220,7 @@ JSONL 日志逐事件重放:信封校验(§7.1)通过即重建 EventLog,`derive_
 | plan/submitted | 簿记 | `plan`;模型经 exit_plan_mode 提交 |
 | plan/approved | 簿记 | `plan`;批准后注入 active-plan 段 |
 | goal/state | 簿记 | `goals` 全量快照(id/text/done);恢复 = 读最近一条 |
+| approval/asked · approval/decided | 簿记 | 沙箱升级审计对:`id` 配对;asked 带 `toolName`/`reason`,decided 带 `outcome`(allowed-once / rejected / cancelled / unavailable) |
 
 归因集 = surface 三类 + audit/call。
 
@@ -365,6 +366,11 @@ span 为日志投影:turn/step → 区间 span(span_id = 起始事件 seq);audit
 
 preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: dsh/v1 / kind: Preset / metadata{name, displayName, description} / spec.mounts 装配清单;`---` 多文档流按 kind 路由、空文档跳过;deny_unknown_fields;metadata.name 必须与文件名 stem 一致)。内置 standard / minimal 经 `include_str!` 随二进制;workspace 同名文件覆盖内置。mount 行 source 三态:在树组件注册名 / 本地 wasm 路径(相对 workspace,`dsh:tools` 组件经 `WasmTool` 装载)/ OCI 引用(格式容纳,拉取随分发面启用);config 按组件 config-schema 校验后透传。分界:preset 只选模型面——沙箱、持久化、provider 路由、registry 永远留在宿主面。
 
+### 7.12 权限与审批
+
+沙箱访问模式三态(read-only / workspace-write / full-access),会话值 = 日志中最后一条 `sandbox/mode` 的 fold;审批策略 ask / never 同构(`approval/policy` fold)。两者都是 log-only 旋钮:执行侧工具每次执行实时 fold 同一日志(落档即生效,无需重装配),模型经 runtime-context 快照文本得知策略。
+
+**一次性升级**(bash,拒绝后的重试通道):参数 `sandbox_permissions`(目标档位)+ `justification`(必填一句话),必须成对、仅前台命令。闸门次序 fail-closed:严格加宽检查(目标必须严格更宽,非加宽请求从不问人)→ 审批口在场 → 问询;任一步失败抛逐字错误且零执行。批准 = `allowed-once`:目标模式**只盖本次调用的 policy**,不落 `sandbox/mode` 事件;拒绝/取消对该命令终局。审计对 `approval/asked`/`decided` 在工具执行内直写日志(时序先于其所批准的执行),必须被 open turn 包住;`approval=never` 在问询分发前直接拒绝,不可绕过,仍落审计对。拒绝提示链:Denied 输出 = 拒绝标记 + stderr + 升级提示(审批口在场且存在更宽档位时)。子代理:继承父显式 `sandbox/mode` 覆盖,approval 钉 never——升级确定性被拒。
 
 ## 8. 质量场景
 
@@ -389,7 +395,6 @@ preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: dsh/v1 / kind:
 | 沙箱内 rustc 崩溃(macOS guard page 分配被拒) | 编译型工作负载(build/test 工具调用)在沙箱内不可用,模型重试浪费 step | 会话要求模型跑 rustc 时(实测) |
 | dsh-host 剩余簇单体(bus/engine/arena/persistence/rpc/telemetry/config) | 能力实现与核心同 crate,替换需改核心 | wasm 组件化边界成熟(0.3 工具链) |
 | dsh-wit bindgen 仅覆盖 session world | loop/prompt/plugin world 缺宿主调用桩 | loop 组件化触发条件(0.3 工具链) |
-| escalation 加宽与拒绝提示链(后置) | 模型在沙箱拒绝处只能换路径,无「加宽 + 审批先于执行」升级通道(permission.rs 明示模型不得请求升级) | 需宿主审批执行通道(现存 plan 审批 / ask_user_question 之外另立,单独 PR) |
 
 ## 10. 术语表
 

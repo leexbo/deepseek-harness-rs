@@ -7,6 +7,7 @@
 //! 整体传递、可窄化(「执行世界」思想)。
 
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::time::Duration;
 
 use dsh_agent_loop::{CancelToken, ToolCallRequest, ToolOutput, ToolPort, ToolView};
@@ -30,6 +31,47 @@ pub mod workflow;
 /// 事件落档即对下一次执行生效,无需重装配)。缺省 = 装配期静态策略
 /// (CLI/测试装配)。
 pub type ModeSource = std::sync::Arc<dyn Fn() -> SandboxMode + Send + Sync>;
+
+/// 沙箱升级审批裁决(源 ApprovalOutcome 词汇)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalOutcome {
+    /// 批准一次(只盖发起该请求的本次调用,不落 sandbox/mode 事件)
+    AllowedOnce,
+    /// 用户拒绝(对该命令终局:停止解释,不绕行)
+    Rejected,
+    /// 用户取消/通道中止
+    Cancelled,
+    /// 无可用审批通道
+    Unavailable,
+}
+
+/// 沙箱升级请求(闸门审计与问询载荷;目标模式必须严格加宽,工具侧已验)
+#[derive(Debug, Clone)]
+pub struct EscalationRequest {
+    /// 发起工具名(bash / …)
+    pub tool_name: String,
+    /// 关联工具调用 id(缺 = 引擎未透传)
+    pub call_id: Option<String>,
+    /// 待执行命令原文(审批卡信任锚:用户看命令,不只是看理由)
+    pub command: String,
+    /// 目标模式
+    pub target_mode: SandboxMode,
+    /// 模型给出的一句话理由
+    pub justification: String,
+}
+
+/// 宿主审批闸门(批准先于执行):实现方负责审计对落档(approval/asked·
+/// decided)与用户问询;approval=never 时实现方在入口直接拒绝
+/// (不问任何应答方,照源不可绕过语义)。
+pub trait ApprovalPort: Send + Sync {
+    fn request(
+        &self,
+        req: EscalationRequest,
+    ) -> Pin<Box<dyn std::future::Future<Output = ApprovalOutcome> + Send>>;
+}
+
+/// 拒绝提示链(沙箱拒绝输出的下一行;教模型带参重试一次,审批问用户)
+pub const ESCALATION_HINT: &str = "[sandbox: escalation available — retry this exact command once with sandbox_permissions (the narrowest wider mode that suffices) + justification; the approval prompt asks the user]";
 
 pub use ask_question::{AskQuestionPort, AskQuestionTool, QuestionItem, QuestionOption};
 pub use file::FileTools;
@@ -56,6 +98,8 @@ pub struct BashTool {
     pub jobs: Option<JobsRegistry>,
     /// 会话权限模式动态源(execute 时解析;缺省 = 装配期静态 policy)
     pub mode_source: Option<ModeSource>,
+    /// 宿主审批闸门(沙箱一次性升级;None = 无升级能力,hint 亦不提示)
+    pub approval: Option<std::sync::Arc<dyn ApprovalPort>>,
 }
 
 impl BashTool {
@@ -72,6 +116,7 @@ impl BashTool {
             cancel: CancelToken::new(),
             jobs: None,
             mode_source: None,
+            approval: None,
         }
     }
 
@@ -87,6 +132,12 @@ impl BashTool {
         self
     }
 
+    /// 注入宿主审批闸门(启用 sandbox_permissions 一次性升级)
+    pub fn with_approval_port(mut self, port: std::sync::Arc<dyn ApprovalPort>) -> Self {
+        self.approval = Some(port);
+        self
+    }
+
     /// 执行时解析策略:动态源优先,静态 policy 兜底。ReadOnly 仍走沙箱链
     /// (无可写根)——读命令可用,写被内核拦并带拒绝标记,优于装配期
     /// 「不装 bash」的粗粒度压制
@@ -96,6 +147,52 @@ impl BashTool {
             Some(SandboxMode::WorkspaceWrite) => SandboxPolicy::workspace_write(self.cwd.clone()),
             Some(SandboxMode::ReadOnly) => SandboxPolicy::read_only(),
             None => self.policy.clone(),
+        }
+    }
+
+    /// 严格加宽表:一次性升级只允许到「严格更宽」的档位
+    /// (read-only → [workspace-write, full-access];workspace-write →
+    /// [full-access];full-access 不可再升)
+    fn wider_modes(mode: SandboxMode) -> &'static [SandboxMode] {
+        match mode {
+            SandboxMode::ReadOnly => &[SandboxMode::WorkspaceWrite, SandboxMode::FullAccess],
+            SandboxMode::WorkspaceWrite => &[SandboxMode::FullAccess],
+            SandboxMode::FullAccess => &[],
+        }
+    }
+
+    /// 升级参数解析:两参成对 + justification 非空(错误文案逐字照源;
+    /// 档位词汇 = RS 三态去 danger 命名)
+    fn parse_escalation(arguments: &Value) -> Result<Option<(SandboxMode, String)>, String> {
+        let perms = arguments["sandbox_permissions"].as_str();
+        let just = arguments["justification"].as_str();
+        match (perms, just) {
+            (None, None) => Ok(None),
+            (Some(_), None) => {
+                Err("invalid escalation: sandbox_permissions requires a justification".into())
+            }
+            (None, Some(_)) => Err(
+                "invalid escalation: justification is only valid together with sandbox_permissions"
+                    .into(),
+            ),
+            (Some(mode), Some(just)) => {
+                if just.trim().is_empty() {
+                    return Err("invalid justification: expected a non-empty sentence".into());
+                }
+                // 全部三态词汇在此接受;非严格加宽(同级/降级)由加宽表
+                // 检查统一拒绝(照源:unknown 仅指真正未知的字符串)
+                let target = match mode {
+                    "read-only" => SandboxMode::ReadOnly,
+                    "workspace-write" => SandboxMode::WorkspaceWrite,
+                    "full-access" => SandboxMode::FullAccess,
+                    other => {
+                        return Err(format!(
+                            "invalid escalation: unknown sandbox_permissions \"{other}\""
+                        ));
+                    }
+                };
+                Ok(Some((target, just.trim().to_string())))
+            }
         }
     }
 
@@ -132,7 +229,16 @@ impl BashTool {
                             "type": "string",
                             "description": "Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; \"git status\" → \"Show working tree status\"; \"npm install\" → \"Install package dependencies\"."
                         },
-                        "run_in_background": { "type": "boolean", "description": "Run detached; returns a job id immediately (manage via the jobs tool)" }
+                        "run_in_background": { "type": "boolean", "description": "Run detached; returns a job id immediately (manage via the jobs tool)" },
+                        "sandbox_permissions": {
+                            "type": "string",
+                            "enum": ["workspace-write", "full-access"],
+                            "description": "The wider sandbox mode this command needs. Only valid as a one-shot retry of a command the sandbox just denied; requires justification and user approval. Foreground commands only."
+                        },
+                        "justification": {
+                            "type": "string",
+                            "description": "Required with sandbox_permissions: one sentence for the user explaining why this exact command needs the wider access."
+                        }
                     },
                     "required": ["command", "description"],
                 },
@@ -309,6 +415,27 @@ impl ToolPort for BashTool {
                 ..Default::default()
             };
         }
+        // 升级参数解析(sandbox_permissions/justification 成对校验逐字);
+        // 仅前台——pty/后台带参显式拒绝(拒绝分类与提示链只在前台存在)
+        let escalation = match Self::parse_escalation(&arguments) {
+            Ok(e) => e,
+            Err(msg) => {
+                return ToolOutput {
+                    output: msg,
+                    success: false,
+                    ..Default::default()
+                };
+            }
+        };
+        if let Some((_, _)) = &escalation
+            && (arguments["run_in_background"].as_bool().unwrap_or(false) || self.pty)
+        {
+            return ToolOutput {
+                output: "sandbox_permissions is only available for foreground commands".into(),
+                success: false,
+                ..Default::default()
+            };
+        }
         // 后台路径:spawn + 注册 + 立即返回 job id;
         // watcher 任务收尾状态并把输出落盘 .dsh/jobs/<id>.log
         if arguments["run_in_background"].as_bool().unwrap_or(false) {
@@ -317,7 +444,73 @@ impl ToolPort for BashTool {
         if self.pty {
             return self.execute_pty(command).await;
         }
-        let policy = self.resolve_policy();
+        let mut policy = self.resolve_policy();
+        // 一次性升级闸门:严格加宽检查 → 审批口在场 → 问用户(批准先于
+        // 执行,零执行失败即错误;照源 approveEscalation 次序与逐字文案)
+        if let Some((target, justification)) = escalation {
+            let current = policy.mode;
+            if !Self::wider_modes(current).contains(&target) {
+                return ToolOutput {
+                    output: format!(
+                        "sandbox escalation to \"{}\" is not strictly wider than this call's current \"{}\" mode",
+                        mode_name(target),
+                        mode_name(current)
+                    ),
+                    success: false,
+                    ..Default::default()
+                };
+            }
+            let Some(port) = &self.approval else {
+                return ToolOutput {
+                    output: "sandbox escalation requires approval, but no approval service is composed".into(),
+                    success: false,
+                    ..Default::default()
+                };
+            };
+            let req = EscalationRequest {
+                tool_name: "bash".into(),
+                call_id: None,
+                command: command.to_string(),
+                target_mode: target,
+                justification,
+            };
+            let outcome = tokio::select! {
+                out = port.request(req) => out,
+                // 取消与审批竞态:取消即不再等待(宿主侧 drop 守卫清
+                // pending 并落 decided(cancelled))
+                _ = self.cancel.cancelled() => ApprovalOutcome::Cancelled,
+            };
+            match outcome {
+                ApprovalOutcome::AllowedOnce => policy.mode = target,
+                ApprovalOutcome::Rejected => {
+                    return ToolOutput {
+                        output: format!(
+                            "the user rejected escalating this command to \"{}\"",
+                            mode_name(target)
+                        ),
+                        success: false,
+                        ..Default::default()
+                    };
+                }
+                ApprovalOutcome::Cancelled => {
+                    return ToolOutput {
+                        output: format!(
+                            "approval for escalating to \"{}\" was cancelled",
+                            mode_name(target)
+                        ),
+                        success: false,
+                        ..Default::default()
+                    };
+                }
+                ApprovalOutcome::Unavailable => {
+                    return ToolOutput {
+                        output: "sandbox escalation requires approval, but no approval channel is available".into(),
+                        success: false,
+                        ..Default::default()
+                    };
+                }
+            }
+        }
         let opts = SpawnOptions {
             cwd: Some(self.cwd.clone()),
             env: Default::default(),
@@ -360,14 +553,15 @@ impl ToolPort for BashTool {
                 format!("sandbox runner 失败(命令未执行):\n{detail}"),
             ),
             ExitClass::Denied { status, .. } => {
-                // 拒绝标记 + stderr 原文
+                // 拒绝标记 + stderr 原文 + 升级提示链(审批口在场且存在
+                // 更宽档位时才提示——无审批服务时不撒谎)
                 let stderr = child.stderr_text().await;
-                (
-                    false,
-                    status.code,
-                    None,
-                    format!("{}\n{}", denial_marker(policy.mode), stderr.trim()),
-                )
+                let mut text = format!("{}\n{}", denial_marker(policy.mode), stderr.trim());
+                if self.approval.is_some() && !Self::wider_modes(policy.mode).is_empty() {
+                    text.push('\n');
+                    text.push_str(ESCALATION_HINT);
+                }
+                (false, status.code, None, text)
             }
         };
         ToolOutput {
@@ -392,16 +586,20 @@ fn terminal_view(
     }
 }
 
-/// 拒绝标记(`sandboxDenialMarker` 模式插值),
-/// 模型据此识别「沙箱拦截而非命令逻辑错误」(模式名与 dsh-core
-/// `permission.rs` 字符串一致)
-fn denial_marker(mode: SandboxMode) -> String {
-    let mode = match mode {
+/// 模式名(denial marker / 升级错误文案;与 dsh-core `permission.rs`
+/// 字符串一致)
+fn mode_name(mode: SandboxMode) -> &'static str {
+    match mode {
         SandboxMode::ReadOnly => "read-only",
         SandboxMode::WorkspaceWrite => "workspace-write",
         SandboxMode::FullAccess => "full-access",
-    };
-    format!("[sandbox: file access denied under {mode} mode]")
+    }
+}
+
+/// 拒绝标记(`sandboxDenialMarker` 模式插值),
+/// 模型据此识别「沙箱拦截而非命令逻辑错误」
+fn denial_marker(mode: SandboxMode) -> String {
+    format!("[sandbox: file access denied under {} mode]", mode_name(mode))
 }
 
 /// 退出状态 → (success, exit_code, signal):
@@ -555,5 +753,173 @@ mod tests {
             std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
         assert!(tool.policy.writable_roots().iter().any(|r| r == &tmp));
         assert_eq!(tool.cwd, PathBuf::from("/tmp/example-ws"));
+    }
+
+    /// 一次性升级闸门:port 拒绝 → 逐字拒绝文本且零执行;port 批准 →
+    /// 本次以宽策略执行(allow-once);下一次无参执行回到会话模式
+    /// (被拒/批准都不落会话态)
+    #[tokio::test]
+    async fn bash_escalation_gate_and_one_shot() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct MockApproval {
+            outcome: std::sync::Arc<std::sync::Mutex<ApprovalOutcome>>,
+            consulted: std::sync::Arc<AtomicBool>,
+        }
+        impl ApprovalPort for MockApproval {
+            fn request(
+                &self,
+                _req: EscalationRequest,
+            ) -> Pin<Box<dyn std::future::Future<Output = ApprovalOutcome> + Send>> {
+                let outcome = *self.outcome.lock().unwrap();
+                let consulted = std::sync::Arc::clone(&self.consulted);
+                Box::pin(async move {
+                    consulted.store(true, Ordering::Relaxed);
+                    outcome
+                })
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("dsh-bash-esc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mode = std::sync::Arc::new(std::sync::Mutex::new(SandboxMode::WorkspaceWrite));
+        let mode_for_tool = std::sync::Arc::clone(&mode);
+        let outcome = std::sync::Arc::new(std::sync::Mutex::new(ApprovalOutcome::Rejected));
+        let consulted = std::sync::Arc::new(AtomicBool::new(false));
+        let mut tool = BashTool::new(&dir)
+            .with_mode_source(std::sync::Arc::new(move || *mode_for_tool.lock().unwrap()))
+            .with_approval_port(std::sync::Arc::new(MockApproval {
+                outcome: std::sync::Arc::clone(&outcome),
+                consulted: std::sync::Arc::clone(&consulted),
+            }));
+        let esc_call = |cmd: String| ToolCallRequest {
+            name: "bash".into(),
+            arguments: json!({
+                "command": cmd,
+                "description": "Escalate probe",
+                "sandbox_permissions": "full-access",
+                "justification": "命令需要写工作区外的用户目录",
+            }),
+        };
+        let probe = |n: &str| format!("touch ~/dsh-esc-probe-{n}-{}", std::process::id());
+
+        // ① 拒绝:逐字文本 + 零执行(文件不存在)
+        let rejected =
+            ToolPort::execute(&mut tool, &esc_call(probe("rejected"))).await;
+        assert!(!rejected.success);
+        assert!(
+            rejected
+                .output
+                .contains("the user rejected escalating this command to \"full-access\""),
+            "{:?}",
+            rejected.output
+        );
+        let home = std::env::var("HOME").unwrap();
+        assert!(
+            !std::path::Path::new(&format!("{home}/dsh-esc-probe-rejected-{}", std::process::id()))
+                .exists(),
+            "被拒命令不得落盘"
+        );
+
+        // ② 批准(allow-once):本次以 full-access 执行,命令生效
+        *outcome.lock().unwrap() = ApprovalOutcome::AllowedOnce;
+        let ok = ToolPort::execute(&mut tool, &esc_call(probe("allowed"))).await;
+        assert!(ok.success, "批准后应以宽策略执行:{:?}", ok.output);
+        assert!(
+            std::path::Path::new(&format!("{home}/dsh-esc-probe-allowed-{}", std::process::id()))
+                .exists(),
+            "宽策略写应落盘"
+        );
+
+        // ③ 下一次无参执行回到会话模式:home 写被拦(只盖本次的语义)
+        consulted.store(false, Ordering::Relaxed);
+        let plain_call = ToolCallRequest {
+            name: "bash".into(),
+            arguments: json!({ "command": probe("plain"), "description": "Plain probe" }),
+        };
+        let back = ToolPort::execute(&mut tool, &plain_call).await;
+        assert!(!back.success, "无参执行应回到会话模式(被拦)");
+        assert!(back.output.contains("workspace-write mode"), "{:?}", back.output);
+        assert!(
+            !consulted.load(Ordering::Relaxed),
+            "无参执行不得咨询审批口"
+        );
+
+        // ④ 非加宽请求(同级):从不问人,逐字拒绝
+        *mode.lock().unwrap() = SandboxMode::ReadOnly;
+        let narrow = ToolCallRequest {
+            name: "bash".into(),
+            arguments: json!({
+                "command": probe("narrow"),
+                "description": "Narrow probe",
+                "sandbox_permissions": "read-only",
+                "justification": "试图原地重复",
+            }),
+        };
+        let out = ToolPort::execute(&mut tool, &narrow).await;
+        assert!(
+            out.output
+                .contains("is not strictly wider than this call's current \"read-only\" mode"),
+            "{:?}",
+            out.output
+        );
+        assert!(!consulted.load(Ordering::Relaxed), "非加宽请求从不问人");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(format!("{home}/dsh-esc-probe-allowed-{}", std::process::id()));
+    }
+
+    /// 校验逐字:两参不成对 / justification 空 / 未知档位——错误文案照源,
+    /// 且零执行、不问审批口
+    #[tokio::test]
+    async fn bash_escalation_validation_verbatim() {
+        let dir = std::env::temp_dir().join(format!("dsh-bash-escv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut tool = BashTool::new(&dir);
+        let cases: Vec<(Value, &str)> = vec![
+            (
+                json!({ "command": "echo hi", "description": "D", "sandbox_permissions": "full-access" }),
+                "invalid escalation: sandbox_permissions requires a justification",
+            ),
+            (
+                json!({ "command": "echo hi", "description": "D", "justification": "想让命令更自由" }),
+                "invalid escalation: justification is only valid together with sandbox_permissions",
+            ),
+            (
+                json!({ "command": "echo hi", "description": "D", "sandbox_permissions": "full-access", "justification": "   " }),
+                "invalid justification: expected a non-empty sentence",
+            ),
+            (
+                json!({ "command": "echo hi", "description": "D", "sandbox_permissions": "danger-full-access", "justification": "旧词" }),
+                "invalid escalation: unknown sandbox_permissions \"danger-full-access\"",
+            ),
+        ];
+        for (args, expect) in cases {
+            let out = ToolPort::execute(
+                &mut tool,
+                &ToolCallRequest { name: "bash".into(), arguments: args },
+            )
+            .await;
+            assert!(!out.success);
+            assert_eq!(out.output, expect);
+        }
+        // 无审批口 + 带参(校验通过):逐字「无审批服务」
+        let out = ToolPort::execute(
+            &mut tool,
+            &ToolCallRequest {
+                name: "bash".into(),
+                arguments: json!({
+                    "command": "echo hi",
+                    "description": "D",
+                    "sandbox_permissions": "full-access",
+                    "justification": "需要全盘写",
+                }),
+            },
+        )
+        .await;
+        assert_eq!(
+            out.output,
+            "sandbox escalation requires approval, but no approval service is composed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

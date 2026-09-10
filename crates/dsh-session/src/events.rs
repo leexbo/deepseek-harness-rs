@@ -145,6 +145,33 @@ pub struct ApprovalPolicy {
     pub source: Option<String>,
 }
 
+/// approval/asked 载荷:工具请求沙箱升级,审批闸门已向用户发起问询。
+///
+/// 与 approval/decided 以 id 配对成审计对;log-only,不进模型 transcript;
+/// 必须被 open turn 包住(闸门仅在工具执行中发起,闲时拒绝不落档)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApprovalAsked {
+    /// 审批请求 id(每次请求新生成,与 decided 配对)
+    pub id: String,
+    /// 发起工具名(bash / …)
+    pub tool_name: String,
+    /// 工具调用 id(缺失 = 无关联调用)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// 审批事由(自包含:`escalate sandbox to <mode>: <justification>`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// approval/decided 载荷:审批裁决(与 asked 以 id 配对收口)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApprovalDecided {
+    /// 与 asked 配对的请求 id
+    pub id: String,
+    /// 裁决:allowed-once / rejected / cancelled / unavailable
+    pub outcome: String,
+}
+
 /// 会话分叉记录(非 surface)。分叉 = 复制父日志后追加本事件,
 /// 血缘(source session_query)由此链重建
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -304,6 +331,12 @@ pub enum SessionEventData {
     /// 审批策略切换(非 surface;快照文本 fold 读取)
     #[serde(rename = "approval/policy", rename_all = "camelCase")]
     ApprovalPolicy(ApprovalPolicy),
+    /// 审批发起(非 surface;闸门审计对,与 decided 以 id 配对)
+    #[serde(rename = "approval/asked", rename_all = "camelCase")]
+    ApprovalAsked(ApprovalAsked),
+    /// 审批裁决(非 surface;审计对收口)
+    #[serde(rename = "approval/decided", rename_all = "camelCase")]
+    ApprovalDecided(ApprovalDecided),
     /// 模型提交的计划(非 surface)
     #[serde(rename = "plan/submitted", rename_all = "camelCase")]
     PlanSubmitted(PlanSubmitted),
@@ -359,6 +392,9 @@ pub const KNOWN_EVENT_TYPES: &[&str] = &[
     "permission/preset",
     "sandbox/mode",
     "approval/policy",
+    // 沙箱升级审批对(闸门审计;新增类型对旧日志安全)
+    "approval/asked",
+    "approval/decided",
     // LLM 请求重试(llm-retry 语义;新增类型对旧日志
     // 安全——旧日志无此类型,守卫只拒「未登记且非 ignorable」)
     "llm/retry",
@@ -402,6 +438,8 @@ impl SessionEventData {
             Self::PermissionPreset(_) => "permission/preset",
             Self::SandboxMode(_) => "sandbox/mode",
             Self::ApprovalPolicy(_) => "approval/policy",
+            Self::ApprovalAsked(_) => "approval/asked",
+            Self::ApprovalDecided(_) => "approval/decided",
             Self::PlanSubmitted(_) => "plan/submitted",
             Self::PlanApproved(_) => "plan/approved",
             Self::PlanCancelled(_) => "plan/cancelled",
