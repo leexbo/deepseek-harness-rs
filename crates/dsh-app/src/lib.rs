@@ -478,6 +478,11 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
         self.engine.set_hook_port(port);
     }
 
+    /// 卸载 hooks 拦截点(热卸载)。
+    pub fn clear_hook_port(&mut self) {
+        self.engine.clear_hook_port();
+    }
+
     /// 从既有日志恢复投影 retained(runtime 快照同源恢复;冷附着重开会话用)。
     pub fn restore_projection(&mut self) {
         self.engine.restore_projection();

@@ -86,6 +86,24 @@ impl AnySession {
         }
     }
 
+    fn clear_hook_port(&mut self) {
+        match self {
+            AnySession::Real(s) => s.clear_hook_port(),
+            AnySession::Fake(s) => s.clear_hook_port(),
+        }
+    }
+
+    /// hooks 桥热替换(None = 卸载;保存配置即生效,turn 边界换装)
+    fn set_hook_port_opt(&mut self, port: Option<Arc<dyn dsh_agent_loop::hooks::HookPortObj>>) {
+        match port {
+            Some(p) => self.set_hook_port(p),
+            None => match self {
+                AnySession::Real(s) => s.clear_hook_port(),
+                AnySession::Fake(s) => s.clear_hook_port(),
+            },
+        }
+    }
+
     fn pending_plan(&self) -> Option<String> {
         match self {
             AnySession::Real(s) => s.pending_plan(),
@@ -212,6 +230,8 @@ enum DriverCmd {
     SetPermission(String),
     /// 审批策略切换(approval/policy 落档 + 广播)
     SetApproval(String),
+    /// hooks 桥热替换(保存配置即生效,turn 边界换装;None = 卸载)
+    SetHooks(Option<std::sync::Arc<dyn dsh_agent_loop::hooks::HookPortObj>>),
 }
 
 /// 队列态(进程内权威快照经 session/queue 帧下发)。
@@ -2393,12 +2413,7 @@ impl AppHost {
     /// 构建 hooks 运行时(attach 装配;M4.2):enabled 桥逐个读配置,
     /// 读不到/解析不了 ⇒ warn + 该桥不注册(照源);全部失败/无配置 =
     /// None(引擎直通)。config_path 相对路径按进程启动 cwd 解析。
-    fn build_hook_service(
-        &self,
-    ) -> Option<(
-        std::sync::Arc<dsh_hooks::HookService>,
-        dsh_agent_loop::CancelToken,
-    )> {
+    fn build_hook_service(&self) -> Option<std::sync::Arc<dsh_hooks::HookService>> {
         let entries: Vec<crate::settings::HookBridgeEntry> = self
             .settings
             .read()
@@ -2410,7 +2425,6 @@ impl AppHost {
         if entries.is_empty() {
             return None;
         }
-        let cancel = dsh_agent_loop::CancelToken::new();
         let mut bridges = Vec::new();
         for entry in entries {
             let dialect = match entry.dialect.as_str() {
@@ -2472,16 +2486,69 @@ impl AppHost {
         if bridges.is_empty() {
             return None;
         }
-        Some((
-            std::sync::Arc::new(dsh_hooks::HookService::new(bridges, cancel.clone())),
-            cancel,
-        ))
+        Some(std::sync::Arc::new(dsh_hooks::HookService::new(
+            bridges,
+            dsh_agent_loop::CancelToken::new(),
+        )))
+    }
+
+    /// 构建 HookPort 并对全部附着会话热下发(保存配置即生效;turn 边界
+    /// 换装,不中断运行中 turn)。配置解析全部失败 ⇒ 下发 None(卸载)。
+    fn broadcast_hook_ports(self: &Arc<Self>) {
+        let service = self.build_hook_service();
+        let slots: Vec<String> = {
+            let slots = self.sessions.read().expect("sessions 锁中毒");
+            slots.keys().cloned().collect()
+        };
+        for sid in slots {
+            let Some(slot) = self.get_slot(&sid) else {
+                continue;
+            };
+            let Some(inner) = slot.inner.get() else {
+                continue;
+            };
+            let port: Option<std::sync::Arc<dyn dsh_agent_loop::hooks::HookPortObj>> =
+                service.as_ref().map(|svc| {
+                    let sink: dsh_hooks::HookSink = {
+                        let log = Arc::clone(&inner.log);
+                        let backend = inner.backend.clone();
+                        Arc::new(move |ty, data| {
+                            if let Ok(mut l) = log.lock() {
+                                let ev = dsh_session::EventEnvelope::new(
+                                    ty,
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as i64)
+                                        .unwrap_or(0),
+                                    data,
+                                );
+                                if let Ok(seq) = l.append(ev)
+                                    && let Some(envelope) = l.get(seq)
+                                {
+                                    let _ = backend.append(envelope);
+                                }
+                            }
+                        })
+                    };
+                    let ws_root = self.resolve_session(&sid).0;
+                    std::sync::Arc::new(dsh_hooks::service::HookPortImpl {
+                        service: Arc::clone(svc),
+                        session_id: sid.clone(),
+                        workspace: ws_root.clone(),
+                        sink,
+                        model: String::new(),
+                        approval: Some(self.hook_tool_approval(&sid)),
+                        sandbox: Some(dsh_sandbox::SandboxPolicy::workspace_write(ws_root.clone())),
+                    }) as std::sync::Arc<dyn dsh_agent_loop::hooks::HookPortObj>
+                });
+            let _ = inner.driver_cmd.send(DriverCmd::SetHooks(port));
+        }
     }
 
     /// 新增/更新 hooks 桥(id 唯一;dialect 只认 claude-code|codex;
     /// config_path 必填)。变更 = 下次 attach 生效(配置进程级,照源)。
     pub fn upsert_hook_bridge(
-        &self,
+        self: &Arc<Self>,
         entry: crate::settings::HookBridgeEntry,
     ) -> Result<(), RpcError> {
         if entry.id.is_empty()
@@ -2507,14 +2574,19 @@ impl AppHost {
                     None => s.hook_bridges.push(entry.clone()),
                 },
             )
-            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        // 热生效:保存即对全部附着会话换装(无需新会话/重启)
+        self.broadcast_hook_ports();
+        Ok(())
     }
 
-    /// 移除 hooks 桥(下次 attach 不再挂载)
-    pub fn remove_hook_bridge(&self, id: &str) -> Result<(), RpcError> {
+    /// 移除 hooks 桥(热卸载:全部附着会话立即摘除钩子)
+    pub fn remove_hook_bridge(self: &Arc<Self>, id: &str) -> Result<(), RpcError> {
         self.settings
             .update(|s| s.hook_bridges.retain(|e| e.id != id))
-            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        self.broadcast_hook_ports();
+        Ok(())
     }
 
     /// 端口池对照 settings enabled 清单同步:禁用/移除的端口停机并移除,
@@ -6099,6 +6171,11 @@ fn handle_driver_cmd(
                 broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
             }
         }
+        DriverCmd::SetHooks(port) => {
+            // hooks 桥热替换(保存配置即生效;turn 边界换装,不中断运行中
+            // turn)。None = 卸载全部钩子。
+            session.set_hook_port_opt(port);
+        }
     }
 }
 
@@ -6237,7 +6314,7 @@ async fn driver_loop(
     // 不落 hook 对——turn 外,照源)。无配置/全部解析失败 = 不挂。
     {
         let ws_root = host0.resolve_session(&session_id).0;
-        if let Some((service, hook_cancel)) = host0.build_hook_service() {
+        if let Some(service) = host0.build_hook_service() {
             let sink: dsh_hooks::HookSink = {
                 let log = Arc::clone(&inner.log);
                 let backend = inner.backend.clone();
@@ -6314,7 +6391,6 @@ async fn driver_loop(
                     }
                 }
             }));
-            let _ = hook_cancel; // 会话槽销毁时统一 cancel(照 detached.drain 语义)
         }
     }
 
