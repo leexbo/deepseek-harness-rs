@@ -473,6 +473,11 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
         self.engine.set_skill_gesture_provider(provider);
     }
 
+    /// 挂 hooks 拦截点(宿主装配;dsh-hooks HookPortImpl;M4.2)。
+    pub fn set_hook_port(&mut self, port: std::sync::Arc<dyn dsh_agent_loop::hooks::HookPortObj>) {
+        self.engine.set_hook_port(port);
+    }
+
     /// 从既有日志恢复投影 retained(runtime 快照同源恢复;冷附着重开会话用)。
     pub fn restore_projection(&mut self) {
         self.engine.restore_projection();

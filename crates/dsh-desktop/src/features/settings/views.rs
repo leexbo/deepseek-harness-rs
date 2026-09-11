@@ -74,6 +74,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                     match store.read(cx).settings.settings_nav {
                         SettingsNav::Models => models_section(store, cx).into_any_element(),
                         SettingsNav::Mcp => mcp_section(store, cx).into_any_element(),
+                        SettingsNav::Hooks => hooks_section(store, cx).into_any_element(),
                         SettingsNav::General => general_section(store, cx).into_any_element(),
                         SettingsNav::About => about_section(store, cx).into_any_element(),
                     },
@@ -2729,10 +2730,11 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let back = store.clone();
     // 「基础设置」组:常规 / 模型设置(模型行名为「模型」);
     // 「Agent 能力」「数据与统计」无已实装项,不渲染空组头
-    let basic: [(SettingsNav, &str, gpui_kit::component::Icon); 3] = [
+    let basic: [(SettingsNav, &str, gpui_kit::component::Icon); 4] = [
         (SettingsNav::General, "常规", fixed(IconName::Settings, 15.)),
         (SettingsNav::Models, "模型设置", fixed(DshIcon::Gauge, 15.)),
         (SettingsNav::Mcp, "MCP", fixed(DshIcon::Infinity, 15.)),
+        (SettingsNav::Hooks, "Hooks", fixed(DshIcon::Wrench, 15.)),
     ];
     let mut list = div().v_flex().gap(px(4.));
     list = list.child(nav_group_header("基础设置"));
@@ -2864,4 +2866,335 @@ pub(crate) fn settings_row(store: &Entity<AppStore>) -> impl IntoElement {
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_settings(cx));
         })
+}
+
+/// Hooks 区(Claude Code / Codex 桥;M4.2):行卡(id/方言/路径/启停/
+/// 编辑/卸载)+ 添加卡 + 详情表单。视觉语言复刻 MCP Servers 区。
+fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
+    use super::store::HooksDetailState;
+    let st = store.read(cx);
+    let st_add = store.clone();
+    let Some(detail) = st.settings.hooks_detail.clone() else {
+        // ── 列表页 ──
+        let bridges = st.settings.settings_snapshot["hookBridges"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut col = div()
+            .v_flex()
+            .gap(px(12.))
+            .child(section_title("Hooks"))
+            .child(intro_line(
+                "把既有 Claude Code / Codex hooks.json 的 command 钩子接进会话:阻塞工具与提示、附加上下文、强制续跑;变更在下次会话附着时生效。",
+            ));
+        let total = bridges.len();
+        col = col.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .mt(px(12.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .text_size(px(11.))
+                        .text_color(theme::CAPTION())
+                        .child(format!("已安装 {total}")),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .id("hooks-add")
+                        .debug_selector(|| "hooks-add".to_string())
+                        .flex()
+                        .h(px(28.))
+                        .items_center()
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .bg(theme::BRAND())
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(gpui_kit::white())
+                        .hover(|s| s.opacity(0.9))
+                        .on_click({
+                            let st_open = st_add.clone();
+                            move |_, window, cx| {
+                                st_open.update(cx, |st, cx| st.open_hooks_add(window, cx));
+                            }
+                        })
+                        .child("+ 新建"),
+                ),
+        );
+        let mut rows = div().v_flex().gap(px(8.));
+        if bridges.is_empty() {
+            rows = rows.child(caption_line("尚未配置 hooks 桥。"));
+        }
+        for (ix, b) in bridges.into_iter().enumerate() {
+            let id = b["id"].as_str().unwrap_or_default().to_string();
+            let dialect = b["dialect"].as_str().unwrap_or_default().to_string();
+            let config_path = b["configPath"].as_str().unwrap_or_default().to_string();
+            let enabled = b["enabled"].as_bool().unwrap_or(false);
+            let (st_switch, st_edit, st_remove) = (store.clone(), store.clone(), store.clone());
+            let (id_switch_click, id_edit_click, id_remove_click) =
+                (id.clone(), id.clone(), id.clone());
+            let (id_sw_dbg, id_sw_click) = (id_switch_click.clone(), id_switch_click.clone());
+            let (id_ed_dbg, id_ed_click) = (id_edit_click.clone(), id_edit_click.clone());
+            let (id_rm_dbg, id_rm_click) = (id_remove_click.clone(), id_remove_click.clone());
+            rows = rows.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .rounded(px(10.))
+                    .bg(theme::LAYER())
+                    .px(px(12.))
+                    .py(px(10.))
+                    .child(
+                        div()
+                            .v_flex()
+                            .gap(px(2.))
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                    .text_color(theme::LABEL())
+                                    .child(id_switch_click.clone()),
+                            )
+                            .child(
+                                div().flex().items_center().gap(px(6.)).child(
+                                    div()
+                                        .min_w(px(0.))
+                                        .text_size(px(11.))
+                                        .text_color(theme::CAPTION())
+                                        .child(format!("{dialect} · {config_path}")),
+                                ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(("hooks-switch", ix))
+                            .debug_selector(move || format!("hooks-switch-{id_sw_dbg}"))
+                            .on_mouse_down(gpui_kit::MouseButton::Left, {
+                                let st_switch = st_switch.clone();
+                                let id_sw = id_sw_click.clone();
+                                move |_, _, cx| {
+                                    st_switch
+                                        .update(cx, |st, cx| st.toggle_hook_bridge(&id_sw, cx));
+                                }
+                            })
+                            .child(toggle_switch(enabled)),
+                    )
+                    .child(
+                        div()
+                            .id(("hooks-edit", ix))
+                            .debug_selector(move || format!("hooks-edit-{id_ed_dbg}"))
+                            .flex()
+                            .h(px(22.))
+                            .items_center()
+                            .px(px(8.))
+                            .rounded(px(11.))
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(theme::LABEL_2())
+                            .hover(|s| s.bg(theme::DOCK()))
+                            .on_click(move |_, window, cx| {
+                                st_edit.update(cx, |st, cx| {
+                                    st.open_hooks_edit(&id_ed_click, window, cx)
+                                });
+                            })
+                            .child("编辑"),
+                    )
+                    .child(
+                        div()
+                            .id(("hooks-remove", ix))
+                            .debug_selector(move || format!("hooks-remove-{id_rm_dbg}"))
+                            .flex()
+                            .h(px(22.))
+                            .items_center()
+                            .px(px(8.))
+                            .rounded(px(11.))
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(theme::DANGER())
+                            .hover(|s| s.bg(theme::DOCK()))
+                            .on_click(move |_, _, cx| {
+                                st_remove
+                                    .update(cx, |st, cx| st.remove_hook_bridge(&id_rm_click, cx));
+                            })
+                            .child("卸载"),
+                    ),
+            );
+        }
+        return col.child(rows).into_any_element();
+    };
+
+    // ── 详情页(新增/编辑表单)──
+    let st_back = store.clone();
+    let st_save = store.clone();
+    let st_dialect_cc = store.clone();
+    let st_dialect_codex = store.clone();
+    let st_toggle = store.clone();
+    let dialect_sel = |d: &HooksDetailState, want: &str| d.form_dialect == want;
+    let mut col = div()
+        .v_flex()
+        .gap(px(12.))
+        .child(section_title(if detail.editing.is_some() {
+            "编辑 Hooks 桥"
+        } else {
+            "新建 Hooks 桥"
+        }))
+        .child(
+            div()
+                .id("hooks-back")
+                .flex()
+                .h(px(28.))
+                .w(px(72.))
+                .items_center()
+                .justify_center()
+                .rounded(px(8.))
+                .bg(theme::LAYER())
+                .cursor_pointer()
+                .text_size(px(12.))
+                .text_color(theme::LABEL_2())
+                .on_click({
+                    let st_back = st_back.clone();
+                    move |_, _, cx| {
+                        st_back.update(cx, |st, cx| st.close_hooks_detail(cx));
+                    }
+                })
+                .child("← 返回"),
+        );
+    // 方言
+    {
+        let (cc_sel, codex_sel) = (
+            dialect_sel(&detail, "claude-code"),
+            dialect_sel(&detail, "codex"),
+        );
+        col = col.child(section_title("方言")).child(
+            div()
+                .flex()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .id("hooks-dialect-cc")
+                        .flex()
+                        .h(px(28.))
+                        .items_center()
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(if cc_sel {
+                            gpui_kit::white()
+                        } else {
+                            theme::LABEL_2().into()
+                        })
+                        .bg(if cc_sel {
+                            theme::BRAND()
+                        } else {
+                            theme::LAYER()
+                        })
+                        .on_click({
+                            let st_dialect_cc = st_dialect_cc.clone();
+                            move |_, _, cx| {
+                                st_dialect_cc
+                                    .update(cx, |st, cx| st.set_hooks_dialect("claude-code", cx));
+                            }
+                        })
+                        .child("claude-code"),
+                )
+                .child(
+                    div()
+                        .id("hooks-dialect-codex")
+                        .flex()
+                        .h(px(28.))
+                        .items_center()
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(if codex_sel {
+                            gpui_kit::white()
+                        } else {
+                            theme::LABEL_2().into()
+                        })
+                        .bg(if codex_sel {
+                            theme::BRAND()
+                        } else {
+                            theme::LAYER()
+                        })
+                        .on_click({
+                            let st_dialect_codex = st_dialect_codex.clone();
+                            move |_, _, cx| {
+                                st_dialect_codex
+                                    .update(cx, |st, cx| st.set_hooks_dialect("codex", cx));
+                            }
+                        })
+                        .child("codex"),
+                ),
+        );
+    }
+    // 启用开关
+    col = col.child(section_title("启用")).child(
+        div()
+            .id("hooks-form-enabled")
+            .on_mouse_down(gpui_kit::MouseButton::Left, {
+                let st_toggle = st_toggle.clone();
+                move |_, _, cx| {
+                    st_toggle.update(cx, |st, cx| st.toggle_hooks_form_enabled(cx));
+                }
+            })
+            .child(toggle_switch(detail.form_enabled)),
+    );
+    // 字段
+    col = col
+        .child(section_title("配置"))
+        .child(field_input(
+            "路径",
+            "hooks-form-path",
+            &detail.form_config_path,
+        ))
+        .child(field_input(
+            "pluginRoot",
+            "hooks-form-plugin-root",
+            &detail.form_plugin_root,
+        ))
+        .child(field_input(
+            "projectDir",
+            "hooks-form-project-dir",
+            &detail.form_project_dir,
+        ))
+        .child(field_input(
+            "超时 ms",
+            "hooks-form-timeout",
+            &detail.form_timeout,
+        ))
+        .child(
+            div()
+                .id("hooks-save")
+                .debug_selector(|| "hooks-save".to_string())
+                .flex()
+                .h(px(32.))
+                .w(px(96.))
+                .items_center()
+                .justify_center()
+                .rounded(px(8.))
+                .bg(theme::BRAND())
+                .cursor_pointer()
+                .text_size(px(12.))
+                .text_color(gpui_kit::white())
+                .hover(|s| s.opacity(0.9))
+                .on_click({
+                    let st_save = st_save.clone();
+                    move |_, window, cx| {
+                        st_save.update(cx, |st, cx| st.save_hooks(window, cx));
+                    }
+                })
+                .child("保存"),
+        );
+    col.into_any_element()
 }

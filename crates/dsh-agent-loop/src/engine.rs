@@ -137,6 +137,9 @@ pub struct LoopEngine {
     /// `/name` 手势注入回调(宿主注入;入参 = 本步用户面消息文本,
     /// 返回注入载荷列表,排在全部注入最后)。
     skill_gesture_provider: Option<SkillGestureProvider>,
+    /// hooks 拦截点(宿主注入;None = 无钩子,零开销直通)。四调用点:
+    /// prompt-submit / pre-tool / post-tool / stop(M4.2 拍板 1)。
+    hook_port: Option<std::sync::Arc<dyn crate::hooks::HookPortObj>>,
     /// 本 turn 内待下探的触碰路径(file_read/file_edit 的 path 参数);
     /// 下一次组合指令时消费并清空,turn 结束自然丢弃
     pending_touches: Vec<String>,
@@ -188,6 +191,7 @@ impl LoopEngine {
             instructions_provider: None,
             skill_catalog_provider: None,
             skill_gesture_provider: None,
+            hook_port: None,
             pending_touches: Vec::new(),
             retry_policy: RetryPolicy::default(),
             random_source: Box::new(uuid_random),
@@ -242,6 +246,11 @@ impl LoopEngine {
     /// 未设置 = 本会话无手势识别。
     pub fn set_skill_gesture_provider(&mut self, provider: SkillGestureProvider) {
         self.skill_gesture_provider = Some(provider);
+    }
+
+    /// 挂 hooks 拦截点(宿主装配;None = 无钩子直通)
+    pub fn set_hook_port(&mut self, port: std::sync::Arc<dyn crate::hooks::HookPortObj>) {
+        self.hook_port = Some(port);
     }
 
     /// 从既有日志恢复投影 retained(重开会话:runtime-context 快照同源恢复)。
@@ -674,6 +683,35 @@ impl LoopEngine {
             sink,
         )?;
 
+        // UserPromptSubmit 钩子(源 agent/pre-step):turn/start 落档后、
+        // step/start 前;拒绝 ⇒ turn 以 blocked 收尾、无 step(事件序
+        // 照源:turn/start → hook对 → turn/end)。hook 对由实现方落档。
+        // turn 序号与 Translator 计数同源:日志内历史 turn/start 数
+        // (本 turn 的 turn/start 已落档,计数即本 turn 序号)
+        let hook_turn_no: u64 = {
+            let l = self
+                .log
+                .lock()
+                .map_err(|_| LoopError::Log("log 锁中毒".into()))?;
+            l.iter().filter(|ev| ev.r#type == "turn/start").count() as u64
+        };
+        if let Some(hooks) = &self.hook_port
+            && let crate::hooks::PreStepVerdict::Reject =
+                hooks.on_prompt_submit(input, hook_turn_no).await
+        {
+            let seq_end = Self::commit(
+                &self.log,
+                EventEnvelope::new("turn/end", clock(), serde_json::json!({})),
+                sink,
+            )?;
+            self.inbox.clear();
+            self.phase = Phase::Idle;
+            return Ok(TurnOutcome {
+                assistant_message: String::new(),
+                seq_range: (seq_start, seq_end),
+            });
+        }
+
         // 首步消息组装输入:真实用户消息在 step/start 之后落档——真实
         // 用户消息与 steer 都是该步的 claimed,注入上下文随后,都在
         // step/start 之后。
@@ -1070,6 +1108,27 @@ impl LoopEngine {
                 if !self.claim_steered(clock, sink)?.is_empty() {
                     continue;
                 }
+                // Stop 钩子(源 agent/turn-stopping):turn 收尾前;
+                // continue ⇒ reason 压入引擎 steer 通道并续跑下一步
+                // (下一轮 claim_steered 认领;loop guard 照源不做——
+                // stop_hook_active 恒 false,钩子自限)。
+                if let Some(hooks) = &self.hook_port
+                    && let crate::hooks::StopVerdict::Continue { reason } =
+                        hooks.on_stop(hook_turn_no).await
+                    && let Some(buf) = &self.steer_buf
+                {
+                    buf.lock().expect("steer 锁中毒").push_back(SteerInput {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        text: reason,
+                        images: Vec::new(),
+                        source: Some(serde_json::json!({
+                            "kind": "plugin",
+                            "plugin": "hooks",
+                            "form": "stop-hook",
+                        })),
+                    });
+                    continue;
+                }
                 final_assistant = message_content;
                 break; // 模型不再调用工具:turn 收尾(正常终止,无步数上限)
             }
@@ -1101,6 +1160,63 @@ impl LoopEngine {
                 if self.cancel.is_cancelled() {
                     return Self::stop_cancelled(&self.log, clock, sink);
                 }
+                // PreToolUse 钩子(源 tools/pre-execute):tool/call 落档后、
+                // 执行前;deny ⇒ 工具不执行,isError 结果回灌(hook 对已由
+                // 实现方落档,先于本结果——事件序照源)。
+                let hook_output_override: Option<crate::tools::ToolOutput> =
+                    if let Some(hooks) = &self.hook_port {
+                        match hooks.pre_tool(&request, hook_turn_no).await {
+                            crate::hooks::PreToolVerdict::Proceed => None,
+                            crate::hooks::PreToolVerdict::Deny { reason } => {
+                                Some(crate::tools::ToolOutput {
+                                    output: format!("Error: {reason}"),
+                                    success: false,
+                                    ..Default::default()
+                                })
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                // 源语义:deny 短路整个工具管线——被拒调用不再触发
+                // PostToolUse 监听。
+                let hook_pre_denied = hook_output_override.is_some();
+                let tool_t0 = clock();
+                let mut output = match hook_output_override {
+                    Some(denied) => denied,
+                    None => tools.execute(&request).await,
+                };
+                let tool_duration_ms = clock() - tool_t0;
+                // PostToolUse 钩子(源 tools/post-execute):结果产出后、
+                // tool/result 落档前;block ⇒ 结果改写(feedback,isError);
+                // inject ⇒ 结果照落,其后追加染色上下文行(mislabel guard
+                // 与源同:kind=plugin)。
+                let mut hook_inject: Option<serde_json::Value> = None;
+                if let Some(hooks) = &self.hook_port
+                    && !hook_pre_denied
+                {
+                    match hooks.post_tool(&request, &output, hook_turn_no).await {
+                        crate::hooks::PostToolVerdict::Pass => {}
+                        crate::hooks::PostToolVerdict::Block { feedback } => {
+                            output = crate::tools::ToolOutput {
+                                output: feedback,
+                                success: false,
+                                ..Default::default()
+                            };
+                        }
+                        crate::hooks::PostToolVerdict::Inject { text } => {
+                            hook_inject = Some(serde_json::json!({
+                                "id": uuid::Uuid::now_v7().to_string(),
+                                "content": text,
+                                "source": {
+                                    "kind": "plugin",
+                                    "plugin": "hooks",
+                                    "form": "post-tool-context",
+                                },
+                            }));
+                        }
+                    }
+                }
                 // E5 审计:工具执行前记录,归因指向携带 tool_calls 的 assistant/message
                 Self::commit(
                     &self.log,
@@ -1127,9 +1243,6 @@ impl LoopEngine {
                 {
                     self.pending_touches.push(path.to_string());
                 }
-                let tool_t0 = clock();
-                let output = tools.execute(&request).await;
-                let tool_duration_ms = clock() - tool_t0;
                 let mut result_data = serde_json::json!({
                     "call": call_seq,
                     // provider 的调用标识(wire 方言 tool_call_id 适配用)
@@ -1170,6 +1283,19 @@ impl LoopEngine {
                     ),
                     sink,
                 )?;
+                // PostToolUse 上下文注入(源 context-only 委托折叠的
+                // RS 形态):染色 user/message 落在 tool/result 之后、
+                // 模型下一请求前(derive 可见面按 seq 序)
+                if let Some(mut payload) = hook_inject.take() {
+                    if payload.get("id").and_then(|v| v.as_str()).is_none() {
+                        payload["id"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
+                    }
+                    Self::commit(
+                        &self.log,
+                        EventEnvelope::new("user/message", clock(), payload),
+                        sink,
+                    )?;
+                }
                 // 工具的持久状态事件(todo/write 等):仍经唯一写入口追加
                 for (state_type, state_data) in tools.take_state_events() {
                     Self::commit(

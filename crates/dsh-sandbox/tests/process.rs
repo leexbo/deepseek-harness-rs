@@ -36,6 +36,7 @@ async fn bash_tool_runs_under_sandbox() {
         cwd: Some(workdir.clone()),
         env: Default::default(),
         sandbox: Some(policy(workdir.to_str().unwrap())),
+        stdin: None,
     };
     let mut child = spawn(
         "/bin/bash",
@@ -69,6 +70,7 @@ async fn workspace_write_allows_temp_artifacts() {
         cwd: Some(workdir.clone()),
         env: Default::default(),
         sandbox: Some(policy(workdir.to_str().unwrap())),
+        stdin: None,
     };
     let mut child = spawn(
         "/bin/bash",
@@ -106,6 +108,7 @@ async fn sandbox_denies_write_outside_writable_roots() {
         cwd: Some(workdir.clone()),
         env: Default::default(),
         sandbox: Some(policy(workdir.to_str().unwrap())),
+        stdin: None,
     };
     // 根外写 → seatbelt 拒绝(非零退出)
     let mut child = spawn(
@@ -295,5 +298,34 @@ async fn fail_closed_when_no_rung() {
             Err(dsh_sandbox::ProcessError::Sandbox(SandboxError::NoRunner))
         ),
         "fail-closed 必须拒绝(得到 Ok,违反 fail-closed)"
+    );
+}
+
+/// stdin 载荷:Some(bytes) = piped,写完即关;子进程读到 EOF 后消费。
+/// hooks 桥依赖此原语喂序列化载荷(源 runHook stdin 语义)。
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // 测试串行化意图明确
+async fn stdin_payload_reaches_child_and_closes() {
+    let _serial = SANDBOX_TEST_MUTEX.lock().unwrap();
+    // 无沙箱:原语本身与沙箱链正交
+    let opts = SpawnOptions {
+        stdin: Some(b"hook-payload-1".to_vec()),
+        ..Default::default()
+    };
+    let mut child = spawn("/bin/bash", &["-c".into(), "cat".into()], &opts)
+        .await
+        .expect("spawn");
+    let out = child.stdout().await.expect("stdout");
+    let status = child.wait().await.expect("wait");
+    let err = child.stderr_text().await;
+    assert!(
+        status.success(),
+        "bash 应以 0 退出(得到 {status:?}) stderr={err} stdout={}",
+        String::from_utf8_lossy(&out)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "hook-payload-1",
+        "子进程未原样读回 stdin 载荷"
     );
 }

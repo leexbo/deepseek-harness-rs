@@ -206,6 +206,50 @@ pub struct SettingsFile {
     /// MCP server 注册表(enabled 才会在 attach 时桥接;缺失 = 空)
     #[serde(default)]
     pub mcp_servers: Vec<McpServerEntry>,
+    /// hooks 桥注册表(enabled 才会在 attach 时挂 HookPort;缺失 = 空)
+    #[serde(default)]
+    pub hook_bridges: Vec<HookBridgeEntry>,
+}
+
+/// hooks 桥注册表条目(源两桥插件 config 的 RS 注册表面)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HookBridgeEntry {
+    /// 桥名(唯一)
+    pub id: String,
+    /// 方言:claude-code | codex
+    pub dialect: String,
+    /// hooks.json 路径(相对路径按进程启动 cwd 解析,照源)
+    pub config_path: String,
+    /// 是否随会话挂载
+    pub enabled: bool,
+    /// CC:替换 ${CLAUDE_PLUGIN_ROOT}
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_root: Option<String>,
+    /// CC:替换 ${CLAUDE_PROJECT_DIR} 并注入 env(缺省 = 会话工作区)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_dir: Option<String>,
+    /// per-hook 缺省超时 ms(缺省 600000 照源)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_timeout_ms: Option<u64>,
+    /// hook/result stderr 摘要上限(缺省 500 照源)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_summary_max_chars: Option<usize>,
+}
+
+impl Default for HookBridgeEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            dialect: "claude-code".to_string(),
+            config_path: String::new(),
+            enabled: true,
+            plugin_root: None,
+            project_dir: None,
+            default_timeout_ms: None,
+            stderr_summary_max_chars: None,
+        }
+    }
 }
 
 /// MCP server 注册表条目(stdio / streamable-http 双传输)。
@@ -419,6 +463,7 @@ impl Default for SettingsFile {
             language: default_language(),
             appearance: default_appearance(),
             mcp_servers: Vec::new(),
+            hook_bridges: Vec::new(),
         }
     }
 }
