@@ -2417,7 +2417,16 @@ impl AppHost {
                 "claude-code" => dsh_hooks::config::BridgeDialect::ClaudeCode,
                 _ => dsh_hooks::config::BridgeDialect::Codex,
             };
-            let path = std::path::PathBuf::from(&entry.config_path);
+            // 展开 leading `~`(Rust std 不做展开;用户常填 ~/hooks.json)
+            let expanded = entry.config_path.strip_prefix("~/").map(|rest| {
+                PathBuf::from(
+                    std::env::var_os("HOME")
+                        .or_else(|| std::env::var_os("USERPROFILE"))
+                        .unwrap_or_default(),
+                )
+                .join(rest)
+            });
+            let path = expanded.unwrap_or_else(|| std::path::PathBuf::from(&entry.config_path));
             let raw: serde_json::Value = match std::fs::read_to_string(&path)
                 .map_err(|e| e.to_string())
                 .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))

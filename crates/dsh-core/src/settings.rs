@@ -811,4 +811,33 @@ mod tests {
         assert!(legacy.models.is_empty());
         assert!(legacy.billing.is_none() && legacy.billing_cache.is_none());
     }
+    #[test]
+    fn hook_bridge_settings_roundtrip_persists() {
+        // M4.2 现场复核:hookBridges 经 SettingsStore 落盘 → 重读持久
+        // (桌面保存失败时先排除宿主持久化层)
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-settings-m42-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let entry = HookBridgeEntry {
+            id: "cc".into(),
+            dialect: "claude-code".into(),
+            config_path: "/tmp/demo.json".into(),
+            enabled: true,
+            ..Default::default()
+        };
+        {
+            let store = SettingsStore::open(path.clone());
+            store.update(|s| s.hook_bridges.push(entry)).unwrap();
+        }
+        let store2 = SettingsStore::open(path);
+        let bridges = store2.read().hook_bridges;
+        assert_eq!(bridges.len(), 1, "hookBridges 应随文件持久");
+        assert_eq!(bridges[0].id, "cc");
+        assert_eq!(bridges[0].dialect, "claude-code");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
