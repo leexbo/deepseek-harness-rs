@@ -3047,6 +3047,17 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         } else {
             "新建 Hooks 桥"
         }))
+        .children(st.settings.settings_notice.as_ref().map(|(ok, msg)| {
+            div()
+                .debug_selector(|| "hooks-detail-notice".to_string())
+                .text_size(px(12.))
+                .text_color(if *ok {
+                    theme::SUCCESS()
+                } else {
+                    theme::DANGER()
+                })
+                .child(format!("{} {msg}", if *ok { "✓" } else { "⚠" }))
+        }))
         .child(
             div()
                 .id("hooks-back")
