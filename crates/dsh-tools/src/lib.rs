@@ -280,6 +280,7 @@ impl BashTool {
             output: output.trim().to_string(),
             success,
             view: Some(terminal_view(exit_code, signal, Some(&self.cwd))),
+            ..Default::default()
         }
     }
 
@@ -570,6 +571,7 @@ impl ToolPort for BashTool {
             output: rendered,
             success,
             view: Some(terminal_view(exit_code, signal, Some(&self.cwd))),
+            ..Default::default()
         }
     }
 }

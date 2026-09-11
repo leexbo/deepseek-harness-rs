@@ -28,7 +28,7 @@ anyhow = "1.0.104"
 thiserror = "2"
 toml = "1"
 clap = { version = "4", features = ["derive"] }
-wit-parser = "0.258"
+wit-parser = "0.259"
 tokio = { version = "1", features = ["full"] }
 wasmtime = { version = "48", features = ["async"] }
 wasmtime-wasi = "48"
@@ -85,8 +85,8 @@ security-framework = "3"
 image = "0.25"
 sha2 = "0.11.0"
 hex = "0.4"
-# MCP client(官方 Rust SDK;stdio 首批,transports 子集)
-rmcp = { version = "3.2", default-features = false, features = ["client", "transport-child-process"] }
+# MCP client(官方 Rust SDK;stdio + streamable-http 首两批)
+rmcp = { version = "3.2", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 # 图片附件 wire 编码(draft 提交 base64 / data URL / 读取 RPC)
 base64 = "0.23"
 

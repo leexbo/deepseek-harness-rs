@@ -30,6 +30,10 @@ pub struct ToolOutput {
     /// 渲染意图(result 侧):工具在文本扁平化之前持有的类型化视图。
     /// None = 无结构化意图,UI 走通用 IN/OUT 卡
     pub view: Option<ToolView>,
+    /// 结果图片(持久引用,零字节;MCP 图片桥等)。空 = 无图。非空时
+    /// engine 随 tool/result 落 `images` 数组,模型面 tool 消息带图
+    /// (chat/anthropic 方言),请求期与用户图共用解析/offload 管线
+    pub images: Vec<dsh_session::attachments::ImageAttachmentRef>,
 }
 
 /// 工具端口(engine 逐步调用;实现方持有执行世界/沙箱策略)

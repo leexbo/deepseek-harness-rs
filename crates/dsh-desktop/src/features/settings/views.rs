@@ -240,14 +240,30 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             let (dot_color, status_text) = match status.0.as_str() {
                 "ready" => (theme::SUCCESS(), String::new()),
                 "connecting" => (theme::LABEL_2(), "连接中".to_string()),
+                "reconnecting" => (theme::LABEL_2(), "重连中".to_string()),
                 "failed" => (theme::DANGER(), "失败".to_string()),
                 _ => (theme::CAPTION(), String::new()),
             };
-            let mut summary = format!("stdio · {command}");
-            if !args.is_empty() {
-                summary.push(' ');
-                summary.push_str(&args.join(" "));
-            }
+            // 摘要随传输形态:url 在场 = http(host),否则 stdio(命令+参数)
+            let is_http = s["url"].as_str().is_some_and(|u| !u.is_empty());
+            let summary = if is_http {
+                let url = s["url"].as_str().unwrap_or_default();
+                let host = url
+                    .split("://")
+                    .nth(1)
+                    .unwrap_or(url)
+                    .split('/')
+                    .next()
+                    .unwrap_or(url);
+                format!("http · {host}")
+            } else {
+                let mut sm = format!("stdio · {command}");
+                if !args.is_empty() {
+                    sm.push(' ');
+                    sm.push_str(&args.join(" "));
+                }
+                sm
+            };
             rows = rows.child(
                 div()
                     .flex()
@@ -589,156 +605,307 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 )
                 .child(id_field),
         );
-        card = card.child(field_input(
-            "command",
-            "mcp-command-input",
-            &detail.form_command,
-        ));
-        card = card.child(field_input("cwd", "mcp-cwd-input", &detail.form_cwd));
+        // 传输形态(stdio / HTTP):字段集随形态显隐
+        let form_http = detail.form_http;
+        let st_transport = store.clone();
+        let transport_chip = |sel: &'static str,
+                              label: &'static str,
+                              active: bool,
+                              want: bool,
+                              st: Entity<AppStore>| {
+            let base = div()
+                .id(sel)
+                .flex()
+                .h(px(26.))
+                .items_center()
+                .px(px(10.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .text_size(px(12.));
+            let base = if active {
+                base.bg(theme::ONGOING().opacity(0.14))
+                    .text_color(theme::BRAND())
+            } else {
+                base.text_color(theme::CAPTION())
+                    .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
+            };
+            base.child(label)
+                .on_click(move |_, _, cx| {
+                    // 绝对值方向:点击目标形态与当前不同才切换(连发幂等)
+                    let active_now = st
+                        .read(cx)
+                        .settings
+                        .mcp_detail
+                        .as_ref()
+                        .map(|d| d.form_http)
+                        .unwrap_or(false);
+                    if active_now != want {
+                        st.update(cx, |st, cx| st.toggle_mcp_transport(cx));
+                    }
+                })
+                .into_any_element()
+        };
+        let transport_row = div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(transport_chip(
+                "mcp-transport-stdio",
+                "stdio",
+                !form_http,
+                false,
+                st_transport.clone(),
+            ))
+            .child(transport_chip(
+                "mcp-transport-http",
+                "HTTP",
+                form_http,
+                true,
+                st_transport,
+            ));
+        card = card.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .w(px(64.))
+                        .flex_shrink_0()
+                        .text_size(px(11.))
+                        .text_color(theme::CAPTION())
+                        .child("传输"),
+                )
+                .child(transport_row),
+        );
+        if detail.form_http {
+            card = card.child(field_input("URL", "mcp-url-input", &detail.form_url));
+            // 请求头(键值对;原样透传,如 Authorization)
+            let mut header_rows = div().v_flex().gap(px(4.));
+            for (ix, (k, v)) in detail.form_headers.iter().enumerate() {
+                let st_rm = store.clone();
+                header_rows = header_rows.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .w(px(120.))
+                                .flex_shrink_0()
+                                .h(px(32.))
+                                .child(Input::new(k).small()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .h(px(32.))
+                                .child(Input::new(v).small()),
+                        )
+                        .child(
+                            div()
+                                .id(("mcp-header-rm", ix))
+                                .flex()
+                                .h(px(22.))
+                                .items_center()
+                                .px(px(6.))
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .text_size(px(11.))
+                                .text_color(theme::CAPTION())
+                                .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
+                                .on_click({
+                                    let st_rm = st_rm.clone();
+                                    move |_, _, cx| {
+                                        st_rm.update(cx, |st, cx| st.remove_mcp_header(ix, cx));
+                                    }
+                                })
+                                .child("移除"),
+                        ),
+                );
+            }
+            let st_header_add = store.clone();
+            card = card.child(
+                div()
+                    .v_flex()
+                    .gap(px(4.))
+                    .child(caption_line("请求头(可选;键 + 值,原样透传)"))
+                    .child(header_rows)
+                    .child(
+                        div()
+                            .id("mcp-header-add")
+                            .flex()
+                            .h(px(24.))
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(theme::CAPTION())
+                            .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
+                            .on_click({
+                                let st_header_add = st_header_add.clone();
+                                move |_, window, cx| {
+                                    st_header_add
+                                        .update(cx, |st, cx| st.add_mcp_header(window, cx));
+                                }
+                            })
+                            .child("+ 添加请求头"),
+                    ),
+            );
+        } else {
+            card = card.child(field_input(
+                "command",
+                "mcp-command-input",
+                &detail.form_command,
+            ));
+            card = card.child(field_input("cwd", "mcp-cwd-input", &detail.form_cwd));
+            // 参数(每参数一条;含空格的参数单行化会吞内容)
+            let mut arg_rows = div().v_flex().gap(px(4.));
+            for (ix, arg) in detail.form_args.iter().enumerate() {
+                let st_rm = store.clone();
+                arg_rows = arg_rows.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .h(px(32.))
+                                .child(Input::new(arg).small()),
+                        )
+                        .child(
+                            div()
+                                .id(("mcp-arg-rm", ix))
+                                .flex()
+                                .h(px(22.))
+                                .items_center()
+                                .px(px(6.))
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .text_size(px(11.))
+                                .text_color(theme::CAPTION())
+                                .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
+                                .on_click({
+                                    let st_rm = st_rm.clone();
+                                    move |_, _, cx| {
+                                        st_rm.update(cx, |st, cx| st.remove_mcp_arg(ix, cx));
+                                    }
+                                })
+                                .child("移除"),
+                        ),
+                );
+            }
+            let st_arg_add = store.clone();
+            card = card.child(
+                div()
+                    .v_flex()
+                    .gap(px(4.))
+                    .child(caption_line("参数(每个一条)"))
+                    .child(arg_rows)
+                    .child(
+                        div()
+                            .id("mcp-arg-add")
+                            .flex()
+                            .h(px(24.))
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(theme::CAPTION())
+                            .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
+                            .on_click({
+                                let st_arg_add = st_arg_add.clone();
+                                move |_, window, cx| {
+                                    st_arg_add.update(cx, |st, cx| st.add_mcp_arg(window, cx));
+                                }
+                            })
+                            .child("+ 添加参数"),
+                    ),
+            );
+            // 环境变量(键值对,平铺)
+            let mut env_rows = div().v_flex().gap(px(4.));
+            for (ix, (k, v)) in detail.form_env.iter().enumerate() {
+                let st_rm = store.clone();
+                env_rows = env_rows.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .w(px(120.))
+                                .flex_shrink_0()
+                                .h(px(32.))
+                                .child(Input::new(k).small()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .h(px(32.))
+                                .child(Input::new(v).small()),
+                        )
+                        .child(
+                            div()
+                                .id(("mcp-env-rm", ix))
+                                .flex()
+                                .h(px(22.))
+                                .items_center()
+                                .px(px(6.))
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .text_size(px(11.))
+                                .text_color(theme::CAPTION())
+                                .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
+                                .on_click({
+                                    let st_rm = st_rm.clone();
+                                    move |_, _, cx| {
+                                        st_rm.update(cx, |st, cx| st.remove_mcp_env(ix, cx));
+                                    }
+                                })
+                                .child("移除"),
+                        ),
+                );
+            }
+            let st_env_add = store.clone();
+            card = card.child(
+                div()
+                    .v_flex()
+                    .gap(px(4.))
+                    .child(caption_line("环境变量(可选;键 + 值)"))
+                    .child(env_rows)
+                    .child(
+                        div()
+                            .id("mcp-env-add")
+                            .flex()
+                            .h(px(24.))
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(theme::CAPTION())
+                            .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
+                            .on_click({
+                                let st_env_add = st_env_add.clone();
+                                move |_, window, cx| {
+                                    st_env_add.update(cx, |st, cx| st.add_mcp_env(window, cx));
+                                }
+                            })
+                            .child("+ 添加环境变量"),
+                    ),
+            );
+        }
         card = card.child(field_input(
             "超时 MS",
             "mcp-timeout-input",
             &detail.form_timeout,
         ));
-        // 参数(每参数一条;含空格的参数单行化会吞内容)
-        let mut arg_rows = div().v_flex().gap(px(4.));
-        for (ix, arg) in detail.form_args.iter().enumerate() {
-            let st_rm = store.clone();
-            arg_rows = arg_rows.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .h(px(32.))
-                            .child(Input::new(arg).small()),
-                    )
-                    .child(
-                        div()
-                            .id(("mcp-arg-rm", ix))
-                            .flex()
-                            .h(px(22.))
-                            .items_center()
-                            .px(px(6.))
-                            .rounded(px(6.))
-                            .cursor_pointer()
-                            .text_size(px(11.))
-                            .text_color(theme::CAPTION())
-                            .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
-                            .on_click({
-                                let st_rm = st_rm.clone();
-                                move |_, _, cx| {
-                                    st_rm.update(cx, |st, cx| st.remove_mcp_arg(ix, cx));
-                                }
-                            })
-                            .child("移除"),
-                    ),
-            );
-        }
-        let st_arg_add = store.clone();
-        card = card.child(
-            div()
-                .v_flex()
-                .gap(px(4.))
-                .child(caption_line("参数(每个一条)"))
-                .child(arg_rows)
-                .child(
-                    div()
-                        .id("mcp-arg-add")
-                        .flex()
-                        .h(px(24.))
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(6.))
-                        .cursor_pointer()
-                        .text_size(px(11.))
-                        .text_color(theme::CAPTION())
-                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
-                        .on_click({
-                            let st_arg_add = st_arg_add.clone();
-                            move |_, window, cx| {
-                                st_arg_add.update(cx, |st, cx| st.add_mcp_arg(window, cx));
-                            }
-                        })
-                        .child("+ 添加参数"),
-                ),
-        );
-        // 环境变量(键值对,平铺)
-        let mut env_rows = div().v_flex().gap(px(4.));
-        for (ix, (k, v)) in detail.form_env.iter().enumerate() {
-            let st_rm = store.clone();
-            env_rows = env_rows.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .w(px(120.))
-                            .flex_shrink_0()
-                            .h(px(32.))
-                            .child(Input::new(k).small()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .h(px(32.))
-                            .child(Input::new(v).small()),
-                    )
-                    .child(
-                        div()
-                            .id(("mcp-env-rm", ix))
-                            .flex()
-                            .h(px(22.))
-                            .items_center()
-                            .px(px(6.))
-                            .rounded(px(6.))
-                            .cursor_pointer()
-                            .text_size(px(11.))
-                            .text_color(theme::CAPTION())
-                            .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
-                            .on_click({
-                                let st_rm = st_rm.clone();
-                                move |_, _, cx| {
-                                    st_rm.update(cx, |st, cx| st.remove_mcp_env(ix, cx));
-                                }
-                            })
-                            .child("移除"),
-                    ),
-            );
-        }
-        let st_env_add = store.clone();
-        card = card.child(
-            div()
-                .v_flex()
-                .gap(px(4.))
-                .child(caption_line("环境变量(可选;键 + 值)"))
-                .child(env_rows)
-                .child(
-                    div()
-                        .id("mcp-env-add")
-                        .flex()
-                        .h(px(24.))
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(6.))
-                        .cursor_pointer()
-                        .text_size(px(11.))
-                        .text_color(theme::CAPTION())
-                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
-                        .on_click({
-                            let st_env_add = st_env_add.clone();
-                            move |_, window, cx| {
-                                st_env_add.update(cx, |st, cx| st.add_mcp_env(window, cx));
-                            }
-                        })
-                        .child("+ 添加环境变量"),
-                ),
-        );
         // 启用开关(启停由表单随保存落盘)
         let st_enable = store.clone();
         card = card.child(

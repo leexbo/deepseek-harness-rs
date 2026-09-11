@@ -121,7 +121,7 @@ impl ToolPort for AskQuestionTool {
                     return ToolOutput {
                         output: format!("ask_user_question 参数无效:{e}"),
                         success: false,
-                        view: None,
+                        ..Default::default()
                     };
                 }
             };
@@ -129,12 +129,12 @@ impl ToolPort for AskQuestionTool {
                 Ok(text) => ToolOutput {
                     output: text,
                     success: true,
-                    view: None,
+                    ..Default::default()
                 },
                 Err(e) => ToolOutput {
                     output: e,
                     success: false,
-                    view: None,
+                    ..Default::default()
                 },
             }
         }

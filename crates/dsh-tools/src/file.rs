@@ -159,6 +159,7 @@ impl FileTools {
                 total_lines: total as u64,
                 lang: lang_for(path),
             }),
+            ..Default::default()
         }
     }
 
@@ -225,6 +226,7 @@ impl FileTools {
             // 编辑成功后 old/new 即最终事实(result 侧与 call 侧意图同源;
             // RS 语义为全量意图 diff,无应用后 hunk 粒度)
             view: Some(edit_diff_view(path, old_text, new_text)),
+            ..Default::default()
         }
     }
 
@@ -395,6 +397,7 @@ impl FileTools {
             output,
             success: true,
             view: Some(view),
+            ..Default::default()
         }
     }
 }

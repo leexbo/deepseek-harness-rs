@@ -81,6 +81,8 @@ pub enum ChatNode {
         /// 渲染意图(call 侧 = 运行中意图,result 侧 = 已应用事实;
         /// 无视图 = 通用 IN/OUT 卡。窄化在 ui/toolcard)
         view: Option<Value>,
+        /// 结果图片(MCP 图片桥;image 引用块数组,缺席 = 无图)
+        images: Vec<Value>,
     },
     /// 回合收尾(turn/end)
     TurnTail {
@@ -471,6 +473,7 @@ impl ChatState {
                     state: ToolState::Running,
                     arguments,
                     output: None,
+                    images: Vec::new(),
                 });
             }
             "tool/result" => {
@@ -486,6 +489,7 @@ impl ChatState {
                         state,
                         output: o,
                         view,
+                        images,
                         ..
                     } = &mut self.nodes[ix]
                 {
@@ -498,6 +502,12 @@ impl ChatState {
                     // result 侧视图权威替换:在场覆盖 call 意图,缺席清除
                     // (如编辑失败无 diff → 通用卡)
                     *view = ev.data.get("view").filter(|v| !v.is_null()).cloned();
+                    // 结果图片(MCP 图片桥):引用数组权威替换
+                    *images = ev
+                        .data
+                        .get("images")
+                        .and_then(|v| v.as_array().cloned())
+                        .unwrap_or_default();
                     // 产物:view 为 diff 卡 → 累积 diffs[].path(去重保序)
                     if let Some(v) = &*view
                         && v["card"].as_str() == Some("diff")

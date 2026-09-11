@@ -82,6 +82,64 @@ fn anthropic_request_shape() {
     assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "toolu_1");
 }
 
+/// 结果图片(MCP 图片桥)的 wire 形状:chat 方言 tool content 升级为
+/// [text, image_url] 块数组;anthropic tool_result content 为 [text,
+/// base64 image];字节缺席降级 offload 占位
+#[test]
+fn tool_message_with_images_wire_shape() {
+    use dsh_llm::attachments::{AttachmentSource, OFFLOADED_IMAGE_TEXT};
+    struct Fixed;
+    impl AttachmentSource for Fixed {
+        fn image_bytes(&self, _id: &str) -> Option<Vec<u8>> {
+            Some(vec![1, 2, 3])
+        }
+    }
+    let messages = json!([
+        { "role": "tool", "output": "截图如下", "call": 6, "id": "t1",
+          "images": [ { "type": "image", "attachment": {
+              "attachmentId": "sha256:abc", "mediaType": "image/png",
+              "bytes": 3, "width": 1, "height": 1 } } ] },
+    ]);
+
+    // chat 方言:text + image_url data URL(messages[0] = system)
+    let chat = dsh_llm::adapters::adapter_by_name("deepseek-chat").unwrap();
+    let body = chat.build_request(&header("s", vec![]), &messages, &Fixed);
+    let content = &body["messages"][1]["content"];
+    assert!(content.is_array(), "{content}");
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[0]["text"], "截图如下");
+    assert_eq!(content[1]["type"], "image_url");
+    let url = content[1]["image_url"]["url"].as_str().unwrap();
+    assert!(url.starts_with("data:image/png;base64,"), "{url}");
+    assert!(url.ends_with("AQID"), "{url}");
+
+    // anthropic 方言:text + base64 source block
+    let ant = GenericAnthropicAdapter::new(StandardAnthropicExt);
+    let body = ant.build_request(&header("s", vec![]), &messages, &Fixed);
+    let blocks = &body["messages"][0]["content"][0]["content"];
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(blocks[0]["text"], "截图如下");
+    assert_eq!(blocks[1]["type"], "image");
+    assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+    assert_eq!(blocks[1]["source"]["data"], "AQID");
+
+    // 字节缺席:降级占位文本(chat 形态;messages[1] = tool 消息)
+    let body = chat.build_request(
+        &header("s", vec![]),
+        &messages,
+        &dsh_llm::attachments::NoAttachments,
+    );
+    let content = &body["messages"][1]["content"];
+    assert!(
+        content
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["text"] == OFFLOADED_IMAGE_TEXT),
+        "{content}"
+    );
+}
+
 #[test]
 fn anthropic_stream_mapping_with_tool_use() {
     let mut mapper = GenericAnthropicAdapter::<StandardAnthropicExt>::default().mapper();

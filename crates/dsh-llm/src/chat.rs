@@ -111,17 +111,41 @@ fn to_chat_wire(message: Value, images: &dyn AttachmentSource) -> Value {
             }
             m
         }
-        Some("tool") => json!({
-            "role": "tool",
-            // provider call id 优先;无 id 时用内部引用链序号兜底(字符串化)
-            "tool_call_id": message
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .unwrap_or_else(|| message["call"].to_string()),
-            "content": message["output"],
-        }),
+        Some("tool") => {
+            // 结果图片(MCP 图片桥):content 升级为块数组(text + image_url),
+            // 字节缺席降级 offload 占位(offload 哨兵文本块直通)
+            let mut content = message["output"].clone();
+            if let Some(imgs) = message["images"].as_array().filter(|a| !a.is_empty()) {
+                let mut parts: Vec<Value> = Vec::new();
+                if let Some(text) = message["output"].as_str().filter(|s| !s.is_empty()) {
+                    parts.push(json!({ "type": "text", "text": text }));
+                }
+                for img in imgs {
+                    match img["type"].as_str() {
+                        Some("image") => match image_data_url(img, images) {
+                            Some(url) => parts
+                                .push(json!({ "type": "image_url", "image_url": { "url": url } })),
+                            None => {
+                                parts.push(json!({ "type": "text", "text": OFFLOADED_IMAGE_TEXT }))
+                            }
+                        },
+                        _ => parts.push(img.clone()),
+                    }
+                }
+                content = Value::Array(parts);
+            }
+            json!({
+                "role": "tool",
+                // provider call id 优先;无 id 时用内部引用链序号兜底(字符串化)
+                "tool_call_id": message
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .unwrap_or_else(|| message["call"].to_string()),
+                "content": content,
+            })
+        }
         Some("user") if message["content"].is_array() => json!({
             "role": "user",
             "content": chat_user_parts(&message["content"], images),
