@@ -395,6 +395,12 @@ pub const KNOWN_EVENT_TYPES: &[&str] = &[
     // 沙箱升级审批对(闸门审计;新增类型对旧日志安全)
     "approval/asked",
     "approval/decided",
+    // hooks 桥事件对(hook 钩子调用与裁决;log-only、turn 封闭;
+    // 新增类型对旧日志安全——旧日志无此类型,守卫只拒「未登记且非
+    // ignorable」。漏登记会导致含 hook 对的会话日志整体拒读 +
+    // turso FTS 索引同步失败,2026-09-12 现场实测)
+    "hook/invoked",
+    "hook/result",
     // LLM 请求重试(llm-retry 语义;新增类型对旧日志
     // 安全——旧日志无此类型,守卫只拒「未登记且非 ignorable」)
     "llm/retry",

@@ -141,6 +141,17 @@ mod tests {
         assert_eq!(ev.r#type, "agent/inbox/spliced");
     }
 
+    /// hooks 桥事件对已登记:含 hook/invoked·result 的会话日志整份可读
+    /// (漏登记导致 turso FTS 索引同步失败 + 检索工具拒读——
+    /// 2026-09-12 现场实测,与 agent/inbox/spliced 同一教训)
+    #[test]
+    fn hook_event_pair_is_known() {
+        let invoked = decode_envelope(&raw("hook/invoked", false)).expect("known");
+        assert_eq!(invoked.r#type, "hook/invoked");
+        let result = decode_envelope(&raw("hook/result", false)).expect("known");
+        assert_eq!(result.r#type, "hook/result");
+    }
+
     #[test]
     fn unknown_ignorable_decodes() {
         assert!(decode_envelope(&raw("future/thing", true)).is_ok());

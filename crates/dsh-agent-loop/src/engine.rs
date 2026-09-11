@@ -253,6 +253,11 @@ impl LoopEngine {
         self.hook_port = Some(port);
     }
 
+    /// 卸载 hooks 拦截点(热卸载;保存配置即生效路径)
+    pub fn clear_hook_port(&mut self) {
+        self.hook_port = None;
+    }
+
     /// 从既有日志恢复投影 retained(重开会话:runtime-context 快照同源恢复)。
     /// 在引擎持有共享日志后调用。
     pub fn restore_projection(&mut self) {
