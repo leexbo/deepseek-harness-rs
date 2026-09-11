@@ -18,9 +18,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub use dsh_agent_loop::LlmEvent;
-use dsh_agent_loop::{
-    CancelToken, LlmTransport, NoTools, RequestHeader, SteerInput, ToolSet, TurnOutcome,
-};
+use dsh_agent_loop::{CancelToken, LlmTransport, RequestHeader, SteerInput, ToolSet, TurnOutcome};
 use dsh_app::{Resolved, Session};
 use dsh_llm::{FakeProvider, HttpTransport, InvariantGate};
 use dsh_session::attachments::ImageMediaType;
@@ -48,8 +46,9 @@ use crate::translate::{Page, ProviderInfo, Translator, paginate, translate_event
 enum AnySession {
     /// 真实:闸门包 HTTP transport + preset 全量工具
     Real(Session<InvariantGate<HttpTransport>, ToolSet>),
-    /// fake(自检/测试)
-    Fake(Session<InvariantGate<FakeProvider>, NoTools>),
+    /// fake(自检/测试;工具面 = skill 工具(非子代理)或空集——目录/
+    /// 手势门控与真实会话同源 = skill 工具在场)
+    Fake(Session<InvariantGate<FakeProvider>, ToolSet>),
 }
 
 impl AnySession {
@@ -125,6 +124,20 @@ impl AnySession {
         match self {
             AnySession::Real(s) => s.set_instructions_provider(provider),
             AnySession::Fake(s) => s.set_instructions_provider(provider),
+        }
+    }
+
+    fn set_skill_catalog_provider(&mut self, provider: dsh_agent_loop::SkillCatalogProvider) {
+        match self {
+            AnySession::Real(s) => s.set_skill_catalog_provider(provider),
+            AnySession::Fake(s) => s.set_skill_catalog_provider(provider),
+        }
+    }
+
+    fn set_skill_gesture_provider(&mut self, provider: dsh_agent_loop::SkillGestureProvider) {
+        match self {
+            AnySession::Real(s) => s.set_skill_gesture_provider(provider),
+            AnySession::Fake(s) => s.set_skill_gesture_provider(provider),
         }
     }
 }
@@ -511,6 +524,9 @@ pub struct AppHost {
     /// MCP 连接任务后台 runtime(宿主同步方法可被无 tokio 上下文的线程
     /// 直调——桌面 GPUI 回调;连接任务锚宿主而非调用方 runtime)
     mcp_rt: tokio::runtime::Handle,
+    /// skill 服务(宿主级共享;发现/缓存/`skill` 工具数据源,
+    /// 会话按 cwd 查询)
+    skills: std::sync::Arc<dsh_skill::SkillService>,
     /// 仅保活:mcp_rt 为自建 runtime 时持有到宿主销毁
     #[allow(dead_code)]
     mcp_rt_keepalive: Option<tokio::runtime::Runtime>,
@@ -1016,6 +1032,7 @@ impl AppHost {
             mcp_pool: dsh_mcp::McpPoolPort::new(),
             mcp_handles: Mutex::new(HashMap::new()),
             mcp_rt,
+            skills: std::sync::Arc::new(dsh_skill::SkillService::new()),
             mcp_rt_keepalive,
             fake_script: Mutex::new(Vec::new()),
             models_cache: Mutex::new(HashMap::new()),
@@ -3008,6 +3025,11 @@ impl AppHost {
         repair_dangling_calls(&log, &backend);
         let cancel = CancelToken::new();
         let provider_info = self.provider_info();
+        // 会话血缘(slot.path = session.jsonl 文件;header 在其所在目录):
+        // 子代理不挂 skill 工具、不注入目录/手势(照源 child preset 只挂
+        // registry 无 tool-skill;subagent 会话技能菜单为空)
+        let slot_dir = slot.path.parent().unwrap_or(&slot.path).to_path_buf();
+        let subagent_session = read_session_header(&slot_dir).1.as_deref() == Some("subagent");
 
         let (mut session, session_log) = if self.fake {
             let mut provider = FakeProvider::new();
@@ -3030,12 +3052,24 @@ impl AppHost {
             }
             let gate = InvariantGate::new(provider, log);
             let l = gate.log();
+            // fake 工具面 = skill 工具(非子代理;子会话不挂——与真实
+            // 会话同门控,目录只在工具在场时发布)。空集/单工具集无重名
+            let fake_tools = if subagent_session {
+                dsh_agent_loop::ToolSet::new(Vec::new())
+            } else {
+                dsh_agent_loop::ToolSet::new(vec![Box::new(dsh_skill::SkillTool::new(
+                    Arc::clone(&self_arc.skills),
+                    ws_root.clone(),
+                ))
+                    as Box<dyn dsh_agent_loop::tools::ToolPortObj>])
+            }
+            .expect("fake 工具集装配失败");
             (
                 AnySession::Fake(Session::new(
                     parts,
                     gate,
                     l.clone(),
-                    NoTools,
+                    fake_tools,
                     backend,
                     resolved.session.clone(),
                     cancel.clone(),
@@ -3080,8 +3114,16 @@ impl AppHost {
             // enabled 清单;池是动态聚合端口——连接就绪/工具代换带后,下一
             // turn specs 自然生效,会话无需重装配
             self_arc.sync_mcp_ports();
-            let mcp_tools: Vec<Box<dyn dsh_agent_loop::tools::ToolPortObj>> =
+            let mut extra_tools: Vec<Box<dyn dsh_agent_loop::tools::ToolPortObj>> =
                 vec![Box::new(self_arc.mcp_pool.clone())];
+            // 技能:skill 工具(子代理会话不挂——见上 slot_dir 处注释;
+            // fake 会话工具面固定 NoTools 不经此分支)
+            if !subagent_session {
+                extra_tools.push(Box::new(dsh_skill::SkillTool::new(
+                    self_arc.skills.clone(),
+                    ws_root.clone(),
+                )));
+            }
             let tools = dsh_app::build_tools(
                 &resolved,
                 &key,
@@ -3124,7 +3166,7 @@ impl AppHost {
                         })
                     },
                 })),
-                mcp_tools,
+                extra_tools,
             )
             .map_err(|e| RpcError::internal(format!("工具组装失败:{e}")))?;
             (
@@ -3679,6 +3721,42 @@ impl AppHost {
     /// 命令目录(host 注册表;桌面命令菜单拉取渲染)
     pub fn command_list(&self) -> Vec<CommandDescriptor> {
         builtin_commands()
+    }
+
+    /// session.skills:当前会话可见技能(仅 user-invocable;桌面 `/` 菜单
+    /// 「技能」节数据源)。子代理会话返回空(照源 ui-skill 对 subagent
+    /// 会话回空)。描述为 frontmatter 原文——截断/归一是目录渲染帧的事,
+    /// 菜单侧交给 UI truncate。
+    pub fn session_skills(&self, session_id: &str) -> Result<Vec<Value>, RpcError> {
+        let path = self.slot_path(session_id);
+        if !path.exists() {
+            return Err(RpcError::session_not_found(session_id));
+        }
+        // header 存会话目录(slot_path 是日志文件路径)
+        let slot_dir = path.parent().unwrap_or(&path).to_path_buf();
+        if read_session_header(&slot_dir).1.as_deref() == Some("subagent") {
+            return Ok(Vec::new());
+        }
+        let (ws_root, _) = self.resolve_session(session_id);
+        Ok(self
+            .skills
+            .list(&ws_root)
+            .into_iter()
+            .filter(|s| s.user_invocable)
+            .map(|s| {
+                json!({
+                    "name": s.name,
+                    "description": s.description,
+                    "modelInvocable": s.model_invocable,
+                })
+            })
+            .collect())
+    }
+
+    /// 技能服务用户根覆写(测试隔离:布局/注入测试注入临时 home,
+    /// 生产恒真实 ~/.agents)。透传给共享 SkillService。
+    pub fn set_skill_user_home(&self, home: Option<std::path::PathBuf>) {
+        self.skills.set_user_home(home);
     }
 
     /// ask_user_question 阻塞提问——落 pending(question/requested 帧),
@@ -5749,6 +5827,45 @@ async fn driver_loop(
         session.restore_projection();
     }
 
+    // skill 目录 + `/name` 手势注入(照源:目录只在 skill 工具在场时发布;
+    // 子代理不挂工具即同跳)。digest 幂等在宿主 SkillCatalogState,attach
+    // 时从日志倒序恢复,重开不重发。
+    if read_session_header(slot.path.parent().unwrap_or(&slot.path))
+        .1
+        .as_deref()
+        != Some("subagent")
+    {
+        {
+            let log = Arc::clone(&inner.log);
+            let ws_root = host0.resolve_session(&session_id).0;
+            let service = Arc::clone(&host0.skills);
+            let state = std::sync::Mutex::new(dsh_skill::SkillCatalogState::new());
+            if let Ok(mut st) = state.lock() {
+                let snapshot = log.lock().ok().map(|l| {
+                    l.iter()
+                        .map(|e| (e.r#type.to_string(), e.data.clone()))
+                        .collect::<Vec<_>>()
+                });
+                if let Some(snap) = snapshot {
+                    dsh_skill::SkillCatalogState::restore_from_log(&mut st, snap);
+                }
+            }
+            session.set_skill_catalog_provider(Box::new(move || {
+                let Ok(mut st) = state.lock() else {
+                    return None;
+                };
+                st.compose(&service, &ws_root)
+            }));
+        }
+        {
+            let ws_root = host0.resolve_session(&session_id).0;
+            let service = Arc::clone(&host0.skills);
+            session.set_skill_gesture_provider(Box::new(move |texts| {
+                dsh_skill::gesture_payloads(&service, &ws_root, texts)
+            }));
+        }
+    }
+
     loop {
         // 命令间隙处理(与 turn 串行;turn 内到达的命令延后到下一轮)
         while let Ok(cmd) = driver_rx.try_recv() {
@@ -6185,7 +6302,17 @@ mod tests {
         // 会话根注入临时目录(不污染 ~/.dshrs)
         let sroot =
             std::env::temp_dir().join(format!("dsh-core-{tag}-sroot-{}", Uuid::new_v4().simple()));
-        Arc::new(AppHost::new_at(dir, true, "test-key", sroot).unwrap())
+        let host = Arc::new(AppHost::new_at(dir, true, "test-key", sroot).unwrap());
+        // 技能家目录隔离:真实 ~/.agents/skills 的技能会进 fake 会话的
+        // 目录注入/RPC 面,破坏既有事件序断言;默认空目录,skill 测试
+        // 再注入各自夹具根
+        host.set_skill_user_home(Some(
+            host.workspace
+                .parent()
+                .unwrap_or(&host.workspace)
+                .join("skills-home-empty"),
+        ));
+        host
     }
 
     /// 会话根下项目目录(测试 fixture 定位)
@@ -7370,7 +7497,7 @@ mod tests {
             parts,
             gate,
             log,
-            NoTools,
+            dsh_agent_loop::NoTools,
             backend,
             path.display().to_string(),
             CancelToken::new(),
@@ -9005,5 +9132,243 @@ mod tests {
         // 已 idle:重复打断不命中(无事可停,不得残留信号误伤下一轮)
         assert!(!host.interrupt_subagent(&child), "idle 子代理无可打断");
         let _ = std::fs::remove_file(&go);
+    }
+
+    // ── skill:目录注入 / 手势 / RPC 面 ──────────────────────────
+
+    /// 测试技能环境:用户根注入空目录(隔离真实 ~/.agents/skills),
+    /// 工作区项目根(<ws>/.agents/skills)可放夹具技能
+    fn skill_host(tag: &str) -> Arc<AppHost> {
+        let host = temp_host(tag);
+        host.set_skill_user_home(Some(
+            host.workspace
+                .parent()
+                .unwrap_or(&host.workspace)
+                .join("skills-home"),
+        ));
+        host
+    }
+
+    fn write_skill(ws: &std::path::Path, slot: &str, name: &str, extra: &str) {
+        let p = ws.join(".agents").join("skills").join(slot);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(
+            p,
+            format!(
+                "---\nname: {name}\ndescription: \"skill {name}\"{extra}\n---\nbody of {name}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn catalogs_of(log: &[dsh_session::EventEnvelope]) -> Vec<(String, serde_json::Value)> {
+        log.iter()
+            .filter(|e| {
+                e.r#type == "user/message"
+                    && e.data["source"]["kind"].as_str() == Some("skill-catalog")
+            })
+            .map(|e| {
+                (
+                    e.data["content"].as_str().unwrap_or_default().to_string(),
+                    e.data["source"].clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn session_skills_lists_user_invocable_only() {
+        let host = skill_host("skills-rpc");
+        let ws = host.workspace.clone();
+        write_skill(&ws, "model-ok.md", "model-ok", "");
+        write_skill(
+            &ws,
+            "user-only.md",
+            "user-only",
+            "\ndisable-model-invocation: true",
+        );
+        write_skill(&ws, "hidden.md", "hidden", "\nuser-invocable: false");
+        let id = host.create_session(None, None, None);
+        let skills = host.session_skills(&id).unwrap();
+        let names: Vec<&str> = skills.iter().filter_map(|s| s["name"].as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["model-ok", "user-only"],
+            "user-invocable 仅列这两者"
+        );
+        let user_only = skills.iter().find(|s| s["name"] == "user-only").unwrap();
+        assert_eq!(user_only["modelInvocable"], false, "仅用户标记随行");
+        let model_ok = skills.iter().find(|s| s["name"] == "model-ok").unwrap();
+        assert_eq!(model_ok["modelInvocable"], true);
+        // 描述为原文(截断属目录渲染帧)
+        assert_eq!(model_ok["description"], "skill model-ok");
+    }
+
+    #[tokio::test]
+    async fn skill_catalog_first_replace_tombstone() {
+        let host = skill_host("skills-catalog");
+        let ws = host.workspace.clone();
+        write_skill(&ws, "alpha.md", "alpha", "");
+        host.set_fake_script(script(&["r1", "r2", "r3", "r4"]));
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+
+        // turn1:首注(目录出现在 turn/start 之后、模型可见面)
+        host.prompt(&id, &[json!({ "type": "text", "text": "hi" })], "queue")
+            .await
+            .unwrap();
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await
+        .expect("turn1 结束");
+        let log = host.session_log(&id).unwrap();
+        let cats = catalogs_of(&log);
+        assert_eq!(cats.len(), 1, "首注恰一条");
+        assert!(cats[0].0.contains("A skill is a reusable set"), "首注形态");
+        assert!(cats[0].0.contains("`alpha`"));
+        assert!(cats[0].1["update"].is_null(), "首注无 update 标记");
+
+        // turn2(无变化):不重发
+        host.prompt(&id, &[json!({ "type": "text", "text": "again" })], "queue")
+            .await
+            .unwrap();
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await
+        .expect("turn2 结束");
+        assert_eq!(
+            catalogs_of(&host.session_log(&id).unwrap()).len(),
+            1,
+            "无变化不重发"
+        );
+
+        // turn3(加技能):整条替换 + update 标记
+        write_skill(&ws, "beta.md", "beta", "");
+        host.prompt(&id, &[json!({ "type": "text", "text": "third" })], "queue")
+            .await
+            .unwrap();
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await
+        .expect("turn3 结束");
+        let cats = catalogs_of(&host.session_log(&id).unwrap());
+        assert_eq!(cats.len(), 2, "变化才发替换");
+        assert_eq!(cats[1].1["update"], true);
+        assert!(cats[1].0.contains("The available skill catalog changed."));
+        assert!(cats[1].0.contains("`beta`"));
+        // 派生面:旧目录被替换,模型只见最新一条
+        let visible =
+            dsh_session::events::derive_visible_messages(host.session_log(&id).unwrap().iter());
+        let catalog_count = visible
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| {
+                m["role"] == "user"
+                    && m["content"].as_str().is_some_and(|c| {
+                        c.contains("available-skills list")
+                            || c.contains("available in this session")
+                    })
+            })
+            .count();
+        assert_eq!(catalog_count, 1, "派生面只保留最新目录");
+
+        // turn4(删净):空墓碑
+        std::fs::remove_dir_all(ws.join(".agents/skills")).unwrap();
+        host.prompt(&id, &[json!({ "type": "text", "text": "fourth" })], "queue")
+            .await
+            .unwrap();
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await
+        .expect("turn4 结束");
+        let cats = catalogs_of(&host.session_log(&id).unwrap());
+        assert_eq!(cats.len(), 3, "删净发墓碑");
+        assert!(cats[2].0.contains("No skills are currently available"));
+    }
+
+    #[tokio::test]
+    async fn skill_gesture_injects_after_catalog_and_args_stay_in_user_bubble() {
+        let host = skill_host("skills-gesture");
+        let ws = host.workspace.clone();
+        write_skill(&ws, "review.md", "review", "");
+        host.set_fake_script(script(&["done"]));
+        let id = host.create_session(None, None, None);
+        let user_text = "/review 请按技能处理这片 ARGS-ONLY-HERE";
+        host.prompt(
+            &id,
+            &[json!({ "type": "text", "text": user_text })],
+            "queue",
+        )
+        .await
+        .unwrap();
+        // 等首 turn 收尾
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let log = host.session_log(&id).unwrap();
+            if log.iter().any(|e| e.r#type == "turn/end") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "turn 未收尾");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let log = host.session_log(&id).unwrap();
+        // 真实用户消息:args 留在气泡里
+        let user_msgs: Vec<&dsh_session::EventEnvelope> = log
+            .iter()
+            .filter(|e| {
+                e.r#type == "user/message"
+                    && e.data["source"]["kind"]
+                        .as_str()
+                        .is_none_or(|k| k == "user")
+            })
+            .collect();
+        assert!(
+            user_msgs.iter().any(|e| e.data["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(user_text)),
+            "用户原文完整入档"
+        );
+        // 手势注入:skill-invocation,含正文,不含用户 args 文本
+        let gestures: Vec<&dsh_session::EventEnvelope> = log
+            .iter()
+            .filter(|e| {
+                e.r#type == "user/message"
+                    && e.data["source"]["kind"].as_str() == Some("skill-invocation")
+            })
+            .collect();
+        assert_eq!(gestures.len(), 1, "恰一次手势注入");
+        let g = gestures[0];
+        assert_eq!(g.data["source"]["name"], "review");
+        assert_eq!(g.data["source"]["form"], "instructions");
+        let content = g.data["content"].as_str().unwrap();
+        assert!(content.contains("<skill_content name=\"review\">"));
+        assert!(!content.contains("ARGS-ONLY-HERE"), "args 不进注入体(照源)");
+        // 手势排在目录之后(源序:材料最后)
+        let cat_seq = log
+            .iter()
+            .find(|e| e.data["source"]["kind"].as_str() == Some("skill-catalog"))
+            .map(|e| e.seq)
+            .expect("同 turn 应有目录首注");
+        assert!(g.seq > cat_seq, "手势注入在目录之后");
+        // 中途 /usr/bin 之类的路径不产生注入(恰 1 条已断言)
+    }
+
+    #[tokio::test]
+    async fn skill_tool_absent_for_subagent_sessions() {
+        let host = skill_host("skills-subagent");
+        let ws = host.workspace.clone();
+        write_skill(&ws, "alpha.md", "alpha", "");
+        let parent = host.create_session(None, None, None);
+        let child = host.create_subagent_session(&parent);
+        // 子会话:RPC 面返回空(照源 subagent 菜单为空)
+        assert!(host.session_skills(&child).unwrap().is_empty());
+        // 父会话正常列出
+        assert_eq!(host.session_skills(&parent).unwrap().len(), 1);
     }
 }

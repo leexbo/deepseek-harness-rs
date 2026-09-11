@@ -82,6 +82,15 @@ pub struct PendingCommand {
     pub name: String,
 }
 
+/// `/` 菜单「技能」节条目(session_skills 投影;user-invocable only)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+    /// false = 仅用户手势可调(disable-model-invocation),行上带「仅用户」标
+    pub model_invocable: bool,
+}
+
 /// composer 底排下拉(互斥单开;根级外点全关)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposerMenu {
@@ -221,6 +230,10 @@ pub(crate) struct ChatStore {
     /// 框内染色不可达,故命令与参数分呈现:命令行可移除,输入框只写
     /// 参数,发送时拼接 /name args 走既有文本路径)
     pub pending_command: Option<PendingCommand>,
+    /// `/` 菜单「技能」节候选(菜单打开时经 session_skills 拉取;
+    /// 空会话/子会话为空 = 节略)。点击落 pending chip,发送拼
+    /// `/name args` 走手势注入。
+    pub skill_entries: Vec<SkillEntry>,
     /// 计划归档卡展开态(键 = plan:<seq>;缺席 = 折叠)
     pub open_plans: HashSet<String>,
     /// 计划 chip hover 态(激活时 hover 才把图标换成 ⓧ 取消态;
@@ -292,6 +305,7 @@ impl Default for ChatStore {
             queue_editing: None,
             queue_edit_input: None,
             pending_command: None,
+            skill_entries: Vec::new(),
             open_plans: HashSet::new(),
             open_retries: HashSet::new(),
             retry_tick: None,
@@ -1258,6 +1272,23 @@ impl AppStore {
         } else {
             menu
         };
+        // 打开指令菜单时刷新技能候选(session_skills 直读宿主;空会话
+        // 清空=节略)。同步 fs 扫描仅菜单打开时发生,两根一层扫描开销可忽略
+        if self.chat.composer_menu == ComposerMenu::Commands {
+            self.chat.skill_entries = self
+                .state
+                .current_id
+                .as_deref()
+                .and_then(|sid| self.bridge.host().session_skills(sid).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|v| SkillEntry {
+                    name: v["name"].as_str().unwrap_or_default().to_string(),
+                    description: v["description"].as_str().unwrap_or_default().to_string(),
+                    model_invocable: v["modelInvocable"].as_bool().unwrap_or(true),
+                })
+                .collect();
+        }
         cx.notify();
     }
 

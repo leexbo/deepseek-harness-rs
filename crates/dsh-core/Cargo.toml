@@ -19,6 +19,7 @@ dsh-llm.workspace = true
 dsh-session.workspace = true
 dsh-tools.workspace = true
 dsh-mcp.workspace = true
+dsh-skill.workspace = true
 dsh-sandbox.workspace = true
 serde.workspace = true
 serde_json.workspace = true

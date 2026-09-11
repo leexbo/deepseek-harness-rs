@@ -520,11 +520,8 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                             .debug_selector(|| "mcp-json-input".to_string())
                             .w_full()
                             .min_w(px(0.))
-                            .child(
-                                gpui_kit::component::input::Editor::new(input).h(px(280.)),
-                            ),
-                    )
-
+                            .child(gpui_kit::component::input::Editor::new(input).h(px(280.))),
+                    ),
             );
         }
         if let Some(Err(e)) = &detail.json_preview {

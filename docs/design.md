@@ -377,6 +377,10 @@ preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: dsh/v1 / kind:
 
 `dsh-mcp`(rmcp 官方 Rust SDK)把外部 MCP server(stdio 首批)的工具桥接进工具面。**命名**:公共名 `mcp__<server>__<tool>`(非法字符归一、64 上限,有损追加 sha256 前 12hex 消歧);**raw name 只上 tools/call 线路,公共名永不反解**。**生命周期**:端口池锚宿主(非会话)——设置保存/启停/导入即对照 enabled 清单同步(新增/变更启动或重启,禁用/卸载停机,rmcp `RunningService::cancel` 干净关闭,transport drop 杀子进程);所有会话共享一个 server 一条连接,池以单个聚合 `ToolPort` 装进工具面,`specs` 聚合与按名路由都是动态的(工具清单连上后下一 turn 出现,会话无需重装配);连接失败落设置页通告 + 状态表,失败即止不自动重连(改配置再保存 = 重启端口)。**投影**:text 合并、image/audio/embedded 降级占位、resource_link 转文本、空内容固定占位;`isError` → 工具失败结果。**边界**:只桥 tools(resources/prompts 不桥);MCP 工具不经沙箱与审批闸门(server 由用户配置接入,审批泛化随 hooks 桥);`tools/list_changed` → 整代原子换带(同名 raw 重复整代无效,保留上一代)。
 
+### 7.14 Skill 子系统
+
+`dsh-skill` 加载 `.agents/skills` 标准位置的 SKILL.md 技能:项目根(向上找 `.git` 锚,回退 cwd)与用户 home 两根,rank 100/200 近层同名遮蔽,一层扫描,目录 `<name>/SKILL.md` 与扁平 `<name>.md` 两形态。frontmatter 手写栅栏扫描 + serde_norway:name(kebab 必填)/description(必填)/`disable-model-invocation`/`user-invocable` 双面调用策略(无工具白名单),坏文件 warn-and-skip;正文仅 trim 不截断,正文永不缓存(每次 `get` 重读),摘要缓存按 mtime/size 校验。**模型面**:`skill` 工具(按名加载,结果 = `<skill_content>`,含基目录资源提示)+ 持久 user 消息目录(`source.kind=skill-catalog`,渐进披露——目录只有 name + 500 字符归一化 description,变化整条替换,digest 幂等不重发,冷恢复从日志倒序重算);「模型恒只见一份目录」由 `derive_visible_messages` 的「skill-catalog 保留最新一条」纯派生规则达成(源在 pre-step 决策里物理移除旧目录,日志只追加,派生层同一语义)。**用户手势**:消息文本中的空白界定 `/name` 词元(仅真实用户消息可触发,路径/分数不误伤)注入同构 `<skill_content>`(`source.kind=skill-invocation`),排在全部注入最后(材料最贴近回答);args 留在用户气泡不进注入体。**边界**:子代理会话不挂工具不注入(照源 child preset);`/` 前缀文本只有内置四命令短路,其余按普通消息放行由手势识别接管(命令赢同名,plain-text 决策);桌面 `/` 菜单「技能」节(user-invocable only,`session_skills` RPC)点击落草稿 chip,skill 工具卡 = Instructions 展开体 + Inspect。
+
 ## 8. 质量场景
 
 | 场景 | 期望 | 验证 |

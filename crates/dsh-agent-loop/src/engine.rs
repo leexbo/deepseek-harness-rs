@@ -131,6 +131,12 @@ pub struct LoopEngine {
     /// 工具触碰的路径,返回完整注入 user/message 载荷或 None)。差分/版本
     /// 缓存全在宿主 InstructionRuntimeState,引擎只管按序落档。
     instructions_provider: Option<InstructionsProvider>,
+    /// skill 目录每步回调(宿主注入;digest 幂等在宿主,变化才 Some)。
+    /// 排在 runtime 快照之后、手势之前。
+    skill_catalog_provider: Option<SkillCatalogProvider>,
+    /// `/name` 手势注入回调(宿主注入;入参 = 本步用户面消息文本,
+    /// 返回注入载荷列表,排在全部注入最后)。
+    skill_gesture_provider: Option<SkillGestureProvider>,
     /// 本 turn 内待下探的触碰路径(file_read/file_edit 的 path 参数);
     /// 下一次组合指令时消费并清空,turn 结束自然丢弃
     pending_touches: Vec<String>,
@@ -147,6 +153,16 @@ pub type InstructionsProvider = Box<InstructionsProviderFn>;
 
 /// 每步渲染 runtime-context 快照的回调(宿主注入;`None` = 无快照)。
 pub type ContextProvider = Box<dyn Fn() -> Option<(String, Vec<ContextSection>)> + Send + Sync>;
+
+/// 每步渲染 skill 目录的回调(宿主注入;`Some` = 完整 user/message 载荷
+/// {content, source}。目录变化才 Some——digest 幂等在宿主 SkillCatalogState,
+/// 引擎只管按序落档;None = 无变化不重发)。
+pub type SkillCatalogProvider = Box<dyn Fn() -> Option<serde_json::Value> + Send + Sync>;
+
+/// 本步用户面消息文本 → `/name` 手势注入载荷(源 skill-invocation;
+/// 引擎在全部注入之后追加落档——源序:「背景在前,模型要执行的材料
+/// 在后,最贴近它的回答」)。仅扫真实用户消息(外部文本不可伪造手势)。
+pub type SkillGestureProvider = Box<dyn Fn(&[String]) -> Vec<serde_json::Value> + Send + Sync>;
 
 /// 默认抖动随机源:uuid v7 的随机位(62 bit)折算 [0,1)。
 /// 同一毫秒内连续调用各自独立,足以做退避抖动(非密码学场景)
@@ -170,6 +186,8 @@ impl LoopEngine {
             projection: RuntimeContextProjection::new(),
             context_provider: None,
             instructions_provider: None,
+            skill_catalog_provider: None,
+            skill_gesture_provider: None,
             pending_touches: Vec::new(),
             retry_policy: RetryPolicy::default(),
             random_source: Box::new(uuid_random),
@@ -213,6 +231,19 @@ impl LoopEngine {
         self.instructions_provider = Some(provider);
     }
 
+    /// 装配 skill 目录每步回调(宿主注入;dsh-skill SkillCatalogState)。
+    /// 未设置 = 本会话无 skill 目录注入(skill 工具不在场时宿主不装,照源:
+    /// 目录只在工具视图解析到本注册的 skill 工具时发布)。
+    pub fn set_skill_catalog_provider(&mut self, provider: SkillCatalogProvider) {
+        self.skill_catalog_provider = Some(provider);
+    }
+
+    /// 装配 `/name` 手势注入回调(宿主注入;dsh-skill gesture_payloads)。
+    /// 未设置 = 本会话无手势识别。
+    pub fn set_skill_gesture_provider(&mut self, provider: SkillGestureProvider) {
+        self.skill_gesture_provider = Some(provider);
+    }
+
     /// 从既有日志恢复投影 retained(重开会话:runtime-context 快照同源恢复)。
     /// 在引擎持有共享日志后调用。
     pub fn restore_projection(&mut self) {
@@ -228,12 +259,13 @@ impl LoopEngine {
     /// 先记录 inserted splice(pending 累积),再记录认领 splice(removed →
     /// UI claimed 集合),随后逐条 user/message —— 同一 id 贯穿三处,
     /// UI 据此把中途消息渲染为 steering 节点并收回瞬态队列行。
-    /// 返回每条 claim 的 user/message seq(供 step 级锚点;空 = 无 steer)。
+    /// 返回每条 claim 的 (user/message seq, 文本, 是否真实用户)——文本供
+    /// `/name` 手势扫描;空 = 无 steer。
     fn claim_steered(
         &self,
         clock: &(dyn Fn() -> i64 + Send + Sync),
         sink: &mut (dyn FnMut(&EventEnvelope) + Send),
-    ) -> Result<Vec<u64>, LoopError> {
+    ) -> Result<Vec<(u64, String, bool)>, LoopError> {
         let Some(buf) = &self.steer_buf else {
             return Ok(Vec::new());
         };
@@ -284,7 +316,7 @@ impl LoopEngine {
             ),
             sink,
         )?;
-        let mut seqs = Vec::new();
+        let mut claims = Vec::new();
         for e in &entries {
             let seq = Self::commit(
                 &self.log,
@@ -301,9 +333,17 @@ impl LoopEngine {
                 }),
                 sink,
             )?;
-            seqs.push(seq);
+            // plain_user = 真实用户 steer(source 缺省或 kind=user);
+            // 宿主注入(结算通知等)不参与 `/name` 手势扫描
+            let plain_user = e
+                .source
+                .as_ref()
+                .and_then(|s| s["kind"].as_str())
+                .map(|k| k == "user")
+                .unwrap_or(true);
+            claims.push((seq, e.text.clone(), plain_user));
         }
-        Ok(seqs)
+        Ok(claims)
     }
 
     /// 调整历史折叠预算(测试用;默认 [`FOLD_BUDGET_CHARS`])
@@ -661,19 +701,33 @@ impl LoopEngine {
             // 文本变才生成)。全部落档为 user/message。
             // 同一步内 steer claims 先、真实用户次(drain 顺序:
             // next-step 先,next-turn 后)。
-            let steer_seqs = self.claim_steered(clock, sink)?;
-            if let Some(first) = steer_seqs.first() {
+            // 本步用户面文本(真实用户消息)随步收集,供 `/name` 手势
+            // 扫描(step 末统一处理;宿主注入的染色消息不参与)。
+            let mut step_user_texts: Vec<String> = Vec::new();
+            let steer_claims = self.claim_steered(clock, sink)?;
+            if let Some((first, _, _)) = steer_claims.first() {
                 turn_anchor = *first;
+            }
+            for (_, text, plain) in &steer_claims {
+                if *plain {
+                    step_user_texts.push(text.clone());
+                }
             }
             if !first_user_committed {
                 // 真实用户消息(仅首步):作为本步 claimed 一员,step/start 后落档。
                 // 来源染色:宿主认领带 source 的条目(结算通知)时随
                 // 消息落档;缺省 = 真实用户,载荷不带 source(与既有日志同形)。
+                let tinted = self.pending_input_source.take();
+                let plain_user = tinted
+                    .as_ref()
+                    .and_then(|s| s["kind"].as_str())
+                    .map(|k| k == "user")
+                    .unwrap_or(true);
                 let mut user_payload = serde_json::json!({
                     "content": dsh_session::attachments::message_content(input, images),
                     "id": input_id,
                 });
-                if let Some(src) = self.pending_input_source.take() {
+                if let Some(src) = tinted {
                     user_payload["source"] = src;
                 }
                 let user_seq = Self::commit(
@@ -682,6 +736,9 @@ impl LoopEngine {
                     sink,
                 )?;
                 first_user_committed = true;
+                if plain_user {
+                    step_user_texts.push(input.to_string());
+                }
                 // 若本步无 steer,真实用户消息即本 turn 首条 claimed(锚点);
                 // 有 steer 则保持 steer 为首锚。
                 if turn_anchor == 0 {
@@ -748,6 +805,40 @@ impl LoopEngine {
                     {
                         self.projection.observe_event(ev);
                     }
+                }
+            }
+
+            // skill 目录注入(每步;宿主 digest 幂等,变化才 Some)。排
+            // runtime 快照之后、手势之前——源序:背景(workspace 规则、
+            // runtime 策略、目录)在前。仅首个 pre-step 发布 + 变化整条
+            // 替换;「模型只见一份」由 dsh-session 派生层保留最新一条达成。
+            if let Some(provider) = &self.skill_catalog_provider
+                && let Some(mut payload) = provider()
+            {
+                if payload.get("id").and_then(|v| v.as_str()).is_none() {
+                    payload["id"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
+                }
+                Self::commit(
+                    &self.log,
+                    EventEnvelope::new("user/message", clock(), payload),
+                    sink,
+                )?;
+            }
+
+            // skill 手势注入(仅本步有真实用户消息时;载荷排在全部注入
+            // 最后——源序:模型要执行的材料最贴近它的回答)。
+            if let Some(provider) = &self.skill_gesture_provider
+                && !step_user_texts.is_empty()
+            {
+                for mut payload in provider(&step_user_texts) {
+                    if payload.get("id").and_then(|v| v.as_str()).is_none() {
+                        payload["id"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
+                    }
+                    Self::commit(
+                        &self.log,
+                        EventEnvelope::new("user/message", clock(), payload),
+                        sink,
+                    )?;
                 }
             }
 

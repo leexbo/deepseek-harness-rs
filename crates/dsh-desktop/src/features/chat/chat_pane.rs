@@ -1509,8 +1509,11 @@ fn tool_block(
         None
     };
     let ws_root = ws_root_of(store.read(cx));
+    // skill 行摘要 = 参数名(源 SkillRow 折叠态「Skill <名>」:标题槽
+    // 固定「Skill」,名字落摘要槽)
     let summary_display = match name {
         "file_read" | "file_edit" => super::projection::relativize(ws_root.as_deref(), summary),
+        "skill" => super::toolcard::skill_arg_name(arguments).unwrap_or_default(),
         _ => summary.to_string(),
     };
     let summary_line = failure_line
@@ -1545,6 +1548,8 @@ fn tool_block(
                     // todo_write 行标题(「更新任务清单」)
                     .child(if name == "todo_write" {
                         "更新任务清单".to_string()
+                    } else if name == "skill" {
+                        "Skill".to_string()
                     } else {
                         name.to_string()
                     }),
@@ -1671,6 +1676,12 @@ fn tool_expanded_body(
             // IN/OUT JSON 卡;与 todo_dock 同一视觉语言),失败附错误首行
             _ if name == "todo_write" => {
                 todo_write_expanded(ix, arguments, output, state == ToolState::Error)
+            }
+            // skill 展开体 = Instructions 卡(源 SkillRow:加载中/失败/
+            // 正文三态;Inspect 药丸由展开体外层恒挂)
+            _ if name == "skill" => {
+                super::toolcard::render_skill(store, cx, ix, key, output, state == ToolState::Error)
+                    .into_any_element()
             }
             _ => io_card(ix, arguments, output, state == ToolState::Error),
         }
