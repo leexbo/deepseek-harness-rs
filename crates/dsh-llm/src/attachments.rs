@@ -45,6 +45,8 @@ pub fn image_data_url(block: &Value, source: &dyn AttachmentSource) -> Option<St
 /// 请求级 offload:累计图片的 base64 估算体积(bytes × 4/3)超预算时,
 /// **从最旧的图开始**替换为占位文本块(源 offloadRequestImages)。
 /// 瞬态变换——调用方在克隆上执行,不回写持久消息。
+/// 覆盖面:user/assistant 的 content 块数组 + tool 消息的 `images`
+/// 引用数组(MCP 图片桥;哨兵 = 同款占位文本块,翻译侧直通)。
 pub fn offload_request_images(messages: &mut Value, max_request_image_bytes: u64) {
     let Some(items) = messages.as_array_mut() else {
         return;
@@ -57,40 +59,49 @@ pub fn offload_request_images(messages: &mut Value, max_request_image_bytes: u64
                 total += base64_size(block_bytes(block));
             }
         }
+        for block in content_blocks(&m["images"]) {
+            if is_image_block(block) {
+                total += base64_size(block_bytes(block));
+            }
+        }
     }
     if total <= max_request_image_bytes {
         return;
     }
     'outer: for m in items.iter_mut() {
-        let Some(blocks) = m["content"].as_array_mut() else {
-            continue;
-        };
-        for block in blocks.iter_mut() {
-            if total <= max_request_image_bytes {
-                break 'outer;
-            }
-            if is_image_block(block) {
-                total = total.saturating_sub(base64_size(block_bytes(block)));
-                *block = serde_json::json!({ "type": "text", "text": OFFLOADED_IMAGE_TEXT });
+        for slot_key in ["content", "images"] {
+            let Some(slot) = m.get_mut(slot_key).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for block in slot.iter_mut() {
+                if total <= max_request_image_bytes {
+                    break 'outer;
+                }
+                if is_image_block(block) {
+                    total = total.saturating_sub(base64_size(block_bytes(block)));
+                    *block = serde_json::json!({ "type": "text", "text": OFFLOADED_IMAGE_TEXT });
+                }
             }
         }
     }
 }
 
 /// 折叠摘要降级:全部图块 → 占位文本(源 compaction text-only 语义;
-/// 摘要请求不该背着 base64 负载)
+/// 摘要请求不该背着 base64 负载)。含 tool 消息的 `images` 引用数组。
 pub fn strip_images_for_summary(messages: &Value) -> Value {
     let mut out = messages.clone();
     let Some(items) = out.as_array_mut() else {
         return out;
     };
     for m in items.iter_mut() {
-        let Some(blocks) = m["content"].as_array_mut() else {
-            continue;
-        };
-        for block in blocks.iter_mut() {
-            if is_image_block(block) {
-                *block = serde_json::json!({ "type": "text", "text": OFFLOADED_IMAGE_TEXT });
+        for slot_key in ["content", "images"] {
+            let Some(slot) = m.get_mut(slot_key).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for block in slot.iter_mut() {
+                if is_image_block(block) {
+                    *block = serde_json::json!({ "type": "text", "text": OFFLOADED_IMAGE_TEXT });
+                }
             }
         }
     }

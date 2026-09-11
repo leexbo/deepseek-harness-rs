@@ -358,7 +358,7 @@ fn fail(output: String) -> ToolOutput {
     ToolOutput {
         output,
         success: false,
-        view: None,
+        ..Default::default()
     }
 }
 
@@ -408,7 +408,7 @@ impl ToolPort for SkillTool {
         ToolOutput {
             output: render_skill_content(&def.summary.name, &def.summary.base_dir, &def.body),
             success: true,
-            view: None,
+            ..Default::default()
         }
     }
 }

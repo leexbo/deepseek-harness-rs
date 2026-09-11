@@ -559,17 +559,52 @@ struct McpPortHandle {
     cancel: dsh_agent_loop::CancelToken,
 }
 
-/// settings 条目 → stdio 端口配置(纯映射)
+/// settings 条目 → 端口配置(纯映射;url 在场 = streamable-http)
 fn mcp_config_of(entry: &crate::settings::McpServerEntry) -> dsh_mcp::McpServerConfig {
+    let transport = if entry.is_http() {
+        dsh_mcp::McpTransport::StreamableHttp {
+            url: entry.url.clone().unwrap_or_default(),
+            headers: entry.headers.clone(),
+        }
+    } else {
+        dsh_mcp::McpTransport::Stdio {
+            command: entry.command.clone(),
+            args: entry.args.clone(),
+            env: entry.env.clone(),
+            cwd: entry.cwd.as_ref().map(std::path::PathBuf::from),
+        }
+    };
     dsh_mcp::McpServerConfig {
         server_name: entry.id.clone(),
-        command: entry.command.clone(),
-        args: entry.args.clone(),
-        env: entry.env.clone(),
-        cwd: entry.cwd.as_ref().map(std::path::PathBuf::from),
+        transport,
         tool_call_timeout: std::time::Duration::from_millis(
             entry.tool_call_timeout_ms.unwrap_or(60_000),
         ),
+    }
+}
+
+/// dsh-host AttachmentStore → dsh-mcp ImageStorePort 适配(MCP 图片桥
+/// 落存口;准入/原子性由 AttachmentStore.save_images 自带)
+struct McpImageStore {
+    store: dsh_host::AttachmentStore,
+}
+
+impl dsh_mcp::ImageStorePort for McpImageStore {
+    fn save(
+        &self,
+        images: Vec<dsh_mcp::BridgeImageInput>,
+    ) -> Result<Vec<dsh_session::attachments::ImageAttachmentRef>, String> {
+        let inputs = images
+            .into_iter()
+            .map(|i| dsh_host::SaveImage {
+                data: i.data,
+                media_type: i.media_type,
+                name: i.name,
+            })
+            .collect::<Vec<_>>();
+        self.store
+            .save_images(&inputs, 0, 0)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -2151,7 +2186,13 @@ impl AppHost {
                 "id 仅限 ASCII 字母/数字/下划线/连字符",
             ));
         }
-        if entry.command.trim().is_empty() {
+        // 传输形态校验:有 url = http(url 必填、command 留空);
+        // 否则 stdio(command 必填)
+        if entry.is_http() {
+            if entry.url.as_ref().is_none_or(|u| u.trim().is_empty()) {
+                return Err(RpcError::bad_request("http 传输需要 url"));
+            }
+        } else if entry.command.trim().is_empty() {
             return Err(RpcError::bad_request("command 不能为空"));
         }
         self.settings
@@ -2267,16 +2308,25 @@ impl AppHost {
             let cb_host = Arc::clone(self);
             let cb_id = entry.id.clone();
             let on_status: dsh_mcp::StatusCallback = Arc::new(move |event| {
-                let (status, error) = match &event {
-                    dsh_mcp::McpStatusEvent::Connecting => ("connecting", ""),
-                    dsh_mcp::McpStatusEvent::Ready => ("ready", ""),
-                    dsh_mcp::McpStatusEvent::Failed(e) => ("failed", e.as_str()),
+                let (status, error): (&str, String) = match &event {
+                    dsh_mcp::McpStatusEvent::Connecting => ("connecting", String::new()),
+                    dsh_mcp::McpStatusEvent::Ready => ("ready", String::new()),
+                    dsh_mcp::McpStatusEvent::Reconnecting {
+                        attempt,
+                        max_attempts,
+                        delay_ms,
+                    } => (
+                        // RS 原生:重连进度进状态面(源只写日志)
+                        "reconnecting",
+                        format!("第 {attempt}/{max_attempts} 次,{delay_ms}ms 后重试"),
+                    ),
+                    dsh_mcp::McpStatusEvent::Failed(e) => ("failed", e.clone()),
                 };
                 cb_host
                     .mcp_status
                     .lock()
                     .expect("mcp_status 锁中毒")
-                    .insert(cb_id.clone(), (status.into(), error.into()));
+                    .insert(cb_id.clone(), (status.into(), error.clone()));
                 let _ = cb_host.mux.send(frame(
                     "mcp/status",
                     json!({ "server": cb_id, "status": status, "error": error }),
@@ -2285,7 +2335,15 @@ impl AppHost {
             let port = {
                 // 连接任务锚宿主后台 runtime(调用线程可能无 tokio 上下文)
                 let _enter = self.mcp_rt.enter();
-                dsh_mcp::McpServerPort::start(config.clone(), cancel.clone(), Some(on_status))
+                let image_store: Arc<dyn dsh_mcp::ImageStorePort> = Arc::new(McpImageStore {
+                    store: self.attachments.clone(),
+                });
+                dsh_mcp::McpServerPort::start(
+                    config.clone(),
+                    cancel.clone(),
+                    Some(on_status),
+                    Some(image_store),
+                )
             };
             self.mcp_pool.upsert(entry.id.clone(), port);
             self.mcp_handles
@@ -3052,16 +3110,21 @@ impl AppHost {
             }
             let gate = InvariantGate::new(provider, log);
             let l = gate.log();
-            // fake 工具面 = skill 工具(非子代理;子会话不挂——与真实
-            // 会话同门控,目录只在工具在场时发布)。空集/单工具集无重名
+            // fake 工具面 = MCP 池(所有会话共享)+ skill 工具(非子代理;
+            // 子会话不挂——与真实会话同门控,目录只在工具在场时发布)。
+            // 池/技能名空间互异,无重名冲突
             let fake_tools = if subagent_session {
-                dsh_agent_loop::ToolSet::new(Vec::new())
-            } else {
-                dsh_agent_loop::ToolSet::new(vec![Box::new(dsh_skill::SkillTool::new(
-                    Arc::clone(&self_arc.skills),
-                    ws_root.clone(),
-                ))
+                dsh_agent_loop::ToolSet::new(vec![Box::new(self_arc.mcp_pool.clone())
                     as Box<dyn dsh_agent_loop::tools::ToolPortObj>])
+            } else {
+                dsh_agent_loop::ToolSet::new(vec![
+                    Box::new(self_arc.mcp_pool.clone())
+                        as Box<dyn dsh_agent_loop::tools::ToolPortObj>,
+                    Box::new(dsh_skill::SkillTool::new(
+                        Arc::clone(&self_arc.skills),
+                        ws_root.clone(),
+                    )) as Box<dyn dsh_agent_loop::tools::ToolPortObj>,
+                ])
             }
             .expect("fake 工具集装配失败");
             (
@@ -4065,6 +4128,19 @@ impl AppHost {
                     .into_iter()
                     .flatten()
                     .filter_map(|m| m["images"].as_array())
+                    .flatten()
+                    .filter_map(|r| {
+                        serde_json::from_value::<dsh_session::attachments::ImageAttachmentRef>(
+                            r.clone(),
+                        )
+                        .ok()
+                    })
+                    .find(|r| r.attachment_id == attachment_id),
+                // MCP 图片桥:tool/result 携带的 images 引用数组(授权 =
+                // 日志引用,与 user 图同一语义)
+                "tool/result" => ev.data["images"]
+                    .as_array()
+                    .into_iter()
                     .flatten()
                     .filter_map(|r| {
                         serde_json::from_value::<dsh_session::attachments::ImageAttachmentRef>(
@@ -6330,6 +6406,8 @@ mod tests {
             env: Default::default(),
             cwd: None,
             tool_call_timeout_ms: None,
+            url: None,
+            headers: Default::default(),
         }
     }
 
@@ -9357,6 +9435,124 @@ mod tests {
             .expect("同 turn 应有目录首注");
         assert!(g.seq > cat_seq, "手势注入在目录之后");
         // 中途 /usr/bin 之类的路径不产生注入(恰 1 条已断言)
+    }
+
+    /// MCP 图片桥全链:settings 挂 stdio 图片 fixture → fake 模型调 MCP
+    /// 工具 → tool/result 携带 images 持久引用 → read_attachment 授权
+    /// (授权 = 日志引用;无关 id 拒)
+    #[tokio::test]
+    async fn mcp_image_bridge_full_chain_and_attachment_authorization() {
+        use base64::Engine as _;
+        // 图片 fixture(python3 stdio server:image 工具返回真实 PNG)
+        let b64_png = base64::engine::general_purpose::STANDARD.encode(TEST_PNG);
+        let fixture = format!(
+            r#"
+import sys, json
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    m = json.loads(line)
+    if "id" not in m:
+        continue
+    method = m.get("method")
+    if method == "initialize":
+        send({{"jsonrpc": "2.0", "id": m["id"], "result": {{
+            "protocolVersion": "2024-11-05",
+            "capabilities": {{"tools": {{}}}},
+            "serverInfo": {{"name": "img", "version": "0"}}}}}})
+    elif method == "tools/list":
+        send({{"jsonrpc": "2.0", "id": m["id"], "result": {{"tools": [
+            {{"name": "image", "description": "返回 PNG",
+             "inputSchema": {{"type": "object"}}}}]}}}})
+    elif method == "tools/call":
+        send({{"jsonrpc": "2.0", "id": m["id"], "result": {{
+            "content": [{{"type": "image", "data": "{b64_png}", "mimeType": "image/png"}}],
+            "isError": False}}}})
+"#
+        );
+        let dir = std::env::temp_dir().join(format!("dsh-mcp-bridge-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fixture_path = dir.join("img_fixture.py");
+        std::fs::write(&fixture_path, fixture).unwrap();
+
+        let host = temp_host("mcp-img");
+        host.upsert_mcp_server(crate::settings::McpServerEntry {
+            id: "img".into(),
+            enabled: true,
+            command: "python3".into(),
+            args: vec![fixture_path.display().to_string()],
+            ..Default::default()
+        })
+        .unwrap();
+        // 等 fixture 连接就绪(设置保存即连接)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if mcp_status_of(&host, "img").as_deref() == Some("ready") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "MCP fixture 未就绪");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // fake 模型两段:调 MCP 图片工具 → 终答
+        host.set_fake_script(vec![
+            vec![
+                LlmEvent::AssistantMessage(json!({
+                    "content": "",
+                    "tool_calls": [ {
+                        "id": "t1",
+                        "name": "mcp__img__image",
+                        "arguments": {},
+                    } ],
+                })),
+                LlmEvent::Done,
+            ],
+            script(&["done"]).remove(0),
+        ]);
+        let id = host.create_session(None, None, None);
+        host.prompt(&id, &[json!({ "type": "text", "text": "截个图" })], "queue")
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let log = host.session_log(&id).unwrap();
+            if log.iter().any(|e| e.r#type == "turn/end") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "turn 未收尾");
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        // tool/result 携带 images 持久引用;base64 不进模型面
+        let log = host.session_log(&id).unwrap();
+        let result = log
+            .iter()
+            .find(|e| e.r#type == "tool/result")
+            .expect("tool/result 在档");
+        let images = result.data["images"].as_array().expect("images 数组");
+        assert_eq!(images.len(), 1);
+        let attachment_id = images[0]["attachmentId"].as_str().unwrap().to_string();
+        assert!(attachment_id.starts_with("sha256:"));
+        assert!(
+            !result.data["output"].as_str().unwrap().contains(&b64_png),
+            "base64 不进工具输出文本"
+        );
+
+        // 授权读取:tool/result 引用即授权(与 user 图同一语义)
+        let read = host.read_attachment(&id, &attachment_id).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(read["data"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(decoded, TEST_PNG);
+        // 无关 id 拒
+        let absent = format!("sha256:{}", "c".repeat(64));
+        let err = host.read_attachment(&id, &absent).unwrap_err();
+        assert_eq!(err.code, "attachment-error");
+        assert_eq!(err.details["reason"], "ATTACHMENT_NOT_REFERENCED");
     }
 
     #[tokio::test]

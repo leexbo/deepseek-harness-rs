@@ -327,6 +327,14 @@ impl Translator {
                 if let Some(v) = ev.data.get("view").filter(|v| !v.is_null()) {
                     data["view"] = v.clone();
                 }
+                // 结果图片(MCP 图片桥;持久引用数组,在场才有)
+                if let Some(imgs) = ev
+                    .data
+                    .get("images")
+                    .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+                {
+                    data["images"] = imgs.clone();
+                }
                 session_event(ev, data, Some(vec![ev.seq]), Some(SurfaceOp::Append), None)
             }
             // todo/write:整表快照已与客方同形({todos:[{content,status}]})——透传

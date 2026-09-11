@@ -484,12 +484,23 @@ pub fn message_from_event(type_name: &str, data: &serde_json::Value) -> Option<s
             }
             Some(m)
         }
-        "tool/result" => Some(serde_json::json!({
-            "role": "tool",
-            "output": data["output"],
-            "call": data["call"],
-            "id": data["id"],
-        })),
+        "tool/result" => {
+            let mut m = serde_json::json!({
+                "role": "tool",
+                "output": data["output"],
+                "call": data["call"],
+                "id": data["id"],
+            });
+            // 结果图片(MCP 图片桥;零字节持久引用)。请求期翻译由方言层
+            // 处理(chat/anthropic 带图,responses 维持降级),缺席 = 无图
+            if let Some(imgs) = data
+                .get("images")
+                .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+            {
+                m["images"] = imgs.clone();
+            }
+            Some(m)
+        }
         // audit/call 不进消息面:审计面向归因重放,模型不可见
         _ => None,
     }

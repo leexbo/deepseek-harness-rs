@@ -1144,6 +1144,12 @@ impl LoopEngine {
                 {
                     result_data["view"] = v;
                 }
+                // 结果图片(MCP 图片桥);非空才写(零噪音惯例)
+                if !output.images.is_empty()
+                    && let Ok(imgs) = serde_json::to_value(&output.images)
+                {
+                    result_data["images"] = imgs;
+                }
                 Self::commit(
                     &self.log,
                     EventEnvelope::new("tool/result", clock(), result_data),
@@ -1825,6 +1831,7 @@ mod streaming_tests {
                             new_text: "new".into(),
                         }],
                     }),
+                    ..Default::default()
                 }
             }
             fn present_call(&self, _call: &ToolCallRequest) -> Option<ToolView> {
@@ -1851,7 +1858,7 @@ mod streaming_tests {
                 ToolOutput {
                     output: "ok".into(),
                     success: true,
-                    view: None,
+                    ..Default::default()
                 }
             }
         }

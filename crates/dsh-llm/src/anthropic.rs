@@ -121,20 +121,58 @@ fn to_anthropic_wire(message: Value, images: &dyn AttachmentSource) -> Value {
             }
             json!({ "role": "assistant", "content": blocks })
         }
-        Some("tool") => json!({
-            "role": "user",
-            "content": [ {
-                "type": "tool_result",
-                // provider call id 优先;无 id 时用内部引用链序号兜底(字符串化)
-                "tool_use_id": message
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .unwrap_or_else(|| message["call"].to_string()),
-                "content": message["output"],
-            } ],
-        }),
+        Some("tool") => {
+            // 结果图片(MCP 图片桥):tool_result content 升级为块数组
+            // (text + base64 image block),字节缺席降级 offload 占位
+            let mut content = message["output"].clone();
+            if let Some(imgs) = message["images"].as_array().filter(|a| !a.is_empty()) {
+                let mut blocks: Vec<Value> = Vec::new();
+                if let Some(text) = message["output"].as_str().filter(|s| !s.is_empty()) {
+                    blocks.push(json!({ "type": "text", "text": text }));
+                }
+                for img in imgs {
+                    match img["type"].as_str() {
+                        Some("image") => {
+                            let a = &img["attachment"];
+                            match (
+                                a["attachmentId"]
+                                    .as_str()
+                                    .and_then(|id| images.image_bytes(id)),
+                                a["mediaType"].as_str(),
+                            ) {
+                                (Some(bytes), Some(media_type)) => blocks.push(json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": base64::engine::general_purpose::STANDARD
+                                            .encode(bytes),
+                                    },
+                                })),
+                                _ => blocks
+                                    .push(json!({ "type": "text", "text": OFFLOADED_IMAGE_TEXT })),
+                            }
+                        }
+                        _ => blocks.push(img.clone()),
+                    }
+                }
+                content = Value::Array(blocks);
+            }
+            json!({
+                "role": "user",
+                "content": [ {
+                    "type": "tool_result",
+                    // provider call id 优先;无 id 时用内部引用链序号兜底(字符串化)
+                    "tool_use_id": message
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .unwrap_or_else(|| message["call"].to_string()),
+                    "content": content,
+                } ],
+            })
+        }
         Some("user") if message["content"].is_array() => json!({
             "role": "user",
             "content": anthropic_user_blocks(&message["content"], images),

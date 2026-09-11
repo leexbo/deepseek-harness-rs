@@ -208,7 +208,7 @@ pub struct SettingsFile {
     pub mcp_servers: Vec<McpServerEntry>,
 }
 
-/// MCP server 注册表条目(首批仅 stdio 传输)。
+/// MCP server 注册表条目(stdio / streamable-http 双传输)。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct McpServerEntry {
@@ -216,7 +216,7 @@ pub struct McpServerEntry {
     pub id: String,
     /// 是否随会话挂载
     pub enabled: bool,
-    /// stdio 启动命令
+    /// stdio 启动命令(http 条目留空)
     pub command: String,
     /// 启动参数
     #[serde(default)]
@@ -230,19 +230,39 @@ pub struct McpServerEntry {
     /// 单次调用超时 ms(缺省 60000,照源 toolCallTimeoutMs)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_timeout_ms: Option<u64>,
+    /// streamable-http endpoint(在 = http 条目,旧文件缺席 = stdio)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// http 附加请求头(原样透传;鉴权约定 = 用户自带 Authorization)
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+}
+
+impl McpServerEntry {
+    /// 传输形态:有 url 即 streamable-http(源为显式判别字段;RS 以
+    /// 「url 在场」为判别,JSON 导入侧认 transport/type 键)
+    pub fn is_http(&self) -> bool {
+        self.url.is_some()
+    }
 }
 
 /// 解析 mcpServers JSON(兼容 Claude Code / Codex 形状):
-/// `{"mcpServers": {"<名>": {"command","args","env","cwd"}}}` 为标准形态;
-/// 单 server 亦可直接给 `{"id"|"name", "command", ...}`。任一条目缺 command
-/// 或 id 非法 → 整体拒绝(fail-closed,不做部分导入)。
+/// `{"mcpServers": {"<名>": {"command","args","env","cwd"}}}`(stdio)或
+/// `{"url","headers"}`(http;`transport`/`type` 键为 `"http"`/
+/// `"streamable-http"` 显式认 http,`"sse"` 明确拒绝);单 server 亦可直接
+/// 给 `{"id"|"name", ...}`。任一条目非法 → 整体拒绝(fail-closed,不做
+/// 部分导入)。
 pub fn parse_mcp_servers_json(text: &str) -> Result<Vec<McpServerEntry>, String> {
     let v: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("JSON 解析失败:{e}"))?;
     let map: serde_json::Map<String, Value> =
         if let Some(m) = v.get("mcpServers").and_then(|m| m.as_object()) {
             m.clone()
-        } else if v.get("command").is_some() || v.get("id").is_some() || v.get("name").is_some() {
+        } else if v.get("command").is_some()
+            || v.get("url").is_some()
+            || v.get("id").is_some()
+            || v.get("name").is_some()
+        {
             // 单 server 形态:名字取 id/name 字段;匿名报错
             let name = v
                 .get("id")
@@ -260,10 +280,50 @@ pub fn parse_mcp_servers_json(text: &str) -> Result<Vec<McpServerEntry>, String>
     }
     let mut out = Vec::new();
     for (name, spec) in &map {
+        // 传输判定:显式 transport/type 键优先;否则 url 在场 = http
+        let declared = spec
+            .get("transport")
+            .or_else(|| spec.get("type"))
+            .and_then(|t| t.as_str())
+            .map(str::to_ascii_lowercase);
+        if matches!(declared.as_deref(), Some("sse")) {
+            return Err(format!(
+                "{name}: 暂不支持 SSE 传输(仅 stdio / streamable-http)"
+            ));
+        }
+        let is_http = matches!(declared.as_deref(), Some("http") | Some("streamable-http"))
+            || (declared.is_none() && spec.get("url").is_some());
+        let url = spec.get("url").and_then(|u| u.as_str()).map(str::to_owned);
+        if is_http {
+            let url = url
+                .filter(|u| !u.trim().is_empty())
+                .ok_or_else(|| format!("{name}: http 传输需要 url"))?;
+            let headers = spec
+                .get("headers")
+                .and_then(|h| h.as_object())
+                .map(|m| {
+                    m.iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.push(McpServerEntry {
+                id: name.clone(),
+                enabled: true,
+                command: String::new(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                cwd: None,
+                tool_call_timeout_ms: None,
+                url: Some(url),
+                headers,
+            });
+            continue;
+        }
         let command = spec
             .get("command")
             .and_then(|c| c.as_str())
-            .ok_or_else(|| format!("{name}: 缺少 command"))?
+            .ok_or_else(|| format!("{name}: 缺少 command(http 传输需 url)"))?
             .to_string();
         let args = spec
             .get("args")
@@ -292,6 +352,8 @@ pub fn parse_mcp_servers_json(text: &str) -> Result<Vec<McpServerEntry>, String>
             env,
             cwd,
             tool_call_timeout_ms: None,
+            url: None,
+            headers: BTreeMap::new(),
         });
     }
     Ok(out)
@@ -307,6 +369,8 @@ impl Default for McpServerEntry {
             env: BTreeMap::new(),
             cwd: None,
             tool_call_timeout_ms: None,
+            url: None,
+            headers: BTreeMap::new(),
         }
     }
 }
@@ -459,6 +523,48 @@ impl SettingsStore {
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    /// MCP http 条目:JSON 导入(显式 transport / url 启发 / sse 拒)、
+    /// serde roundtrip、旧文件缺字段兼容
+    #[test]
+    fn mcp_http_entries_parse_and_roundtrip() {
+        // 显式 transport: http
+        let entries = parse_mcp_servers_json(
+            r#"{"mcpServers":{"remote":{"transport":"http","url":"https://host/mcp","headers":{"Authorization":"Bearer t"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_http());
+        assert_eq!(entries[0].url.as_deref(), Some("https://host/mcp"));
+        assert_eq!(
+            entries[0].headers.get("Authorization").map(String::as_str),
+            Some("Bearer t")
+        );
+        assert!(entries[0].command.is_empty());
+        // url 启发(无 transport 键)
+        let entries =
+            parse_mcp_servers_json(r#"{"mcpServers":{"r2":{"url":"https://host/mcp"}}}"#).unwrap();
+        assert!(entries[0].is_http());
+        // type: sse → 明确拒绝
+        let err = parse_mcp_servers_json(
+            r#"{"mcpServers":{"r3":{"type":"sse","url":"https://host/sse"}}}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("SSE"), "{err}");
+        // http 缺 url → 拒
+        assert!(parse_mcp_servers_json(r#"{"mcpServers":{"r4":{"transport":"http"}}}"#).is_err());
+        // roundtrip:serde 落盘读回形态不变
+        let text = serde_json::to_string(&entries[0]).unwrap();
+        let back: McpServerEntry = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, entries[0]);
+        // 旧文件形态(无 url/headers 字段)兼容
+        let legacy: McpServerEntry = serde_json::from_value(serde_json::json!({
+            "id": "old", "enabled": true, "command": "npx"
+        }))
+        .unwrap();
+        assert!(!legacy.is_http());
+        assert!(legacy.headers.is_empty());
+    }
 
     fn temp_path(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("dsh-settings-{tag}-{}", Uuid::new_v4().simple()))

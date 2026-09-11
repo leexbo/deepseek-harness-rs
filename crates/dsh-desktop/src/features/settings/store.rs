@@ -1167,6 +1167,12 @@ pub struct McpDetailState {
     pub form_timeout: Option<Entity<InputState>>,
     /// 动态环境变量键值对列表
     pub form_env: Vec<(Entity<InputState>, Entity<InputState>)>,
+    /// 传输形态(true = streamable-http,false = stdio)
+    pub form_http: bool,
+    /// http endpoint URL
+    pub form_url: Option<Entity<InputState>>,
+    /// http 附加请求头键值对列表(原样透传,如 Authorization)
+    pub form_headers: Vec<(Entity<InputState>, Entity<InputState>)>,
     /// JSON 粘贴区输入
     pub json_input: Option<Entity<EditorState>>,
     /// JSON 页签预填文本(编辑模式 = 当前配置;新建 = None 显示占位示例)
@@ -1203,6 +1209,11 @@ impl AppStore {
             form_args: Vec::new(),
             form_timeout,
             form_env: Vec::new(),
+            form_http: false,
+            form_url: Some(
+                cx.new(|cx| InputState::new(window, cx).placeholder("https://host/mcp")),
+            ),
+            form_headers: Vec::new(),
             json_input: None,
             json_draft: None,
             json_preview: None,
@@ -1250,6 +1261,22 @@ impl AppStore {
             v_in.update(cx, |s, cx| s.set_value(v.clone(), window, cx));
             form_env.push((k_in, v_in));
         }
+        let form_http = entry.is_http();
+        let form_url =
+            Some(cx.new(|cx| InputState::new(window, cx).placeholder("https://host/mcp")));
+        if let Some(url) = &entry.url {
+            form_url.as_ref().unwrap().update(cx, |s, cx| {
+                s.set_value(url.clone(), window, cx);
+            });
+        }
+        let mut form_headers = Vec::new();
+        for (k, v) in &entry.headers {
+            let k_in = cx.new(|cx| InputState::new(window, cx));
+            k_in.update(cx, |s, cx| s.set_value(k.clone(), window, cx));
+            let v_in = cx.new(|cx| InputState::new(window, cx));
+            v_in.update(cx, |s, cx| s.set_value(v.clone(), window, cx));
+            form_headers.push((k_in, v_in));
+        }
         // JSON 页签预填:当前配置回显为 mcpServers 形态(去 id/enabled——
         // 编辑态身份在标题锁定,启停在表单)
         let mut body = serde_json::to_value(&entry).unwrap_or(serde_json::json!({}));
@@ -1271,6 +1298,9 @@ impl AppStore {
             form_args,
             form_timeout,
             form_env,
+            form_http,
+            form_url,
+            form_headers,
             json_input: None,
             json_draft,
             json_preview: None,
@@ -1328,6 +1358,37 @@ impl AppStore {
         }
     }
 
+    /// 切换传输形态(stdio ↔ streamable-http;字段集随形态显隐)
+    pub fn toggle_mcp_transport(&mut self, cx: &mut Context<Self>) {
+        let Some(detail) = self.settings.mcp_detail.as_mut() else {
+            return;
+        };
+        detail.form_http = !detail.form_http;
+        cx.notify();
+    }
+
+    /// 添加一组 http 请求头键值输入
+    pub fn add_mcp_header(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(detail) = self.settings.mcp_detail.as_mut() else {
+            return;
+        };
+        let k = cx.new(|cx| InputState::new(window, cx).placeholder("Header"));
+        let v = cx.new(|cx| InputState::new(window, cx).placeholder("VALUE"));
+        detail.form_headers.push((k, v));
+        cx.notify();
+    }
+
+    /// 移除一组 http 请求头键值输入
+    pub fn remove_mcp_header(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(detail) = self.settings.mcp_detail.as_mut() else {
+            return;
+        };
+        if ix < detail.form_headers.len() {
+            detail.form_headers.remove(ix);
+            cx.notify();
+        }
+    }
+
     /// 翻转详情页启用开关
     pub fn toggle_mcp_form_enabled(&mut self, cx: &mut Context<Self>) {
         let Some(detail) = self.settings.mcp_detail.as_mut() else {
@@ -1357,7 +1418,7 @@ impl AppStore {
                 match draft {
                     Some(text) => state.default_value(text),
                     None => state.placeholder(
-                        "{\n  \"mcpServers\": {\n    \"filesystem\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"~/dir\"]\n    }\n  }\n}",
+                        "{\n  \"mcpServers\": {\n    \"filesystem\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"~/dir\"]\n    },\n    \"remote\": {\n      \"transport\": \"http\",\n      \"url\": \"https://host/mcp\",\n      \"headers\": { \"Authorization\": \"Bearer <token>\" }\n    }\n  }\n}",
                     ),
                 }
             });
@@ -1436,7 +1497,8 @@ impl AppStore {
     }
 
     /// 提交 MCP server(新增 = 新 id upsert;编辑 = 同 id 覆盖)。
-    /// args 单行空格分隔;env 键值对(键空跳过);启停随列表开关
+    /// http 形态:url 必填 + headers 键值对(键空跳过);stdio 形态:
+    /// command 必填 + args/env;超时两态共用(空 = 60000)
     pub fn submit_mcp_server(&mut self, cx: &mut Context<Self>) {
         let Some(detail) = self.settings.mcp_detail.as_ref() else {
             return;
@@ -1453,20 +1515,6 @@ impl AppStore {
             self.push_mcp_form_notice("id 不能为空", cx);
             return;
         }
-        let Some(cmd_in) = &detail.form_command else {
-            return;
-        };
-        let command = cmd_in.read(cx).value().trim().to_string();
-        if command.is_empty() {
-            self.push_mcp_form_notice("command 不能为空", cx);
-            return;
-        }
-        let args: Vec<String> = detail
-            .form_args
-            .iter()
-            .map(|i| i.read(cx).value().trim().to_string())
-            .filter(|v| !v.is_empty())
-            .collect();
         let timeout = match detail
             .form_timeout
             .as_ref()
@@ -1482,19 +1530,69 @@ impl AppStore {
             },
             None => None,
         };
-        let mut env = std::collections::BTreeMap::new();
-        for (k, v) in &detail.form_env {
-            let key = k.read(cx).value().trim().to_string();
-            if key.is_empty() {
-                continue;
+        let (command, args, env, cwd, url, headers) = if detail.form_http {
+            let url = detail
+                .form_url
+                .as_ref()
+                .map(|i| i.read(cx).value().trim().to_string())
+                .unwrap_or_default();
+            if url.is_empty() {
+                self.push_mcp_form_notice("http 传输需要 url", cx);
+                return;
             }
-            env.insert(key, v.read(cx).value().to_string());
-        }
-        let cwd = detail
-            .form_cwd
-            .as_ref()
-            .map(|i| i.read(cx).value().trim().to_string())
-            .filter(|c| !c.is_empty());
+            let mut header_map = std::collections::BTreeMap::new();
+            for (k, v) in &detail.form_headers {
+                let key = k.read(cx).value().trim().to_string();
+                if key.is_empty() {
+                    continue;
+                }
+                header_map.insert(key, v.read(cx).value().to_string());
+            }
+            (
+                String::new(),
+                Vec::new(),
+                std::collections::BTreeMap::new(),
+                None,
+                Some(url),
+                header_map,
+            )
+        } else {
+            let Some(cmd_in) = &detail.form_command else {
+                return;
+            };
+            let command = cmd_in.read(cx).value().trim().to_string();
+            if command.is_empty() {
+                self.push_mcp_form_notice("command 不能为空", cx);
+                return;
+            }
+            let args: Vec<String> = detail
+                .form_args
+                .iter()
+                .map(|i| i.read(cx).value().trim().to_string())
+                .filter(|v| !v.is_empty())
+                .collect();
+            let mut env = std::collections::BTreeMap::new();
+            for (k, v) in &detail.form_env {
+                let key = k.read(cx).value().trim().to_string();
+                if key.is_empty() {
+                    continue;
+                }
+                env.insert(key, v.read(cx).value().to_string());
+            }
+            let cwd = detail
+                .form_cwd
+                .as_ref()
+                .map(|i| i.read(cx).value().trim().to_string())
+                .filter(|c| !c.is_empty());
+            (
+                command,
+                args,
+                env,
+                cwd,
+                None,
+                std::collections::BTreeMap::new(),
+            )
+        };
         let entry = dsh_core::settings::McpServerEntry {
             id,
             enabled: detail.form_enabled,
@@ -1503,6 +1601,8 @@ impl AppStore {
             env,
             cwd,
             tool_call_timeout_ms: timeout,
+            url,
+            headers,
         };
         match self.bridge.host().upsert_mcp_server(entry) {
             Ok(()) => {

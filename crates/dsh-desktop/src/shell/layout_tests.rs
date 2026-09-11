@@ -70,6 +70,7 @@ fn workspace_chat_nodes_do_not_overlap(cx: &mut TestAppContext) {
                         "card": "terminal", "exitCode": 0, "signal": null,
                         "cwd": "/tmp/ws",
                     })),
+                    images: Vec::new(),
                 });
             }
         }
@@ -335,6 +336,7 @@ fn tool_read_expanded_keeps_collapse_and_inspect_jumps(cx: &mut TestAppContext) 
                 arguments: "{\"path\":\"/ws/src/main.rs\"}".into(),
                 output: Some("10 行".into()),
                 view: Some(read_view),
+                images: Vec::new(),
             });
             st.state.chats.insert(id.clone(), chat);
             // 展开工具卡 + 展开 read 卡(hidden>0 展开态)
@@ -4646,6 +4648,7 @@ fn streaming_entrance_gate_and_tool_sweep(cx: &mut TestAppContext) {
                 arguments: String::new(),
                 output: None,
                 view: None,
+                images: Vec::new(),
             });
             cx.notify();
         })
@@ -4743,6 +4746,7 @@ fn todo_write_row_summary_from_call_args(cx: &mut TestAppContext) {
                     arguments: args.to_string(),
                     output: None,
                     view: None,
+                    images: Vec::new(),
                 });
                 st.state.chats.insert(id, chat);
                 cx.notify();
@@ -4834,6 +4838,7 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
                 arguments: "{\"command\":\"ls -la\"}".into(),
                 output: None,
                 view: None,
+                images: Vec::new(),
             });
             chat.nodes.push(ChatNode::TurnTail {
                 key: "turn-end:99".into(),
@@ -4940,6 +4945,7 @@ fn collapsed_turn_has_no_gap_before_notice(cx: &mut TestAppContext) {
                     arguments: "{}".into(),
                     output: None,
                     view: None,
+                    images: Vec::new(),
                 });
             }
             chat.nodes.push(ChatNode::Assistant {
@@ -5241,6 +5247,7 @@ fn subagent_tool_expand_body_stays_in_viewport(cx: &mut TestAppContext) {
                 arguments,
                 output: Some("started subagent s-x".into()),
                 view: None,
+                images: Vec::new(),
             });
             st.state.chats.insert(id, chat);
             cx.notify();

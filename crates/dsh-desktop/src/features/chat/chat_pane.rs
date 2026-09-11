@@ -994,6 +994,7 @@ fn render_node(
             arguments,
             output,
             view,
+            images,
         } => tool_block(
             store,
             expanded_tools,
@@ -1006,6 +1007,7 @@ fn render_node(
             arguments,
             output.as_deref(),
             view.as_ref(),
+            images,
         )
         .into_any_element(),
         ChatNode::TurnTail {
@@ -1487,6 +1489,7 @@ fn tool_block(
     arguments: &str,
     output: Option<&str>,
     view: Option<&serde_json::Value>,
+    images: &[serde_json::Value],
 ) -> impl IntoElement {
     let expanded = expanded_tools.contains(key);
     let s = store.clone();
@@ -1597,7 +1600,7 @@ fn tool_block(
     );
     if expanded {
         col = col.child(tool_expanded_body(
-            store, cx, ix, &key, name, state, arguments, output, view,
+            store, cx, ix, &key, name, state, arguments, output, view, images,
         ));
     }
     col
@@ -1617,6 +1620,7 @@ fn tool_expanded_body(
     arguments: &str,
     output: Option<&str>,
     view: Option<&serde_json::Value>,
+    images: &[serde_json::Value],
 ) -> gpui_kit::AnyElement {
     use super::toolcard::{self, CardView};
     let narrowed = view.and_then(toolcard::narrow);
@@ -1688,16 +1692,21 @@ fn tool_expanded_body(
     };
     // 展开体底部恒挂 Inspect 药丸,点击跳到轨迹该调用。
     let inspect = inspect_button(store, ix, key);
-    div()
+    // 结果图片(MCP 图片桥):卡体下挂消息同款图库(引用按 id 加载)
+    let mut wrap = div()
         .v_flex()
         .items_start()
         .gap(px(4.))
         // 卡体显式满列宽:外层 items_start 会按内容宽收缩卡(短内容 →
         // 半宽的 file_read);宽卡再包 w_full 后内部 overflow_scroll 才有
         // 锚点,超宽的 bash 输出在卡内横向滚而非溢出卡外。
-        .child(div().w_full().child(body))
-        .child(inspect)
-        .into_any_element()
+        .child(div().w_full().child(body));
+    if !images.is_empty() {
+        wrap = wrap.child(crate::features::attachments::message_images(
+            store, images, cx,
+        ));
+    }
+    wrap.child(inspect).into_any_element()
 }
 
 /// 展开体底部的 Inspect 药丸(源 ToolRow.inspect → inspectCall(callId)):
