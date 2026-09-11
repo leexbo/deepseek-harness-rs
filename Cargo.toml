@@ -6,6 +6,7 @@ members = [
     "crates/dsh-desktop",
     "crates/dsh-core",
     "crates/dsh-mcp",
+    "crates/dsh-skill",
     "crates/dsh-wit",
     "crates/dsh-host",
     "crates/dsh-llm",
@@ -52,6 +53,7 @@ dsh-prompt = { path = "crates/dsh-prompt" }
 dsh-tools = { path = "crates/dsh-tools" }
 dsh-llm = { path = "crates/dsh-llm" }
 dsh-mcp = { path = "crates/dsh-mcp" }
+dsh-skill = { path = "crates/dsh-skill" }
 dsh-sandbox = { path = "crates/dsh-sandbox" }
 portable-pty = "0.9.0"
 ignore = "0.4.33"

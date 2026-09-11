@@ -1155,6 +1155,12 @@ fn menu_harness_opts(
     }
     let (bridge, frames_rx) =
         HostBridge::new_at(ws, true, "", Some(root.join("sessions"))).expect("桥构建失败");
+    // 技能家目录隔离:真实 ~/.agents/skills 的技能会泄进 `/` 菜单技能节
+    // (session_skills 扫真实 home),撑高菜单把命令行测的 goal 行顶出
+    // 窗口顶、点击落空。测试统一注入空目录;需要技能夹具的测试再写入
+    bridge
+        .host()
+        .set_skill_user_home(Some(root.join("skills-home")));
     let store_cell = std::rc::Rc::new(std::cell::RefCell::new(None::<Entity<AppStore>>));
     let store_capture = store_cell.clone();
     let (_view, wcx) = cx.add_window_view(|window, cx| {
@@ -3455,6 +3461,59 @@ fn command_line_cleared_on_session_switch(cx: &mut TestAppContext) {
     cx.update(|app| store.update(app, |st, cx| st.open_session(&id, cx)));
     let cleared = cx.update(|app| store.read(app).chat.pending_command.is_none());
     assert!(cleared, "切换会话应丢弃命令行");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 技能节渲染与草稿 chip:`/` 菜单打开时列出 session_skills 候选(项目根
+/// 夹具;用户根已被 harness 隔离),点技能行落 pending chip(标题 =
+/// 技能名,发送拼 /name args 走 host 手势注入)。user-invocable only、
+/// 「仅用户」标由 session_skills 面保证,此处锁渲染与点击路径
+#[gpui_kit::test]
+fn skill_menu_section_sets_pending_chip(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "skill-menu");
+    // 项目根技能夹具(ws 无 .git → 项目根 = ws 自身)
+    let skill_dir = root
+        .join("ws")
+        .join(".agents")
+        .join("skills")
+        .join("repo-review");
+    std::fs::create_dir_all(&skill_dir).expect("mkdir skill");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: repo-review\ndescription: Reviews the repo\n---\nbody",
+    )
+    .expect("write SKILL.md");
+    // 打开 `/` 菜单(打开时刷新技能候选)
+    click_sel(&mut wcx, "composer-cmd");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let skill_sel: &'static str = Box::leak("repo-review".to_string().into_boxed_str());
+    assert!(
+        wcx.debug_bounds(skill_sel).is_some(),
+        "技能节行未渲染(session_skills 候选缺失)"
+    );
+    // 点技能行 → 草稿 chip(pending_command = 技能名)
+    click_sel(&mut wcx, skill_sel);
+    cx.run_until_parked();
+    let pending = cx.update(|app| {
+        store
+            .read(app)
+            .chat
+            .pending_command
+            .as_ref()
+            .map(|p| p.name.clone())
+    });
+    assert_eq!(
+        pending.as_deref(),
+        Some("repo-review"),
+        "技能行应设 pending chip"
+    );
+    wcx.refresh().expect("刷新失败");
+    assert!(
+        wcx.debug_bounds("composer-command-line").is_some(),
+        "技能 chip 命令行未渲染"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 

@@ -531,13 +531,20 @@ pub fn prune_output(output: &str) -> String {
 /// 模型可见消息 = 日志投影 + 显式策略栈。
 ///
 /// 策略栈:① tool/result 输出裁剪(常量,确定性);② 历史折叠——最近一条
-/// compaction/summary 之前的事件折叠为单条摘要消息,其后照常派生。
+/// compaction/summary 之前的事件折叠为单条摘要消息,其后照常派生;
+/// ③ skill 目录替换——`source.kind=skill-catalog` 的 user/message 只保留
+/// 最新一条(源在 pre-step 决策里物理移除旧目录,模型恒只见一份;日志
+/// 只追加,这里以纯派生规则达成同一可见语义,重放稳定)。
 /// engine 的请求构造与闸门的期望比对**共用本函数**(唯一实现);
 /// derive_messages 保留为无策略的裸映射(审计/测试用)。
 pub fn derive_visible_messages<'a>(
     events: impl Iterator<Item = &'a crate::EventEnvelope>,
 ) -> serde_json::Value {
     let events: Vec<&crate::EventEnvelope> = events.collect();
+    let last_catalog_seq = events
+        .iter()
+        .rev()
+        .find_map(|e| (e.r#type == "user/message" && is_skill_catalog(&e.data)).then_some(e.seq));
     let folded = events
         .iter()
         .rev()
@@ -549,6 +556,10 @@ pub fn derive_visible_messages<'a>(
             )
         });
 
+    let superseded_catalog = |e: &&crate::EventEnvelope| -> bool {
+        Some(e.seq) < last_catalog_seq && is_skill_catalog(&e.data)
+    };
+
     let mut msgs: Vec<serde_json::Value> = Vec::new();
     if let Some((through, summary)) = folded {
         if through > 0 {
@@ -557,16 +568,24 @@ pub fn derive_visible_messages<'a>(
                 "content": format!("<session-summary>\n{summary}\n</session-summary>"),
             }));
         }
-        for ev in events.iter().filter(|e| e.seq > through) {
+        for ev in events
+            .iter()
+            .filter(|e| e.seq > through && !superseded_catalog(e))
+        {
             push_visible(&mut msgs, ev);
         }
     } else {
-        for ev in events {
+        for ev in events.into_iter().filter(|e| !superseded_catalog(e)) {
             push_visible(&mut msgs, ev);
         }
     }
     pair_dangling_tool_calls(&mut msgs);
     serde_json::Value::Array(msgs)
+}
+
+/// skill 目录事件判定(user/message + source.kind=skill-catalog)
+fn is_skill_catalog(data: &serde_json::Value) -> bool {
+    data["source"]["kind"].as_str() == Some("skill-catalog")
 }
 
 /// 悬空 tool_calls 的占位结果:turn 中断/异常退出时工具未执行完,
@@ -825,6 +844,80 @@ mod tests {
         assert!(
             raw.as_array().unwrap()[1]["output"].as_str().unwrap().len() > PRUNE_THRESHOLD_CHARS
         );
+    }
+
+    /// skill 目录替换:同 kind 的 user/message 派生时只保留最新一条
+    /// (源在 pre-step 决策里移除旧目录;日志只追加,派生层同一语义)。
+    /// 普通注入消息不受影响;保留的是最新一条而非「非空的」。
+    #[test]
+    fn derive_keeps_only_latest_skill_catalog() {
+        let evs = [
+            envelope("user/message", 1, json!({ "content": "hi" })),
+            envelope(
+                "user/message",
+                2,
+                json!({
+                    "content": "old catalog",
+                    "source": { "kind": "skill-catalog", "form": "catalog",
+                        "entries": [ { "name": "a", "description": "d" } ] },
+                }),
+            ),
+            envelope(
+                "user/message",
+                3,
+                json!({
+                    "content": "replacement catalog",
+                    "source": { "kind": "skill-catalog", "form": "catalog", "update": true,
+                        "entries": [ { "name": "b", "description": "d" } ] },
+                }),
+            ),
+            envelope(
+                "user/message",
+                4,
+                json!({
+                    "content": "injected",
+                    "source": { "kind": "agent-instructions", "form": "instructions" },
+                }),
+            ),
+        ];
+        let arr = derive_visible_messages(evs.iter())
+            .as_array()
+            .unwrap()
+            .clone();
+        let contents: Vec<&str> = arr.iter().filter_map(|m| m["content"].as_str()).collect();
+        assert_eq!(
+            contents,
+            vec!["hi", "replacement catalog", "injected"],
+            "旧目录被替换,普通注入不受影响"
+        );
+
+        // 全删墓碑(空 entries 的最新目录)同样替换旧目录
+        let evs2 = [
+            envelope(
+                "user/message",
+                1,
+                json!({
+                    "content": "first",
+                    "source": { "kind": "skill-catalog", "form": "catalog",
+                        "entries": [ { "name": "a", "description": "d" } ] },
+                }),
+            ),
+            envelope(
+                "user/message",
+                2,
+                json!({
+                    "content": "tombstone",
+                    "source": { "kind": "skill-catalog", "form": "catalog", "update": true,
+                        "entries": [] },
+                }),
+            ),
+        ];
+        let arr2 = derive_visible_messages(evs2.iter())
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(arr2.len(), 1);
+        assert_eq!(arr2[0]["content"], "tombstone");
     }
 
     /// 悬空 tool_calls(中断/异常退出的回合)派生时补占位 tool 消息:

@@ -926,6 +926,165 @@ fn copy_button(
 /// 聊天位卡体头尾上限(CHAT_*_MAX_LINES = 原语默认 16 的一半)
 pub(crate) const CHAT_CARD_MAX_LINES: usize = 8;
 
+// ── skill 卡(源 SkillRow)────────────────────────────────────
+
+/// 解析 skill 调用参数的 name(折叠行「Skill <名>」摘要用;JSON 字符串
+/// 与对象两形态都接受——wire 上 arguments 是编码字符串)
+pub(crate) fn skill_arg_name(arguments: &str) -> Option<String> {
+    let args: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    args["name"].as_str().map(str::to_string)
+}
+
+/// skill 卡展开体(源 SkillRow:折叠态「Skill <名>」由聊天行头承担;
+/// 展开体 = Instructions 正文 + 复制)。源用 260px 限高滚动,GPUI list
+/// 行内嵌滚动容器有测量/绘制脱节叠绘前科(D48),故用家族统一的头尾
+/// 截断 + 展开钮。加载中 = 「正在加载 skill」;失败 = 错误首行红字。
+pub(crate) fn render_skill(
+    store: &Entity<AppStore>,
+    cx: &App,
+    ix: usize,
+    key: &str,
+    output: Option<&str>,
+    error: bool,
+) -> gpui_kit::AnyElement {
+    if error {
+        let first = output
+            .and_then(|o| o.lines().find(|l| !l.trim().is_empty()))
+            .unwrap_or("skill 加载失败");
+        return div()
+            .ml(px(4.))
+            .rounded(px(12.))
+            .bg(theme::CODE())
+            .px(px(14.))
+            .py(px(12.))
+            .text_size(px(13.))
+            .line_height(px(22.))
+            .text_color(theme::DANGER())
+            .child(first.to_string())
+            .into_any_element();
+    }
+    let Some(output) = output else {
+        return div()
+            .ml(px(4.))
+            .text_size(px(13.))
+            .text_color(theme::LABEL_3())
+            .child("正在加载 skill")
+            .into_any_element();
+    };
+    let expand_key = format!("{key}·skill");
+    let expanded = store.read(cx).chat.card_expanded.contains(&expand_key);
+    let lines: Vec<&str> = output.split('\n').collect();
+    let ht = head_tail(lines.len(), CHAT_CARD_MAX_LINES, expanded);
+    let shown: Vec<&str> = if ht.capped {
+        lines[..ht.head].to_vec()
+    } else {
+        lines.clone()
+    };
+    div()
+        .id(("skill-card", ix))
+        .v_flex()
+        .ml(px(4.))
+        .rounded(px(12.))
+        .bg(theme::CODE())
+        .overflow_hidden()
+        .font_family("Menlo")
+        .text_size(px(13.))
+        .line_height(px(22.))
+        // 横幅:Instructions + 复制
+        .child(
+            div()
+                .flex()
+                .min_w(px(0.))
+                .items_center()
+                .gap(px(12.))
+                .px(px(14.))
+                .py(px(9.))
+                .bg(theme::CARD())
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .flex_1()
+                        .truncate()
+                        .text_size(px(12.))
+                        .line_height(px(18.))
+                        .text_color(theme::LABEL())
+                        .child("Instructions"),
+                )
+                .child(copy_button(
+                    store,
+                    cx,
+                    ("skill-copy", ix),
+                    &format!("{key}·skill"),
+                    output,
+                )),
+        )
+        // 正文(截断 + 展开钮;预格式不软换行,超宽横向滚)
+        .child(
+            div()
+                .id(("skill-body", ix))
+                .overflow_scroll()
+                .py(px(12.))
+                .child(
+                    div().v_flex().children(
+                        shown
+                            .iter()
+                            .map(|l| {
+                                div()
+                                    .pl(px(14.))
+                                    .min_h(px(22.))
+                                    .line_height(px(22.))
+                                    .text_color(theme::LABEL())
+                                    .child(l.to_string())
+                                    .into_any_element()
+                            })
+                            .chain(std::iter::once(skill_expand_row(
+                                store,
+                                cx,
+                                ix,
+                                &expand_key,
+                                ht.hidden,
+                            )))
+                            .collect::<Vec<_>>(),
+                    ),
+                ),
+        )
+        .into_any_element()
+}
+
+/// skill 展开钮(与 read 家族同款;收起态复用 card_expanded 键)
+fn skill_expand_row(
+    store: &Entity<AppStore>,
+    cx: &App,
+    ix: usize,
+    key: &str,
+    hidden: usize,
+) -> gpui_kit::AnyElement {
+    if hidden == 0 {
+        return div().into_any_element();
+    }
+    let expanded = store.read(cx).chat.card_expanded.contains(key);
+    let s = store.clone();
+    let k = key.to_string();
+    div()
+        .id(("skill-expand", ix))
+        .pl(px(14.))
+        .min_h(px(22.))
+        .line_height(px(22.))
+        .cursor_pointer()
+        .text_color(theme::LABEL_3())
+        .hover(|st| st.text_color(theme::LABEL_2()))
+        .child(if expanded {
+            "收起".to_string()
+        } else {
+            format!("… 其余 {hidden} 行")
+        })
+        .on_click(move |_, _, cx| {
+            let k = k.clone();
+            s.update(cx, |st, cx| st.toggle_card_expanded(&k, cx));
+        })
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

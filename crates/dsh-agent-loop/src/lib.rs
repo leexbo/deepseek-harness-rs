@@ -22,7 +22,8 @@ pub mod tools;
 pub use cancel::CancelToken;
 pub use engine::{
     FOLD_BUDGET_CHARS, FOLD_KEEP_MESSAGES, InstructionsProvider, InstructionsProviderFn,
-    LoopEngine, LoopError, Phase, SteerInput, TurnOutcome,
+    LoopEngine, LoopError, Phase, SkillCatalogProvider, SkillGestureProvider, SteerInput,
+    TurnOutcome,
 };
 pub use presentation::{FileDiff, FileMatches, ToolView, ViewLine};
 pub use retry::RetryPolicy;

@@ -275,7 +275,8 @@ fn bottom_row(
         .pb(px(8.))
         .child(menu_slot(
             cmd_trigger,
-            (menu == ComposerMenu::Commands).then(|| commands_card(store, cmds.clone())),
+            (menu == ComposerMenu::Commands)
+                .then(|| commands_card(store, cmds.clone(), &st.chat.skill_entries)),
             anchor_bottom,
         ))
         // 「+」与模式 chips 之间的细竖线分组
@@ -510,10 +511,13 @@ fn plan_chip(store: &Entity<AppStore>, hovered: bool) -> impl IntoElement {
 
 /// 命令菜单(「+」触发):斜杠指令列表(从 host 注册表拉取,动态化),
 /// 选中即 host 执行(非发模型)。首节「添加」
-/// = 图片附件入口(附件不占弹窗旁的独立钮),命令节空则略
+/// = 图片附件入口(附件不占弹窗旁的独立钮),命令节空则略;
+/// 「技能」节 = session_skills(user-invocable,菜单打开时拉取),
+/// 点击落草稿 chip(发送拼 /name args,host 手势注入接管)。
 fn commands_card(
     store: &Entity<AppStore>,
     cmds: Vec<dsh_core::registry::CommandDescriptor>,
+    skills: &[super::store::SkillEntry],
 ) -> gpui_kit::AnyElement {
     let mut rows: Vec<gpui_kit::AnyElement> = vec![section_label("添加").into_any_element()];
     rows.push(
@@ -575,6 +579,31 @@ fn commands_card(
                 })
                 .into_any_element(),
             )
+        }
+    }
+    if !skills.is_empty() {
+        rows.push(section_label("技能").into_any_element());
+        for sk in skills {
+            let s = store.clone();
+            let name = sk.name.clone();
+            let desc = if sk.model_invocable {
+                sk.description.clone()
+            } else {
+                format!("仅用户 · {}", sk.description)
+            };
+            let chip_name: &'static str = Box::leak(name.clone().into_boxed_str());
+            rows.push(
+                command_row(chip_name, desc, move |cx| {
+                    let s = s.clone();
+                    s.update(cx, move |st, cx| {
+                        // 技能恒走草稿 chip(参数在输入框;不立即执行)——
+                        // 发送拼 /name args,host 侧手势识别接管
+                        st.set_pending_command(chip_name, cx);
+                        st.close_all_menus(cx);
+                    });
+                })
+                .into_any_element(),
+            );
         }
     }
     menu_card(rows)

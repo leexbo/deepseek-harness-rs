@@ -463,6 +463,16 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
         self.engine.set_instructions_provider(provider);
     }
 
+    /// 装配 skill 目录每步回调(dsh-skill SkillCatalogState;变化才 Some)。
+    pub fn set_skill_catalog_provider(&mut self, provider: dsh_agent_loop::SkillCatalogProvider) {
+        self.engine.set_skill_catalog_provider(provider);
+    }
+
+    /// 装配 `/name` 手势注入回调(dsh-skill gesture_payloads)。
+    pub fn set_skill_gesture_provider(&mut self, provider: dsh_agent_loop::SkillGestureProvider) {
+        self.engine.set_skill_gesture_provider(provider);
+    }
+
     /// 从既有日志恢复投影 retained(runtime 快照同源恢复;冷附着重开会话用)。
     pub fn restore_projection(&mut self) {
         self.engine.restore_projection();

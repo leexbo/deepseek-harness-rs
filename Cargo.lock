@@ -2256,6 +2256,7 @@ dependencies = [
  "dsh-mcp",
  "dsh-sandbox",
  "dsh-session",
+ "dsh-skill",
  "dsh-tools",
  "reqwest",
  "security-framework",
@@ -2373,6 +2374,19 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "wit-bindgen 0.61.1",
+]
+
+[[package]]
+name = "dsh-skill"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent-loop",
+ "hex",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "sha2 0.11.0",
+ "tokio",
 ]
 
 [[package]]
