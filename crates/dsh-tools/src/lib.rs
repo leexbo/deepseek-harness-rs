@@ -299,6 +299,7 @@ impl BashTool {
             cwd: Some(self.cwd.clone()),
             env: Default::default(),
             sandbox: Some(self.resolve_policy()),
+            stdin: None,
         };
         let child = match spawn_child("/bin/bash", &["-c".into(), command.to_string()], &opts).await
         {
@@ -518,6 +519,7 @@ impl ToolPort for BashTool {
             cwd: Some(self.cwd.clone()),
             env: Default::default(),
             sandbox: Some(policy.clone()),
+            stdin: None,
         };
         // spawn 失败(含 fail-closed 沙箱拒绝)即工具失败,不中断 loop
         let child = match spawn_child("/bin/bash", &["-c".into(), command.to_string()], &opts).await

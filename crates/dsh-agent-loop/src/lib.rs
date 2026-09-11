@@ -13,6 +13,7 @@
 
 pub mod cancel;
 pub mod engine;
+pub mod hooks;
 pub mod presentation;
 pub mod retry;
 pub mod runtime_context;
@@ -24,6 +25,9 @@ pub use engine::{
     FOLD_BUDGET_CHARS, FOLD_KEEP_MESSAGES, InstructionsProvider, InstructionsProviderFn,
     LoopEngine, LoopError, Phase, SkillCatalogProvider, SkillGestureProvider, SteerInput,
     TurnOutcome,
+};
+pub use hooks::{
+    HookPort, HookPortObj, PostToolVerdict, PreStepVerdict, PreToolVerdict, StopVerdict,
 };
 pub use presentation::{FileDiff, FileMatches, ToolView, ViewLine};
 pub use retry::RetryPolicy;

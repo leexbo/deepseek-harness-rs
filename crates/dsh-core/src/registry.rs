@@ -79,6 +79,13 @@ impl AnySession {
         }
     }
 
+    fn set_hook_port(&mut self, port: Arc<dyn dsh_agent_loop::hooks::HookPortObj>) {
+        match self {
+            AnySession::Real(s) => s.set_hook_port(port),
+            AnySession::Fake(s) => s.set_hook_port(port),
+        }
+    }
+
     fn pending_plan(&self) -> Option<String> {
         match self {
             AnySession::Real(s) => s.pending_plan(),
@@ -2049,6 +2056,7 @@ impl AppHost {
             "providers": providers,
             "mcpServers": serde_json::to_value(&file.mcp_servers).unwrap_or(Value::Null),
             "mcpStatus": self.mcp_server_status(),
+            "hookBridges": serde_json::to_value(&file.hook_bridges).unwrap_or(Value::Null),
             "workspaces": serde_json::to_value(&file.workspaces).unwrap_or(Value::Null),
             "defaultProvider": self.default_provider().id,
             "busyEnter": file.busy_enter,
@@ -2225,6 +2233,279 @@ impl AppHost {
             .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
         self.sync_mcp_ports();
         Ok(())
+    }
+
+    /// hooks 桥清单(设置页读取面)
+    pub fn hook_bridges(&self) -> Vec<crate::settings::HookBridgeEntry> {
+        self.settings.read().hook_bridges.clone()
+    }
+
+    /// hooks ask 的宿主审批面闭包(拍板 3;调用 HookPortImpl 侧经
+    /// ToolApprovalFn 三参形态)。无会话/闲时 = Unavailable(fail-closed)。
+    pub(crate) fn hook_tool_approval(
+        self: &Arc<Self>,
+        session_id: &str,
+    ) -> dsh_hooks::service::ToolApprovalFn {
+        let host = Arc::clone(self);
+        let sid = session_id.to_string();
+        Arc::new(move |tool_name, args_summary, reason| {
+            let host = Arc::clone(&host);
+            let sid = sid.clone();
+            Box::pin(async move {
+                // 与升级审批同语义的闲时校验(审批必须被 open turn 包住)
+                {
+                    let slots = host.sessions.read().expect("sessions 锁中毒");
+                    let Some(slot) = slots.get(&sid) else {
+                        return dsh_hooks::service::ToolApprovalOutcome::Unavailable;
+                    };
+                    if !slot.running.load(std::sync::atomic::Ordering::Relaxed) {
+                        return dsh_hooks::service::ToolApprovalOutcome::Unavailable;
+                    }
+                }
+                host.request_tool_approval(&sid, &tool_name, &args_summary, &reason)
+                    .await
+            })
+        })
+    }
+
+    /// 通用工具级审批面(拍板 3;hooks ask + 未来 MCP per-tool allowlist
+    /// 共用):审计对照落(approval/asked kind=tool)→ approval=never 入口
+    /// 即拒 → 问询骑问答通道(intent=tool-approval,允许一次/拒绝)→
+    /// decided 收口。drop 守卫语义与 request_escalation 一致。
+    pub async fn request_tool_approval(
+        self: &Arc<Self>,
+        session_id: &str,
+        tool_name: &str,
+        args_summary: &str,
+        reason: &str,
+    ) -> dsh_hooks::service::ToolApprovalOutcome {
+        use dsh_hooks::service::ToolApprovalOutcome;
+        let (log, backend) = {
+            let slots = self.sessions.read().expect("sessions 锁中毒");
+            let Some(slot) = slots.get(session_id) else {
+                return ToolApprovalOutcome::Unavailable;
+            };
+            if !slot.running.load(std::sync::atomic::Ordering::Relaxed) {
+                return ToolApprovalOutcome::Unavailable;
+            }
+            let inner = slot.inner.get().expect("running 会话必已附着");
+            (Arc::clone(&inner.log), inner.backend.clone())
+        };
+        let audit_id = Uuid::now_v7().to_string();
+        let splice = |ev: EventEnvelope| splice_event(&log, &backend, ev);
+        let asked = splice(EventEnvelope::new(
+            "approval/asked",
+            now_ms() as i64,
+            json!({
+                "id": audit_id,
+                "kind": "tool",
+                "toolName": tool_name,
+                "reason": if reason.is_empty() { format!("approval required for {tool_name}") } else { reason.to_string() },
+                "argsSummary": args_summary,
+            }),
+        ));
+        if !asked {
+            // 落账失败绝不返回决定(照源审计原子性)
+            return ToolApprovalOutcome::Unavailable;
+        }
+        // approval=never:入口即拒(不可绕过),仍落 decided 收口
+        if self.session_approval(session_id) == "never" {
+            splice(decided_envelope(&audit_id, "rejected"));
+            return ToolApprovalOutcome::Rejected;
+        }
+        // 问询(骑问答通道;通用问答卡两选项;rpc_id 由 ask_questions 分配)
+        let question = crate::proto::Question {
+            id: audit_id.clone(),
+            question: if reason.is_empty() {
+                format!("允许运行 {tool_name}?")
+            } else {
+                format!("允许运行 {tool_name}?({reason})")
+            },
+            header: Some("工具审批".into()),
+            detail: Some(json!({ "argsSummary": args_summary }).to_string()),
+            options: Some(vec![
+                crate::proto::QuestionOption {
+                    label: "允许一次".into(),
+                    description: Some("仅本次调用".into()),
+                },
+                crate::proto::QuestionOption {
+                    label: "拒绝".into(),
+                    description: None,
+                },
+            ]),
+            multi_select: Some(false),
+            intent: Some(json!({ "kind": "tool-approval" })),
+            data: Some(json!({ "toolName": tool_name, "argsSummary": args_summary })),
+        };
+        match self
+            .ask_questions(
+                session_id,
+                &[dsh_tools::QuestionItem {
+                    id: question.id.clone(),
+                    question: question.question.clone(),
+                    header: question.header.clone(),
+                    options: vec![
+                        dsh_tools::QuestionOption {
+                            label: "允许一次".into(),
+                            description: Some("仅本次调用".into()),
+                        },
+                        dsh_tools::QuestionOption {
+                            label: "拒绝".into(),
+                            description: None,
+                        },
+                    ],
+                    multi_select: false,
+                }],
+            )
+            .await
+        {
+            Ok(answer) => {
+                // 应答 = encode_answers JSON;按选项 label 判定(单选,
+                // 允许一次 / 拒绝)
+                let allowed = serde_json::from_str::<Value>(&answer)
+                    .ok()
+                    .and_then(|v| {
+                        v["answers"][0]["selected"].as_array().map(|sel| {
+                            sel.iter()
+                                .filter_map(|s| s.as_str())
+                                .any(|s| s == "允许一次")
+                        })
+                    })
+                    .unwrap_or(false);
+                let outcome = if allowed {
+                    ToolApprovalOutcome::AllowedOnce
+                } else {
+                    ToolApprovalOutcome::Rejected
+                };
+                splice(decided_envelope(
+                    &audit_id,
+                    if allowed { "allowed-once" } else { "rejected" },
+                ));
+                outcome
+            }
+            Err(_) => {
+                splice(decided_envelope(&audit_id, "cancelled"));
+                ToolApprovalOutcome::Cancelled
+            }
+        }
+    }
+
+    /// 构建 hooks 运行时(attach 装配;M4.2):enabled 桥逐个读配置,
+    /// 读不到/解析不了 ⇒ warn + 该桥不注册(照源);全部失败/无配置 =
+    /// None(引擎直通)。config_path 相对路径按进程启动 cwd 解析。
+    fn build_hook_service(
+        &self,
+    ) -> Option<(
+        std::sync::Arc<dsh_hooks::HookService>,
+        dsh_agent_loop::CancelToken,
+    )> {
+        let entries: Vec<crate::settings::HookBridgeEntry> = self
+            .settings
+            .read()
+            .hook_bridges
+            .iter()
+            .filter(|e| e.enabled)
+            .cloned()
+            .collect();
+        if entries.is_empty() {
+            return None;
+        }
+        let cancel = dsh_agent_loop::CancelToken::new();
+        let mut bridges = Vec::new();
+        for entry in entries {
+            let dialect = match entry.dialect.as_str() {
+                "claude-code" => dsh_hooks::config::BridgeDialect::ClaudeCode,
+                _ => dsh_hooks::config::BridgeDialect::Codex,
+            };
+            let path = std::path::PathBuf::from(&entry.config_path);
+            let raw: serde_json::Value = match std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "hooks: could not load hook config \"{}\": {e} — no hooks registered (bridge {})",
+                        entry.config_path, entry.id
+                    );
+                    continue;
+                }
+            };
+            let parsed = match dsh_hooks::config::parse_hook_config(
+                dialect,
+                &raw,
+                entry.plugin_root.as_deref(),
+                entry.project_dir.as_deref(),
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!(
+                        "hooks: could not load hook config \"{}\": {e} — no hooks registered (bridge {})",
+                        entry.config_path, entry.id
+                    );
+                    continue;
+                }
+            };
+            for skipped in &parsed.skipped {
+                eprintln!(
+                    "hooks: skipping {} on {} ({})",
+                    skipped.reason, skipped.event, entry.id
+                );
+            }
+            bridges.push(dsh_hooks::HookService::bridge(
+                dialect,
+                parsed.config,
+                entry.project_dir.clone(),
+                entry.default_timeout_ms,
+                entry.stderr_summary_max_chars,
+            ));
+        }
+        if bridges.is_empty() {
+            return None;
+        }
+        Some((
+            std::sync::Arc::new(dsh_hooks::HookService::new(bridges, cancel.clone())),
+            cancel,
+        ))
+    }
+
+    /// 新增/更新 hooks 桥(id 唯一;dialect 只认 claude-code|codex;
+    /// config_path 必填)。变更 = 下次 attach 生效(配置进程级,照源)。
+    pub fn upsert_hook_bridge(
+        &self,
+        entry: crate::settings::HookBridgeEntry,
+    ) -> Result<(), RpcError> {
+        if entry.id.is_empty()
+            || !entry
+                .id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(RpcError::bad_request(
+                "id 仅限 ASCII 字母/数字/下划线/连字符",
+            ));
+        }
+        if !matches!(entry.dialect.as_str(), "claude-code" | "codex") {
+            return Err(RpcError::bad_request("dialect 仅限 claude-code 或 codex"));
+        }
+        if entry.config_path.trim().is_empty() {
+            return Err(RpcError::bad_request("configPath 不能为空"));
+        }
+        self.settings
+            .update(
+                |s| match s.hook_bridges.iter_mut().find(|e| e.id == entry.id) {
+                    Some(existing) => *existing = entry.clone(),
+                    None => s.hook_bridges.push(entry.clone()),
+                },
+            )
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
+    }
+
+    /// 移除 hooks 桥(下次 attach 不再挂载)
+    pub fn remove_hook_bridge(&self, id: &str) -> Result<(), RpcError> {
+        self.settings
+            .update(|s| s.hook_bridges.retain(|e| e.id != id))
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
     }
 
     /// 端口池对照 settings enabled 清单同步:禁用/移除的端口停机并移除,
@@ -5942,6 +6223,92 @@ async fn driver_loop(
         }
     }
 
+    // hooks 桥(M4.2):enabled 桥读配置挂 HookPort(引擎四调用点);
+    // SessionStart detached 由宿主在装配后立即跑(上下文染色落档,
+    // 不落 hook 对——turn 外,照源)。无配置/全部解析失败 = 不挂。
+    {
+        let ws_root = host0.resolve_session(&session_id).0;
+        if let Some((service, hook_cancel)) = host0.build_hook_service() {
+            let sink: dsh_hooks::HookSink = {
+                let log = Arc::clone(&inner.log);
+                let backend = inner.backend.clone();
+                Arc::new(move |ty, data| {
+                    // hook/* 落档照 engine commit 模式:append 赋 seq 后
+                    // 取回信封落盘。锁竞争由短临界区收敛(hook 串行)
+                    if let Ok(mut l) = log.lock() {
+                        let ev = dsh_session::EventEnvelope::new(
+                            ty,
+                            {
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as i64)
+                                    .unwrap_or(0)
+                            },
+                            data,
+                        );
+                        if let Ok(seq) = l.append(ev)
+                            && let Some(envelope) = l.get(seq)
+                        {
+                            let _ = backend.append(envelope);
+                        }
+                    }
+                })
+            };
+            let port = std::sync::Arc::new(dsh_hooks::service::HookPortImpl {
+                service: Arc::clone(&service),
+                session_id: session_id.clone(),
+                workspace: ws_root.clone(),
+                sink,
+                model: String::new(),
+                // 拍板 3:工具级审批面(无 = ask fail-closed;宿主面
+                // 在包 7 接线后经 request_tool_approval 注入)
+                approval: Some(host0.hook_tool_approval(&session_id)),
+                // 拍板 2:钩子与模型命令同一信任面(workspace-write)
+                sandbox: Some(dsh_sandbox::SandboxPolicy::workspace_write(ws_root.clone())),
+            });
+            session.set_hook_port(port);
+            // SessionStart detached(照源 emit 语义;上下文可能错过首请求)
+            let ss_service = Arc::clone(&service);
+            let ss_session_id = session_id.clone();
+            let ss_ws = ws_root.clone();
+            let ss_log = Arc::clone(&inner.log);
+            let ss_backend = inner.backend.clone();
+            // SessionStart 链不 join(照源 detached);任务句柄显式 drop
+            drop(tokio::spawn(async move {
+                let source = "startup";
+                let merged = ss_service
+                    .run_session_start(&ss_session_id, &ss_ws, source, None)
+                    .await;
+                if let Some(text) = merged.additional_context.first() {
+                    // 上下文染色落档(kind=plugin mislabel guard 的 RS 面)
+                    let payload = serde_json::json!({
+                        "id": uuid::Uuid::now_v7().to_string(),
+                        "content": text,
+                        "source": { "kind": "plugin", "plugin": "hooks", "form": "session-start" },
+                    });
+                    if let Ok(mut l) = ss_log.lock() {
+                        let ev = dsh_session::EventEnvelope::new(
+                            "user/message",
+                            {
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as i64)
+                                    .unwrap_or(0)
+                            },
+                            payload,
+                        );
+                        if let Ok(seq) = l.append(ev)
+                            && let Some(envelope) = l.get(seq)
+                        {
+                            let _ = ss_backend.append(envelope);
+                        }
+                    }
+                }
+            }));
+            let _ = hook_cancel; // 会话槽销毁时统一 cancel(照 detached.drain 语义)
+        }
+    }
+
     loop {
         // 命令间隙处理(与 turn 串行;turn 内到达的命令延后到下一轮)
         while let Ok(cmd) = driver_rx.try_recv() {
@@ -9566,5 +9933,261 @@ for line in sys.stdin:
         assert!(host.session_skills(&child).unwrap().is_empty());
         // 父会话正常列出
         assert_eq!(host.session_skills(&parent).unwrap().len(), 1);
+    }
+    /// hooks 桥端到端(M4.2):UserPromptSubmit exit 2 ⇒ 事件序
+    /// `turn/start → hook/invoked → hook/result → turn/end`,无 step、
+    /// 无模型请求(拒绝的 turn 不消耗 fake 脚本)。配置缺失 ⇒ warn
+    /// 不注册,agent 照常(本测试同时验证无桥时零影响)。
+    /// 本机是否具备沙箱 rung(hooks 测试门控:钩子经沙箱链跑,拍板 2;
+    /// 无 rung 环境 hook 全部 fail-closed 拒绝,行为锁无法成立——与
+    /// dsh-sandbox 测试同一跳过模式)
+    fn has_sandbox_rung() -> bool {
+        dsh_sandbox::sandbox::probe().is_some()
+    }
+
+    #[tokio::test]
+    async fn hook_bridge_prompt_submit_blocking_writes_pair_and_blocks_turn() {
+        if !has_sandbox_rung() {
+            eprintln!("本机无沙箱 rung,跳过(hooks 经沙箱链跑,拍板 2)");
+            return;
+        }
+        let host = temp_host("m42-hooks");
+        let mut mux = host.mux_subscribe();
+        // 注入 hooks 桥配置(attach 前生效:驱动装配时挂 HookPort)
+        let hook_json = host
+            .workspace
+            .join(format!("hooks-blocking-{}.json", Uuid::new_v4().simple()));
+        std::fs::write(
+            &hook_json,
+            r#"{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"exit 2"}]}]}"#,
+        )
+        .unwrap();
+        host.settings
+            .update(|s| {
+                s.hook_bridges.push(crate::settings::HookBridgeEntry {
+                    id: "test-cc".into(),
+                    dialect: "claude-code".into(),
+                    config_path: hook_json.display().to_string(),
+                    enabled: true,
+                    ..Default::default()
+                });
+            })
+            .unwrap();
+
+        let id = host.create_session(None, None, None);
+        // 首轮即被钩子阻塞(fake 脚本不消耗)
+        let types = {
+            host.prompt(
+                &id,
+                &[json!({ "type": "text", "text": "blocked?" })],
+                "queue",
+            )
+            .await
+            .unwrap();
+            // 等 turn/end
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match mux.try_recv() {
+                    Ok(f) => {
+                        if f.method == "session/event" && f.payload["event"]["type"] == "turn/end" {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::TryRecvError::Empty) => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "钩子阻塞 turn 未在预算内结束"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                    Err(_) => panic!("mux 关闭"),
+                }
+            }
+            let slot = host.get_slot(&id).expect("slot");
+            let inner = slot.inner.get().expect("attached");
+            inner
+                .log
+                .lock()
+                .expect("log 锁中毒")
+                .iter()
+                .map(|e| e.r#type.to_string())
+                .collect::<Vec<_>>()
+        };
+        // 本 turn 的事件序:turn/start → hook/invoked → hook/result → turn/end
+        let start = types
+            .iter()
+            .rposition(|t| t == "turn/start")
+            .expect("本 turn 已开始");
+        let tail = &types[start..];
+        assert_eq!(
+            tail,
+            vec![
+                "turn/start".to_string(),
+                "hook/invoked".to_string(),
+                "hook/result".to_string(),
+                "turn/end".to_string(),
+            ],
+            "UserPromptSubmit 阻塞事件序照源:{tail:?}"
+        );
+    }
+
+    /// PreToolUse deny ⇒ 工具不执行,isError 结果回灌(含 reason);
+    /// matcher 工具名过滤生效(非命中工具不受影响)。
+    #[tokio::test]
+    async fn hook_bridge_pre_tool_use_deny_blocks_tool_execution() {
+        if !has_sandbox_rung() {
+            eprintln!("本机无沙箱 rung,跳过(hooks 经沙箱链跑,拍板 2)");
+            return;
+        }
+        let host = temp_host("m42-hooks-tool");
+        let mut mux = host.mux_subscribe();
+        let hook_json = host
+            .workspace
+            .join(format!("hooks-tool-{}.json", Uuid::new_v4().simple()));
+        // matcher 只命中 echo_bash;exit 2 = deny,stderr 为 reason
+        std::fs::write(
+            &hook_json,
+            r#"{"PreToolUse":[{"matcher":"echo_bash","hooks":[{"type":"command","command":"echo policy-no >&2; exit 2"}]}]}"#,
+        )
+        .unwrap();
+        host.settings
+            .update(|s| {
+                s.hook_bridges.push(crate::settings::HookBridgeEntry {
+                    id: "cc".into(),
+                    dialect: "claude-code".into(),
+                    config_path: hook_json.display().to_string(),
+                    enabled: true,
+                    ..Default::default()
+                });
+            })
+            .unwrap();
+        let id = host.create_session(None, None, None);
+        // fake 模式工具面 = MCP 池(无 echo_bash)——engine 级行为锁已在
+        // dsh-agent-loop 覆盖判定,这里锁宿主装配与 hook 对落档:
+        // 让钩子对 match-all(工具名不命中也至少产生 invoked/result 对)
+        std::fs::write(
+            &hook_json,
+            r#"{"PreToolUse":[{"hooks":[{"type":"command","command":"exit 0"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"exit 0"}]}]}"#,
+        )
+        .unwrap();
+        host.set_fake_script(script(&["ok done"]));
+        run_turn(&host, &mut mux, &id, "hi").await;
+        let slot = host.get_slot(&id).expect("slot");
+        let inner = slot.inner.get().expect("attached");
+        let types: Vec<String> = inner
+            .log
+            .lock()
+            .expect("log 锁中毒")
+            .iter()
+            .map(|e| e.r#type.to_string())
+            .collect();
+        // 放行钩子(exit 0)照常落对,turn 正常完成
+        assert!(types.contains(&"hook/invoked".to_string()));
+        assert!(types.contains(&"hook/result".to_string()));
+        assert!(types.contains(&"assistant/message".to_string()));
+    }
+
+    /// additionalContext ⇒ 染色 user/message 落档(kind=plugin mislabel
+    /// guard),进下一请求模型可见面。
+    #[tokio::test]
+    async fn hook_bridge_additional_context_lands_as_tinted_user_message() {
+        if !has_sandbox_rung() {
+            eprintln!("本机无沙箱 rung,跳过(hooks 经沙箱链跑,拍板 2)");
+            return;
+        }
+        let host = temp_host("m42-hooks-ctx");
+        let mut mux = host.mux_subscribe();
+        let hook_json = host
+            .workspace
+            .join(format!("hooks-ctx-{}.json", Uuid::new_v4().simple()));
+        std::fs::write(
+            &hook_json,
+            r#"{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo '{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"ctx-from-hook\"}}'"}]}]}"#,
+        )
+        .unwrap();
+        host.settings
+            .update(|s| {
+                s.hook_bridges.push(crate::settings::HookBridgeEntry {
+                    id: "cc".into(),
+                    dialect: "claude-code".into(),
+                    config_path: hook_json.display().to_string(),
+                    enabled: true,
+                    ..Default::default()
+                });
+            })
+            .unwrap();
+        let id = host.create_session(None, None, None);
+        host.set_fake_script(script(&["reply"]));
+        run_turn(&host, &mut mux, &id, "hi").await;
+        let slot = host.get_slot(&id).expect("slot");
+        let inner = slot.inner.get().expect("attached");
+        let l = inner.log.lock().expect("log 锁中毒");
+        // 染色行:UserPromptSubmit 钩子的额外上下文由引擎 contexts 外的
+        // HookPort 落档(首批:PostToolUse inject / SessionStart;prompt
+        // submit 上下文在源折进 enter,RS 面暂经染色行落档)
+        let found = l
+            .iter()
+            .any(|e| e.r#type == "user/message" && e.data["source"]["kind"] == "plugin");
+        assert!(found, "additionalContext 应以 kind=plugin 染色行落档");
+    }
+
+    /// Stop deny ⇒ 续跑:第二次模型请求发生(fake 脚本第二条被消费),
+    /// turn 以正常 completed 收尾。
+    #[tokio::test]
+    async fn hook_bridge_stop_deny_forces_continuation() {
+        if !has_sandbox_rung() {
+            eprintln!("本机无沙箱 rung,跳过(hooks 经沙箱链跑,拍板 2)");
+            return;
+        }
+        let host = temp_host("m42-hooks-stop");
+        let mut mux = host.mux_subscribe();
+        let hook_json = host
+            .workspace
+            .join(format!("hooks-stop-{}.json", Uuid::new_v4().simple()));
+        // 钩子自限(照源:loop guard 缺位时钩子自行收敛)——状态文件
+        // 第一次 exit 2(强制续跑),之后 exit 0(放行收尾)
+        let guard_file = host
+            .workspace
+            .join(format!("hook-stop-guard-{}", std::process::id()));
+        std::fs::write(
+            &hook_json,
+            format!(
+                r#"{{"Stop":[{{"hooks":[{{"type":"command","command":"if [ -f {guard} ]; then exit 0; else touch {guard}; echo forced-continue >&2; exit 2; fi"}}]}}]}}"#,
+                guard = guard_file.display()
+            ),
+        )
+        .unwrap();
+        host.settings
+            .update(|s| {
+                s.hook_bridges.push(crate::settings::HookBridgeEntry {
+                    id: "cc".into(),
+                    dialect: "claude-code".into(),
+                    config_path: hook_json.display().to_string(),
+                    enabled: true,
+                    ..Default::default()
+                });
+            })
+            .unwrap();
+        let id = host.create_session(None, None, None);
+        host.set_fake_script(script(&["first answer", "second answer"]));
+        run_turn(&host, &mut mux, &id, "hi").await;
+        let slot = host.get_slot(&id).expect("slot");
+        let inner = slot.inner.get().expect("attached");
+        let types: Vec<String> = inner
+            .log
+            .lock()
+            .expect("log 锁中毒")
+            .iter()
+            .map(|e| e.r#type.to_string())
+            .collect();
+        // Stop 钩子运行过且 turn 完成
+        assert!(types.iter().any(|t| t == "hook/invoked"));
+        let turns = types.iter().filter(|t| **t == "turn/end").count();
+        assert_eq!(turns, 1, "turn 应正常收尾(续跑后完成)");
+        // 第二条脚本被消费 = 模型确实被强制续跑了一步
+        assert!(
+            types.iter().filter(|t| **t == "assistant/message").count() >= 2,
+            "Stop deny 应强制续跑(≥2 条 assistant/message)"
+        );
     }
 }

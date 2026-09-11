@@ -2251,6 +2251,7 @@ dependencies = [
  "base64 0.23.1",
  "dsh-agent-loop",
  "dsh-app",
+ "dsh-hooks",
  "dsh-host",
  "dsh-llm",
  "dsh-mcp",
@@ -2297,6 +2298,20 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "wit-bindgen 0.61.1",
+]
+
+[[package]]
+name = "dsh-hooks"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent-loop",
+ "dsh-sandbox",
+ "dsh-session",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

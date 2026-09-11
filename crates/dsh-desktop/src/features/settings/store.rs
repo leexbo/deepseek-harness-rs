@@ -29,6 +29,8 @@ pub enum SettingsNav {
     Models,
     /// MCP Servers
     Mcp,
+    /// Hooks(Claude Code / Codex 桥)
+    Hooks,
     /// 关于
     About,
 }
@@ -66,6 +68,8 @@ pub(crate) struct SettingsStore {
     pub settings_nav: SettingsNav,
     /// MCP 分区详情页(None = 列表页;Some = 详情:新增/编辑/JSON 导入)
     pub mcp_detail: Option<McpDetailState>,
+    /// Hooks 分区详情页(None = 列表页;Some = 新增/编辑表单)
+    pub hooks_detail: Option<HooksDetailState>,
     /// MCP server 最近连接状态(server id → (status, error);mcp/status 帧维护)
     pub mcp_status_by_id: HashMap<String, (String, String)>,
     /// 行内编辑中的 provider id(编辑卡在行卡内展开)
@@ -151,6 +155,7 @@ impl Default for SettingsStore {
             set_form_dialect: "openai-chat".into(),
             settings_nav: SettingsNav::Models,
             mcp_detail: None,
+            hooks_detail: None,
             mcp_status_by_id: HashMap::new(),
             editing_provider: None,
             adding_provider: false,
@@ -1181,6 +1186,25 @@ pub struct McpDetailState {
     pub json_preview: Option<Result<Vec<dsh_core::settings::McpServerEntry>, String>>,
 }
 
+/// Hooks 分区表单态(新增/编辑共享;M4.2)
+#[derive(Clone)]
+pub struct HooksDetailState {
+    /// 编辑中的桥 id(None = 新增;编辑态 id 锁定)
+    pub editing: Option<String>,
+    /// 启用开关表单值
+    pub form_enabled: bool,
+    /// 方言选择(claude-code / codex)
+    pub form_dialect: String,
+    /// config 路径输入
+    pub form_config_path: Option<Entity<InputState>>,
+    /// pluginRoot 输入(CC;可选)
+    pub form_plugin_root: Option<Entity<InputState>>,
+    /// projectDir 输入(CC;可选,缺省 = 会话工作区)
+    pub form_project_dir: Option<Entity<InputState>>,
+    /// 缺省超时 MS 输入(空 = 600000)
+    pub form_timeout: Option<Entity<InputState>>,
+}
+
 /// 详情页页签
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpDetailMode {
@@ -1619,6 +1643,163 @@ impl AppStore {
     fn push_mcp_form_notice(&mut self, msg: &str, cx: &mut Context<Self>) {
         if let Some(detail) = self.settings.mcp_detail.as_mut() {
             detail.json_preview = Some(Err(msg.to_string()));
+        }
+        cx.notify();
+    }
+
+    // ── Hooks(Claude Code / Codex 桥;M4.2)──
+
+    /// 打开 Hooks 详情页(新增模式)
+    pub fn open_hooks_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.hooks_detail = Some(HooksDetailState {
+            editing: None,
+            form_enabled: true,
+            form_dialect: "claude-code".to_string(),
+            form_config_path: Some(
+                cx.new(|cx| InputState::new(window, cx).placeholder("hooks.json 路径")),
+            ),
+            form_plugin_root: Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder("可选;替换 ${CLAUDE_PLUGIN_ROOT}")
+            })),
+            form_project_dir: Some(
+                cx.new(|cx| InputState::new(window, cx).placeholder("可选;缺省 = 会话工作区")),
+            ),
+            form_timeout: Some(cx.new(|cx| InputState::new(window, cx).placeholder("600000"))),
+        });
+        cx.notify();
+    }
+
+    /// 打开 Hooks 详情页(编辑模式:按 id 预填)
+    pub fn open_hooks_edit(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.settings.settings_snapshot["hookBridges"]
+            .as_array()
+            .and_then(|list| list.iter().find(|e| e["id"] == *id).cloned())
+            .and_then(|v| serde_json::from_value::<dsh_core::settings::HookBridgeEntry>(v).ok())
+        else {
+            return;
+        };
+        let state = HooksDetailState {
+            editing: Some(entry.id.clone()),
+            form_enabled: entry.enabled,
+            form_dialect: entry.dialect.clone(),
+            form_config_path: Some(cx.new(|cx| InputState::new(window, cx))),
+            form_plugin_root: Some(cx.new(|cx| InputState::new(window, cx))),
+            form_project_dir: Some(cx.new(|cx| InputState::new(window, cx))),
+            form_timeout: Some(cx.new(|cx| InputState::new(window, cx))),
+        };
+        let Some(d) = self.settings.hooks_detail.as_mut() else {
+            return;
+        };
+        *d = state;
+        let Some(d) = self.settings.hooks_detail.as_ref() else {
+            return;
+        };
+        if let Some(inp) = &d.form_config_path {
+            inp.update(cx, |s2, cx| {
+                s2.set_value(entry.config_path.clone(), window, cx)
+            });
+        }
+        if let (Some(inp), Some(v)) = (&d.form_plugin_root, &entry.plugin_root) {
+            inp.update(cx, |s2, cx| s2.set_value(v.clone(), window, cx));
+        }
+        if let (Some(inp), Some(v)) = (&d.form_project_dir, &entry.project_dir) {
+            inp.update(cx, |s2, cx| s2.set_value(v.clone(), window, cx));
+        }
+        if let (Some(inp), Some(v)) = (&d.form_timeout, entry.default_timeout_ms) {
+            inp.update(cx, |s2, cx| s2.set_value(v.to_string(), window, cx));
+        }
+        cx.notify();
+    }
+
+    /// 关闭 Hooks 详情页(回列表)
+    pub fn close_hooks_detail(&mut self, cx: &mut Context<Self>) {
+        self.settings.hooks_detail = None;
+        cx.notify();
+    }
+
+    /// 翻转 Hooks 方言(表单)
+    pub fn set_hooks_dialect(&mut self, dialect: &str, cx: &mut Context<Self>) {
+        if let Some(d) = self.settings.hooks_detail.as_mut() {
+            d.form_dialect = dialect.to_string();
+        }
+        cx.notify();
+    }
+
+    /// 翻转 Hooks 启用开关(表单)
+    pub fn toggle_hooks_form_enabled(&mut self, cx: &mut Context<Self>) {
+        if let Some(d) = self.settings.hooks_detail.as_mut() {
+            d.form_enabled = !d.form_enabled;
+        }
+        cx.notify();
+    }
+
+    /// 保存 Hooks 表单(upsert;变更 = 下次 attach 生效)
+    pub fn save_hooks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(d) = self.settings.hooks_detail.clone() else {
+            return;
+        };
+        let read =
+            |inp: &Option<Entity<InputState>>, window: &mut Window, cx: &mut Context<Self>| {
+                let _ = window;
+                inp.as_ref()
+                    .map(|e| e.read(cx).value().trim().to_string())
+                    .unwrap_or_default()
+            };
+        let config_path = read(&d.form_config_path, window, cx);
+        let plugin_root = read(&d.form_plugin_root, window, cx);
+        let project_dir = read(&d.form_project_dir, window, cx);
+        let timeout_raw = read(&d.form_timeout, window, cx);
+        let id = d.editing.clone().unwrap_or_else(|| {
+            format!(
+                "hooks-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_micros() as u64)
+                    .unwrap_or(0)
+            )
+        });
+        let entry = dsh_core::settings::HookBridgeEntry {
+            id,
+            dialect: d.form_dialect.clone(),
+            config_path,
+            enabled: d.form_enabled,
+            plugin_root: (!plugin_root.is_empty()).then_some(plugin_root),
+            project_dir: (!project_dir.is_empty()).then_some(project_dir),
+            default_timeout_ms: timeout_raw.parse::<u64>().ok(),
+            stderr_summary_max_chars: None,
+        };
+        match self.bridge.host().upsert_hook_bridge(entry) {
+            Ok(()) => {
+                self.settings.hooks_detail = None;
+                self.settings_refresh(cx);
+            }
+            Err(e) => {
+                self.settings.settings_notice = Some((false, e.message));
+            }
+        }
+        cx.notify();
+    }
+
+    /// 启停 hooks 桥(enabled 翻转)
+    pub fn toggle_hook_bridge(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(mut entry) = self.settings.settings_snapshot["hookBridges"]
+            .as_array()
+            .and_then(|list| list.iter().find(|e| e["id"] == *id).cloned())
+            .and_then(|v| serde_json::from_value::<dsh_core::settings::HookBridgeEntry>(v).ok())
+        else {
+            return;
+        };
+        entry.enabled = !entry.enabled;
+        if self.bridge.host().upsert_hook_bridge(entry).is_ok() {
+            self.settings_refresh(cx);
+        }
+        cx.notify();
+    }
+
+    /// 卸载 hooks 桥
+    pub fn remove_hook_bridge(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.bridge.host().remove_hook_bridge(id).is_ok() {
+            self.settings_refresh(cx);
         }
         cx.notify();
     }

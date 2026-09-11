@@ -55,6 +55,9 @@ pub struct SpawnOptions {
     pub env: HashMap<String, String>,
     /// 沙箱策略;Required 时探测不到可用 rung 即拒绝(fail-closed)
     pub sandbox: Option<SandboxPolicy>,
+    /// 写入子进程 stdin 的字节(Some = piped,写完即关;None = null)。
+    /// hooks 桥等需要序列化载荷喂 stdin 的调用方使用。
+    pub stdin: Option<Vec<u8>>,
 }
 
 /// 子进程句柄(独立进程组)
@@ -122,7 +125,11 @@ pub async fn spawn(cmd: &str, args: &[String], opts: &SpawnOptions) -> Result<Ch
     for (k, v) in &opts.env {
         command.env(k, v);
     }
-    command.stdin(std::process::Stdio::null());
+    if opts.stdin.is_some() {
+        command.stdin(std::process::Stdio::piped());
+    } else {
+        command.stdin(std::process::Stdio::null());
+    }
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
 
@@ -149,6 +156,21 @@ pub async fn spawn(cmd: &str, args: &[String], opts: &SpawnOptions) -> Result<Ch
         .spawn()
         .map_err(|e| ProcessError::Spawn(format!("{cmd}: {e}")))?;
     let pgid = inner.id().map(|pid| pid as i32);
+    // stdin 载荷:写入后立即关闭管道(子进程读到 EOF;write_all 在
+    // spawn 返回的任务上下文里完成,大载荷由 OS 管道缓冲 + await 背压兜底)
+    if let Some(payload) = &opts.stdin {
+        use tokio::io::AsyncWriteExt;
+        if let Some(mut stdin) = inner.stdin.take() {
+            stdin
+                .write_all(payload)
+                .await
+                .map_err(|e| ProcessError::Spawn(format!("{cmd}: stdin write: {e}")))?;
+            stdin
+                .shutdown()
+                .await
+                .map_err(|e| ProcessError::Spawn(format!("{cmd}: stdin close: {e}")))?;
+        }
+    }
     let (stderr_buf, stderr_task) = drain_stderr(&mut inner);
     Ok(Child {
         inner,

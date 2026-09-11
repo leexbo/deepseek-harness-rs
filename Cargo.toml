@@ -8,6 +8,7 @@ members = [
     "crates/dsh-mcp",
     "crates/dsh-skill",
     "crates/dsh-wit",
+    "crates/dsh-hooks",
     "crates/dsh-host",
     "crates/dsh-llm",
     "crates/dsh-sandbox",
@@ -45,6 +46,7 @@ serde_norway = "0.9"
 wit-bindgen = "0.61.1"
 dsh-app = { path = "crates/dsh-app" }
 dsh-core = { path = "crates/dsh-core" }
+dsh-hooks = { path = "crates/dsh-hooks" }
 dsh-host = { path = "crates/dsh-host" }
 dsh-session = { path = "crates/dsh-session" }
 dsh-wit = { path = "crates/dsh-wit" }

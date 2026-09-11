@@ -64,6 +64,7 @@ just verify    # 格式 / clippy / 测试 / WIT / 组件契约 / e2e / 链接检
 | `crates/dsh-agent-loop` | turn/step 状态机与端口 trait |
 | `crates/dsh-session` | 事件日志(信封 / seq / 消息派生,wasm32-wasip2 产物 + rlib) |
 | `crates/dsh-prompt` | system prompt 组装(纯函数) |
+| `crates/dsh-hooks` | hooks 桥(Claude Code / Codex shell hooks 接入) |
 | `crates/dsh-tools` | 工具注册表与内置工具 |
 | `crates/dsh-wit` | host 侧 bindgen 与组件契约测试 |
 | `crates/dsh-example-tool` | 示例工具组件(`dsh:tools` world 参考实现) |
