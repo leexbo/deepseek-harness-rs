@@ -195,6 +195,10 @@ pub(crate) struct ChatStore {
     /// 上方(底缘=卡顶上方 2px),卡高随命令行/输入行数变化,固定
     /// bottom 会叠进输入框(卡越高叠越深)
     pub composer_h: f32,
+    /// 输入卡总宽(同 composer_h 的 canvas 捕获):命令/技能菜单卡
+    /// 「跟输入卡同宽」的宽度来源(无约束内容会把卡撑到超窗,truncate
+    /// 永不生效——描述溢出的根因)
+    pub composer_w: f32,
     /// 上次同步进 ListState 的条数(splice 增量通知的记账)
     chat_list_count: usize,
     /// ListState 当前归属会话(失配 → reset 重建缓存与滚动位)
@@ -269,6 +273,7 @@ impl Default for ChatStore {
     fn default() -> Self {
         Self {
             composer_h: 0.,
+            composer_w: 0.,
             plan_chip_hovered: false,
             composer_placeholder: "输入消息,Enter 发送 / Shift+Enter 换行",
             composer_input: None,
@@ -862,8 +867,11 @@ impl AppStore {
 
     /// 输入卡总高捕获(渲染期 canvas,见 ChatState.composer_h 注释;
     /// 同款变化守卫)
-    pub fn note_composer_h(&mut self, h: f32, cx: &mut Context<Self>) {
-        if (self.chat.composer_h - h).abs() > 0.5 {
+    pub fn note_composer_size(&mut self, w: f32, h: f32, cx: &mut Context<Self>) {
+        let changed = (self.chat.composer_h - h).abs() > 0.5
+            || (self.chat.composer_w - w).abs() > 0.5;
+        if changed {
+            self.chat.composer_w = w;
             self.chat.composer_h = h;
             cx.notify();
         }
