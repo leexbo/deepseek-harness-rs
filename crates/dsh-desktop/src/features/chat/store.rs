@@ -868,8 +868,8 @@ impl AppStore {
     /// 输入卡总高捕获(渲染期 canvas,见 ChatState.composer_h 注释;
     /// 同款变化守卫)
     pub fn note_composer_size(&mut self, w: f32, h: f32, cx: &mut Context<Self>) {
-        let changed = (self.chat.composer_h - h).abs() > 0.5
-            || (self.chat.composer_w - w).abs() > 0.5;
+        let changed =
+            (self.chat.composer_h - h).abs() > 0.5 || (self.chat.composer_w - w).abs() > 0.5;
         if changed {
             self.chat.composer_w = w;
             self.chat.composer_h = h;

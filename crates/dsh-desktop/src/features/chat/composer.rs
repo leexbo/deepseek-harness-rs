@@ -279,15 +279,14 @@ fn bottom_row(
         .pb(px(8.))
         .child(menu_slot(
             cmd_trigger,
-            (menu == ComposerMenu::Commands)
-                .then(|| {
-                    commands_card(
-                        store,
-                        cmds.clone(),
-                        &st.chat.skill_entries,
-                        st.chat.composer_w,
-                    )
-                }),
+            (menu == ComposerMenu::Commands).then(|| {
+                commands_card(
+                    store,
+                    cmds.clone(),
+                    &st.chat.skill_entries,
+                    st.chat.composer_w,
+                )
+            }),
             anchor_bottom,
         ))
         // 「+」与模式 chips 之间的细竖线分组
@@ -622,7 +621,7 @@ fn commands_card(
     // 定宽,长描述把卡撑到超窗、行内 truncate 永不生效。触发钮距卡左
     // 缘 10px(bottom_row 内边距),减 10 对齐卡右缘;首帧捕获 0 →
     // 不约束,下一帧校准(同 composer_h 锚定模式)
-    menu_card(rows, (composer_w > 0.).then(|| composer_w - 10.))
+    menu_card(rows, (composer_w > 0.).then_some(composer_w - 10.))
 }
 
 /// 指令行(源 CommandMenu 行:命令名黑 semibold + 描述灰同行;
@@ -1045,10 +1044,7 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
 /// 菜单卡(分区行列表浮层)。max_w 传入时宽度收敛——taffy 无约束
 /// 文本按 max-content 定宽,长内容行必须外部给约束,行内 truncate
 /// 才会生效(at 补全由锚定层 left/right 定宽,传 None 即可)
-fn menu_card(
-    children: Vec<gpui_kit::AnyElement>,
-    max_w: Option<f32>,
-) -> gpui_kit::AnyElement {
+fn menu_card(children: Vec<gpui_kit::AnyElement>, max_w: Option<f32>) -> gpui_kit::AnyElement {
     div()
         .id("composer-menu-card")
         .debug_selector(|| "composer-menu-card".to_string())

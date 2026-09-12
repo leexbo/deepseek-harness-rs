@@ -1057,7 +1057,7 @@ impl AppHost {
         for ws in &workspaces {
             migrate_legacy_layout(ws, &sessions_root);
         }
-        Ok(Self {
+        let app = Self {
             workspace: workspace_clone,
             workspaces: std::sync::RwLock::new(workspaces),
             sessions_root,
@@ -1089,7 +1089,34 @@ impl AppHost {
             search: tokio::sync::Mutex::new(None),
             attachments,
             feedback,
-        })
+        };
+        app.sweep_orphan_subagents();
+        Ok(app)
+    }
+
+    /// 孤儿子代理清扫:origin=subagent 且父会话已不存在的会话整体移除
+    /// (日志 + 目录 + 槽位)。父会话被删除时其子代理本应级联删除,
+    /// 但历史删除(无级联时期)遗留下孤儿——侧栏隐藏它们,清单/检索/
+    /// @ 候选却仍消费,呈现「无会话但有内容」的污染。启动时扫一遍,
+    /// 自愈历史脏数据(运行中的删除由 delete_session 级联覆盖)
+    fn sweep_orphan_subagents(&self) {
+        let list = self.list_sessions();
+        let live: std::collections::HashSet<&str> =
+            list.iter().map(|s| s.session_id.as_str()).collect();
+        let orphans: Vec<String> = list
+            .iter()
+            .filter(|s| {
+                s.origin.as_deref() == Some("subagent")
+                    && s.parent_session_id
+                        .as_deref()
+                        .is_none_or(|p| !live.contains(p))
+            })
+            .map(|s| s.session_id.clone())
+            .collect();
+        for id in orphans {
+            // 运行态孤儿(理论不可达:父已死)失败无害,下次再扫
+            let _ = self.delete_session(&id);
+        }
     }
 
     /// 探测 provider 模型清单:`GET {base}/models`。鉴权头按方言:
@@ -3330,6 +3357,20 @@ impl AppHost {
     /// 删除会话(永久移除日志文件;运行中拒绝。归档是移动到 .archive,
     /// 删除是不可恢复的清理)
     pub fn delete_session(&self, id: &str) -> Result<(), RpcError> {
+        // 子代理会话级联删除(生命周期从属父会话;fork 分叉后代是独立
+        // 产物,不级联)。子先行:任一失败(如运行中)整体拒绝,父不动
+        let children: Vec<String> = self
+            .list_sessions()
+            .into_iter()
+            .filter(|s| {
+                s.origin.as_deref() == Some("subagent")
+                    && s.parent_session_id.as_deref() == Some(id)
+            })
+            .map(|s| s.session_id)
+            .collect();
+        for child in &children {
+            self.delete_session(child)?;
+        }
         let slots = self.sessions.read().expect("sessions 锁中毒");
         if let Some(slot) = slots.get(id) {
             if slot.running.load(std::sync::atomic::Ordering::Relaxed) {
@@ -3655,12 +3696,31 @@ impl AppHost {
         }
         let index = guard.as_ref().expect("刚建");
         // 全量会话增量同步(list_sessions 已按工作区序产出)
-        for summary in self.list_sessions() {
-            let path = self.slot_path(&summary.session_id);
+        let live: std::collections::HashSet<String> = self
+            .list_sessions()
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect();
+        for sid in &live {
+            let path = self.slot_path(sid);
             index
-                .sync_session(&summary.session_id, &path)
+                .sync_session(sid, &path)
                 .await
                 .map_err(|e| RpcError::internal(format!("索引同步失败:{e}")))?;
+        }
+        // 对账清理:索引中存在、磁盘已不存在的会话(删除不经索引路径,
+        // 历史脏数据一并自愈)——否则搜索持续冒出已删会话
+        for sid in index
+            .sessions()
+            .await
+            .map_err(|e| RpcError::internal(format!("索引同步失败:{e}")))?
+        {
+            if !live.contains(&sid) {
+                index
+                    .remove_session(&sid)
+                    .await
+                    .map_err(|e| RpcError::internal(format!("索引清理失败:{e}")))?;
+            }
         }
         let mut hits = index
             .search(query, limit)
@@ -9090,6 +9150,60 @@ mod tests {
         host.delete_session(&id).unwrap();
         assert!(!path.exists(), "日志应已删除");
         assert!(!path.parent().unwrap().exists(), "空会话目录残留");
+    }
+
+    /// 删除级联:子代理会话随父带走(fork 分叉后代是独立产物,不级联)
+    #[test]
+    fn delete_session_cascades_subagent_not_fork() {
+        let host = temp_host("ws-del-cascade");
+        let parent = host.create_session(None, None, None);
+        let sub = host.create_subagent_session(&parent);
+        let forked = host.fork_session(&parent).unwrap();
+        let sub_path = host.session_log_path(&sub);
+        let fork_path = host.session_log_path(&forked);
+        host.delete_session(&parent).unwrap();
+        assert!(!host.session_log_path(&parent).exists(), "父会话已删除");
+        assert!(!sub_path.exists(), "子代理会话应随父级联删除");
+        assert!(fork_path.exists(), "fork 后代是独立产物,不级联");
+    }
+
+    /// 孤儿子代理清扫:父已亡(历史无级联时期遗留)的隐藏子代理在
+    /// 启动时被移除——侧栏虽不渲染它们,清单/检索/@ 候选仍消费,
+    /// 「无会话但有内容」的污染源
+    #[test]
+    fn startup_sweeps_orphan_subagent_sessions() {
+        let host = temp_host("ws-orphan");
+        let parent = host.create_session(None, None, None);
+        let orphan = host.create_subagent_session(&parent);
+        let orphan_path = host.session_log_path(&orphan).to_path_buf();
+        // 对照:挂在活父下的子代理(另一个父会话,将被保留)
+        let alive = host.create_session(None, None, None);
+        let keep = host.create_subagent_session(&alive);
+        // 模拟历史删除:直接删日志目录(绕过级联),父亡子存
+        std::fs::remove_file(host.session_log_path(&parent)).unwrap();
+        let _ = std::fs::remove_dir(host.session_log_path(&parent).parent().unwrap());
+        let before: Vec<String> = host
+            .list_sessions()
+            .iter()
+            .map(|s| s.session_id.clone())
+            .collect();
+        assert!(before.contains(&orphan), "孤儿在列(污染态)");
+
+        // 重启(新 AppHost)→ 启动清扫
+        let ws = host.workspace.clone();
+        let sroot = host.sessions_root.clone();
+        let host2 = AppHost::new_at(ws, true, "test-key", sroot).unwrap();
+        let ids: Vec<String> = host2
+            .list_sessions()
+            .iter()
+            .map(|s| s.session_id.clone())
+            .collect();
+        assert!(!ids.contains(&orphan), "孤儿应被启动清扫移除");
+        assert!(!orphan_path.exists(), "孤儿日志已删");
+        assert!(
+            ids.contains(&keep) && ids.contains(&alive),
+            "活父及其子代理不受清扫影响"
+        );
     }
 
     /// 旧 `.dsh-workspaces.json` 一次性导入 settings(导入后旧文件

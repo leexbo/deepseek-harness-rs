@@ -196,6 +196,42 @@ impl SearchIndex {
         Ok(0)
     }
 
+    /// 索引中的会话清单(与磁盘清单对账用)
+    pub async fn sessions(&self) -> Result<Vec<String>, PersistenceError> {
+        let mut rows = self
+            .conn
+            .query("SELECT session FROM indexed", ())
+            .await
+            .map_err(|e| PersistenceError::Turso(e.to_string()))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| PersistenceError::Turso(e.to_string()))?
+        {
+            if let Ok(Tv::Text(s)) = row.get_value(0) {
+                out.push(s);
+            }
+        }
+        Ok(out)
+    }
+
+    /// 会话索引整体移除(docs + 水位;幂等)。会话删除不经过索引路径,
+    /// 检索前的对账把磁盘已消失的会话在此收口
+    pub async fn remove_session(&self, session: &str) -> Result<(), PersistenceError> {
+        let esc = session.replace('\'', "''");
+        for sql in [
+            format!("DELETE FROM docs WHERE session = '{esc}'"),
+            format!("DELETE FROM indexed WHERE session = '{esc}'"),
+        ] {
+            self.conn
+                .execute(&sql, ())
+                .await
+                .map_err(|e| PersistenceError::Turso(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// 全文检索(命中按会话/seq 升序;多词 = OR,turso MATCH 语义)
     pub async fn search(
         &self,
@@ -369,6 +405,43 @@ mod tests {
         assert_eq!(hits[0].seq, 4);
         let hits = index.search("持久", 10).await.expect("检索");
         assert_eq!(hits.len(), 1, "旧文档不重复");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 会话删除收口:remove_session 整会话移除(docs + 水位),检索
+    /// 不再命中;sessions() 列出的对账清单同步收敛
+    #[tokio::test]
+    async fn remove_session_drops_docs_and_watermark() {
+        let dir = tmp("rm");
+        std::fs::create_dir_all(&dir).unwrap();
+        let log_a = dir.join("a.jsonl");
+        let mut log = EventLog::new();
+        log.append(EventEnvelope::new(
+            "user/message",
+            1,
+            serde_json::json!({
+                "content": [ { "type": "text", "text": "修复队列持久化的方案" } ]
+            }),
+        ))
+        .unwrap();
+        std::fs::write(&log_a, log.iter().map(envelope_line).collect::<String>()).unwrap();
+
+        let index = SearchIndex::open(dir.join("search.db").to_str().unwrap())
+            .await
+            .expect("建索引");
+        index.sync_session("ws/a", &log_a).await.expect("同步");
+        assert_eq!(index.search("持久", 10).await.unwrap().len(), 1);
+        assert_eq!(index.sessions().await.unwrap(), vec!["ws/a".to_string()]);
+
+        index.remove_session("ws/a").await.expect("移除");
+        assert!(
+            index.search("持久", 10).await.unwrap().is_empty(),
+            "已删会话不再命中"
+        );
+        assert!(index.sessions().await.unwrap().is_empty(), "对账清单收敛");
+        // 幂等:重复移除无害
+        index.remove_session("ws/a").await.expect("幂等移除");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
