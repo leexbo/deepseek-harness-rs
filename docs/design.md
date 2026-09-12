@@ -363,7 +363,11 @@ span 为日志投影:turn/step → 区间 span(span_id = 起始事件 seq);audit
 
 ### 7.11 配置
 
-两级装配输入 + 运行时设置层:**CLI > `dsh.toml`(工作区,只读装配输入)> `~/.dshrs/settings.json`(用户级设置存储,setter 落盘目标)> 内置默认**;会话内存覆盖最高(重启即回工作区默认)。`dsh.toml` 字段 model / base_url / session / workspace / dialect / preset;dialect 未知值装配期拒绝。CLI 开关:`--pty` / `--no-tools` / `--fake` / `--preset <id>`。设置层承载:onboarding 完成态、provider 注册表(id/base_url/dialect/凭据引用/默认模型)、工作区级默认(provider/model/permission/preset/effort,projectKey 键控);损坏文件旁置备份后回落内置默认(不拒启)。凭据四级链:显式注入 > 引用(`env:`/`dotenv:`/`keychain:`)> 默认环境变量名(env > 工作区 `.env`)> 钥匙串默认槽(`dsh/<provider>`,仅 macOS;其余平台该级缺席);设置只存引用,明文永不落 settings.json。
+两级装配输入 + 运行时设置层:**CLI > `dsh.toml`(工作区,只读装配输入)> `~/.dshrs/settings.yaml`(用户级设置存储,setter 落盘目标)> 内置默认**;会话内存覆盖最高(重启即回工作区默认)。`dsh.toml` 字段 model / base_url / session / workspace / dialect / preset;dialect 未知值装配期拒绝。CLI 开关:`--pty` / `--no-tools` / `--fake` / `--preset <id>`。设置层承载:onboarding 完成态、provider 注册表(id/base_url/dialect/凭据/默认模型)、工作区级默认(provider/model/permission/preset/effort,projectKey 键控);启动时损坏文件旁置备份后回落内置默认(不拒启)。外部编辑实时感知:运行中的外部改动即被吸收(编辑器半途保存的坏内容不致配置清空;应用内保存不覆盖外部编辑),变更即同步 MCP 端口池。凭据链:显式注入 > 设置条目 `api_key`(明文,文件 0600)> 引用(`env:`)> 默认环境变量名(`{PROVIDER}_API_KEY`);无 `.env` 文件加载、无钥匙串(授权弹窗烦扰与明文外置均不可取)。
+
+### 7.11a LLM 用量归一
+
+三家官方 usage 键名互不相同,归一在方言映射器边界完成:`Usage` 事件载荷契约 = 规范五键(`input_tokens` / `output_tokens` / `cached_tokens` 缓存读 / `cache_write_tokens` 缓存写 / `reasoning_tokens`;缺席指标不产键),引擎透传与全部消费端(统计条、回合尾 tok/s、轨迹 Usage 面板)只认规范形。各方言 wire 键映射与官方文档出处见 `dsh-llm::usage` 模块文档。
 
 preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: dsh/v1 / kind: Preset / metadata{name, displayName, description} / spec.mounts 装配清单;`---` 多文档流按 kind 路由、空文档跳过;deny_unknown_fields;metadata.name 必须与文件名 stem 一致)。内置 standard / minimal 经 `include_str!` 随二进制;workspace 同名文件覆盖内置。mount 行 source 三态:在树组件注册名 / 本地 wasm 路径(相对 workspace,`dsh:tools` 组件经 `WasmTool` 装载)/ OCI 引用(格式容纳,拉取随分发面启用);config 按组件 config-schema 校验后透传。分界:preset 只选模型面——沙箱、持久化、provider 路由、registry 永远留在宿主面。
 

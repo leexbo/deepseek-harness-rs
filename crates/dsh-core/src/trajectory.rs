@@ -18,15 +18,15 @@ use dsh_session::EventEnvelope;
 /// 请求用量(prompt 侧三桶 + 输出两桶;Usage 面板 Input/Cached/Other/Output/Reasoning)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct TrajectoryUsage {
-    /// 输入 tok(prompt_tokens)
+    /// 输入 tok(input_tokens)
     pub input: u64,
-    /// 缓存命中读(prompt_cache_hit_tokens)
+    /// 缓存命中读(cached_tokens)
     pub cached: u64,
     /// 其余输入(input - cached;写缓存 + 未命中)
     pub other: u64,
-    /// 输出 tok(completion_tokens)
+    /// 输出 tok(output_tokens)
     pub output: u64,
-    /// 推理 tok(completion_tokens_details.reasoning_tokens)
+    /// 推理 tok(reasoning_tokens)
     pub reasoning: u64,
 }
 
@@ -45,21 +45,16 @@ impl TrajectoryUsage {
     }
 
     fn from_usage_json(usage: &Value) -> TrajectoryUsage {
-        let input = usage["prompt_tokens"].as_u64().unwrap_or(0);
-        let cached = usage["prompt_cache_hit_tokens"]
-            .as_u64()
-            .or(usage["cached_tokens"].as_u64())
-            .or(usage["prompt_tokens_details"]["cached_tokens"].as_u64())
-            .unwrap_or(0);
-        let output = usage["completion_tokens"].as_u64().unwrap_or(0);
+        // usage 为映射器归一后的规范形(见 dsh-llm::usage)
+        let input = usage["input_tokens"].as_u64().unwrap_or(0);
+        let cached = usage["cached_tokens"].as_u64().unwrap_or(0);
+        let output = usage["output_tokens"].as_u64().unwrap_or(0);
         TrajectoryUsage {
             input,
             cached,
             other: input.saturating_sub(cached),
             output,
-            reasoning: usage["completion_tokens_details"]["reasoning_tokens"]
-                .as_u64()
-                .unwrap_or(0),
+            reasoning: usage["reasoning_tokens"].as_u64().unwrap_or(0),
         }
     }
 }
@@ -756,10 +751,10 @@ mod tests {
             audit_done(
                 4300,
                 json!({
-                    "prompt_tokens": 1000,
-                    "prompt_cache_hit_tokens": 900,
-                    "completion_tokens": 50,
-                    "completion_tokens_details": { "reasoning_tokens": 20 },
+                    "input_tokens": 1000,
+                    "cached_tokens": 900,
+                    "output_tokens": 50,
+                    "reasoning_tokens": 20,
                     "ttftMs": 500,
                 }),
             ),

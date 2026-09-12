@@ -2477,9 +2477,7 @@ pub fn provider_delete_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::An
                         .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                         .child(format!("移除 {id}")),
                 )
-                .child(caption_line(
-                    "移除后工作区引用回落内置默认;凭据记录(钥匙串/.env)保留。",
-                ))
+                .child(caption_line("移除后工作区引用回落内置默认。"))
                 .child(
                     div()
                         .flex()

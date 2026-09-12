@@ -1,7 +1,7 @@
 //! 双盘主题(macOS 原生灰阶):深色盘对照 Finder 暗色的石墨灰阶,
 //! 浅色盘对照系统亮色;色板内联为唯一来源 → gpui-component
 //! [`ThemeColor`] 映射。设置页「外观」三档(浅色/深色/跟随系统)经
-//! [`apply`] 实装:启动读 settings.json、设置点击即切、「跟随系统」
+//! [`apply`] 实装:启动读 settings.yaml、设置点击即切、「跟随系统」
 //! 由窗口外观观察者驱动(shell::store 挂 `observe_window_appearance`)。
 //!
 //! 调用点形态:`theme::BASE()` —— SCREAMING_CASE 取值 fn 保持原常量
@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::{App, Rgba, Window, WindowAppearance};
 
-// ── 外观档位(与 registry settings.json appearance 字段同词汇)──
+// ── 外观档位(与 registry settings.yaml appearance 字段同词汇)──
 
 /// 设置档:浅色 / 深色 / 跟随系统(registry 校验 light/dark/system;
 /// 判别值即声明序 as u8,勿重排)
@@ -30,7 +30,7 @@ pub enum Appearance {
 }
 
 impl Appearance {
-    /// settings.json 值 → 档位(未知值回落深色,与 registry 缺省一致)
+    /// settings.yaml 值 → 档位(未知值回落深色,与 registry 缺省一致)
     pub fn parse(s: &str) -> Self {
         match s {
             "light" => Self::Light,
@@ -344,7 +344,7 @@ pub fn apply(choice: Appearance, window: Option<&mut Window>, cx: &mut App) {
 }
 
 /// 测试装配:固定深色盘(UI 测试同源基线;生产入口走 main.rs 直读
-/// settings.json 档位的 apply)。每个测试是全新 App,而幂等守卫是
+/// settings.yaml 档位的 apply)。每个测试是全新 App,而幂等守卫是
 /// 进程级——先复位,否则第二个测试的打底会被短路。
 #[cfg(test)]
 pub fn init(cx: &mut App) {
@@ -444,7 +444,7 @@ mod tests {
         assert_eq!(d.ink, color(0x000000, 1.0));
     }
 
-    /// 档位解析与 registry settings.json 词汇一致,未知值回落深色
+    /// 档位解析与 registry settings.yaml 词汇一致,未知值回落深色
     #[test]
     fn appearance_parse_matches_registry() {
         assert_eq!(Appearance::parse("light"), Appearance::Light);

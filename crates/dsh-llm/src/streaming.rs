@@ -235,7 +235,7 @@ impl FrameMapper for OpenAiChatMapper {
                     .or_else(|| json["choices"][0].get("usage"))
                     .filter(|u| u.is_object())
                 {
-                    return vec![StreamEvent::Usage(usage.clone())];
+                    return vec![StreamEvent::Usage(crate::usage::normalize_chat(usage))];
                 }
                 return Vec::new();
             }
@@ -246,7 +246,7 @@ impl FrameMapper for OpenAiChatMapper {
                 .or_else(|| json["choices"][0].get("usage"))
                 .filter(|u| u.is_object())
             {
-                return vec![StreamEvent::Usage(usage.clone())];
+                return vec![StreamEvent::Usage(crate::usage::normalize_chat(usage))];
             }
             // 工具调用终止:冲刷累积的 tool_calls 为完整消息
             if json["choices"][0]["finish_reason"].as_str() == Some("tool_calls") {
@@ -261,7 +261,7 @@ impl FrameMapper for OpenAiChatMapper {
             return vec![StreamEvent::Other(json)];
         }
         if let Some(usage) = json.get("usage").filter(|u| u.is_object()) {
-            return vec![StreamEvent::Usage(usage.clone())];
+            return vec![StreamEvent::Usage(crate::usage::normalize_chat(usage))];
         }
         // 整消息形态(message 键)
         if json.get("message").is_some() {
@@ -355,13 +355,14 @@ mod tests {
              data: {\"choices\":[{\"delta\":{},\"usage\":{\"total\":5}}]}\n\n\
              data: [DONE]\n\n",
         );
+        // 非规范键(total)被归一层丢弃 → 空对象
         assert_eq!(
             events,
             vec![
                 StreamEvent::Other(serde_json::json!({"choices":[{"delta":{"role":"assistant"}}]})),
                 StreamEvent::Chunk("Hel".into()),
                 StreamEvent::Chunk("lo".into()),
-                StreamEvent::Usage(serde_json::json!({"total":5})),
+                StreamEvent::Usage(serde_json::json!({})),
                 StreamEvent::Done,
             ]
         );
@@ -383,8 +384,8 @@ mod tests {
             vec![
                 StreamEvent::Chunk("hi".into()),
                 StreamEvent::Usage(serde_json::json!({
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5
+                    "input_tokens": 10,
+                    "output_tokens": 5
                 })),
                 StreamEvent::Done,
             ]
@@ -411,13 +412,13 @@ mod tests {
                 StreamEvent::Chunk("hi".into()),
                 // finish 挂载形态
                 StreamEvent::Usage(serde_json::json!({
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5
+                    "input_tokens": 10,
+                    "output_tokens": 5
                 })),
                 // 尾随 usage-only 形态(choices:[])
                 StreamEvent::Usage(serde_json::json!({
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5
+                    "input_tokens": 10,
+                    "output_tokens": 5
                 })),
                 StreamEvent::Done,
             ]

@@ -39,8 +39,9 @@ pub enum TransportError {
         /// 响应体片段
         body: String,
     },
-    /// 鉴权失败(401/403;不重试)
-    #[error("provider {status}: {body}")]
+    /// 鉴权失败(401/403;不重试。诊断体保留在 `body` 字段,轨迹
+    /// 详情可见;用户面文案固定语义,不透传原始响应)
+    #[error("认证失败:API 密钥无效或已过期(provider {status})")]
     #[serde(rename = "AUTH", rename_all = "camelCase")]
     Auth {
         /// HTTP 状态码

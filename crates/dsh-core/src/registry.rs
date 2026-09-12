@@ -27,9 +27,7 @@ use serde_json::{Value, json};
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
-use crate::credentials::{
-    CredentialStore, KEYCHAIN_SERVICE, KeychainPort, OsKeychain, resolve_credential,
-};
+use crate::credentials::resolve_credential;
 use crate::proto::{
     HistoryEntry, HistoryValue, HostSessionAdded, HostSessionStatus, ProjectionFrame, Projections,
     Question, QuestionOption, QuestionRequestedFrame, QuestionResolvedFrame, RespondReceipt,
@@ -83,13 +81,6 @@ impl AnySession {
         match self {
             AnySession::Real(s) => s.set_hook_port(port),
             AnySession::Fake(s) => s.set_hook_port(port),
-        }
-    }
-
-    fn clear_hook_port(&mut self) {
-        match self {
-            AnySession::Real(s) => s.clear_hook_port(),
-            AnySession::Fake(s) => s.clear_hook_port(),
         }
     }
 
@@ -523,10 +514,8 @@ pub struct AppHost {
     jobs_sources: std::sync::Mutex<HashMap<String, dsh_tools::subagent::WeakRegistry>>,
     /// 子会话事件翻译器(按子会话持计数器状态,translate→mux 实时流)
     subagent_translators: std::sync::Mutex<HashMap<String, crate::translate::Translator>>,
-    /// 用户级设置(~/.dshrs/settings.json;setter 落盘与冷装配读取)
+    /// 用户级设置(~/.dshrs/settings.yaml;setter 落盘与冷装配读取)
     settings: SettingsStore,
-    /// 钥匙串端口(生产 OS 实现;测试经 [`AppHost::set_keychain`] 注入)
-    keychain: std::sync::RwLock<Arc<dyn KeychainPort>>,
     /// 会话 → 模型覆盖(空 = 用默认;切换时 detach,下次 prompt 重装配)
     model_overrides: std::sync::RwLock<HashMap<String, String>>,
     /// 会话 → preset 覆盖(standard / minimal / 工作区自定义)
@@ -653,9 +642,9 @@ fn echo_segment() -> Vec<LlmEvent> {
             "content": "(fake echo) 已收到;真实模式请去掉 --fake。"
         })),
         LlmEvent::Usage(json!({
-            "prompt_tokens": 1200,
-            "completion_tokens": 300,
-            "prompt_cache_hit_tokens": 900,
+            "input_tokens": 1200,
+            "output_tokens": 300,
+            "cached_tokens": 900,
             "ttftMs": 150,
         })),
         LlmEvent::Done,
@@ -682,9 +671,9 @@ fn mermaid_demo_segment() -> Vec<LlmEvent> {
         .collect();
     events.push(LlmEvent::AssistantMessage(json!({ "content": full })));
     events.push(LlmEvent::Usage(json!({
-        "prompt_tokens": 1200,
-        "completion_tokens": 300,
-        "prompt_cache_hit_tokens": 900,
+        "input_tokens": 1200,
+        "output_tokens": 300,
+        "cached_tokens": 900,
         "ttftMs": 150,
     })));
     events.push(LlmEvent::Done);
@@ -1010,8 +999,8 @@ impl AppHost {
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
-        // 设置先行:工作区注册表存于 settings.json
-        let settings = SettingsStore::open(sessions_root.join("settings.json"));
+        // 设置先行:工作区注册表存于 settings.yaml
+        let settings = SettingsStore::open(sessions_root.join("settings.yaml"));
         let reg_paths = settings.read().workspace_paths.clone();
         let workspaces: Vec<PathBuf> = if reg_paths.is_empty() {
             // 未初始化:一次性导入旧 .dsh-workspaces.json(旧格式)
@@ -1076,7 +1065,6 @@ impl AppHost {
             api_key: api_key.to_string(),
             base,
             settings,
-            keychain: std::sync::RwLock::new(Arc::new(OsKeychain)),
             sessions: std::sync::RwLock::new(HashMap::new()),
             live_children: std::sync::Mutex::new(std::collections::HashSet::new()),
             jobs_sources: std::sync::Mutex::new(HashMap::new()),
@@ -1107,8 +1095,8 @@ impl AppHost {
     /// 探测 provider 模型清单:`GET {base}/models`。鉴权头按方言:
     /// anthropic = x-api-key + anthropic-version,openai 系 = Bearer。
     /// 失败(网络/鉴权/解析)→ 空 Vec——**不硬编码模型名**
-    async fn fetch_provider_models(&self, provider: &ProviderEntry, ws: &Path) -> Vec<String> {
-        let key = self.resolve_provider_key(provider, ws);
+    async fn fetch_provider_models(&self, provider: &ProviderEntry) -> Vec<String> {
+        let key = self.resolve_provider_key(provider);
         Self::models_request(&provider.base_url, &provider.dialect, key).await
     }
 
@@ -1125,7 +1113,7 @@ impl AppHost {
             Some(k) => Some(k),
             None => provider_id.and_then(|pid| {
                 let provider = self.settings.read().provider(Some(&pid));
-                self.resolve_provider_key(&provider, &self.default_workspace())
+                self.resolve_provider_key(&provider)
             }),
         };
         Self::models_request(&base_url, &dialect, key).await
@@ -1194,9 +1182,7 @@ impl AppHost {
                 .insert(provider.id.clone(), demo_models());
             return;
         }
-        let fetched = self
-            .fetch_provider_models(&provider, &self.default_workspace())
-            .await;
+        let fetched = self.fetch_provider_models(&provider).await;
         if !fetched.is_empty() {
             self.models_cache
                 .lock()
@@ -1213,8 +1199,7 @@ impl AppHost {
         let fetched = if self.fake && provider_id == self.default_provider().id {
             demo_models()
         } else {
-            self.fetch_provider_models(&provider, &self.default_workspace())
-                .await
+            self.fetch_provider_models(&provider).await
         };
         self.models_cache
             .lock()
@@ -1241,12 +1226,12 @@ impl AppHost {
     /// 拉取 provider 计费快照:GET 配置 URL(鉴权头按方言)→ JSON 路径
     /// 求值 → BillingSnapshot 写回 settings.billing_cache(落盘持久化)。
     /// HTTP/解析/路径全部未命中 → Err(错误串,设置页通告用)
-    pub async fn fetch_billing(&self, provider_id: &str, ws: &Path) -> Result<(), String> {
+    pub async fn fetch_billing(&self, provider_id: &str) -> Result<(), String> {
         let provider = self.settings.read().provider(Some(provider_id));
         let Some(billing) = provider.billing.clone() else {
             return Err("该 provider 未配置计费端点".into());
         };
-        let Some(key) = self.resolve_provider_key(&provider, ws) else {
+        let Some(key) = self.resolve_provider_key(&provider) else {
             return Err("凭据各级缺席,无法查询计费".into());
         };
         let snapshot = Self::billing_request(&billing, &provider.dialect, &key).await?;
@@ -1255,7 +1240,7 @@ impl AppHost {
     }
 
     /// 计费试查(编辑器「立即刷新」用**表单当前值**,不读已保存配置、
-    /// 不落缓存;key 显式优先回退四级链)。只求值,返回快照
+    /// 不落缓存;key 显式优先回退凭据链)。只求值,返回快照
     pub async fn test_billing(
         &self,
         cfg: BillingConfig,
@@ -1267,7 +1252,7 @@ impl AppHost {
             Some(k) if !k.is_empty() => Some(k),
             _ => provider_id.and_then(|pid| {
                 let provider = self.settings.read().provider(Some(&pid));
-                self.resolve_provider_key(&provider, &self.default_workspace())
+                self.resolve_provider_key(&provider)
             }),
         }
         .ok_or("凭据各级缺席,无法查询计费")?;
@@ -1381,24 +1366,14 @@ impl AppHost {
         }
     }
 
-    /// 钥匙串端口注入(测试 seam,同 set_fake_script 模式)
-    pub fn set_keychain(&self, port: Arc<dyn KeychainPort>) {
-        *self.keychain.write().expect("keychain 锁中毒(宿主 bug)") = port;
-    }
-
-    /// provider 凭据解析(四级链;显式注入 = 启动时传入的非空 key)
-    fn resolve_provider_key(&self, provider: &ProviderEntry, ws: &Path) -> Option<String> {
+    /// provider 凭据解析(凭据链;显式注入 = 启动时传入的非空 key)
+    fn resolve_provider_key(&self, provider: &ProviderEntry) -> Option<String> {
         let explicit = if self.api_key.is_empty() {
             None
         } else {
             Some(self.api_key.as_str())
         };
-        resolve_credential(
-            explicit,
-            provider,
-            ws,
-            &**self.keychain.read().expect("keychain 锁中毒(宿主 bug)"),
-        )
+        resolve_credential(explicit, provider)
     }
 
     /// 会话所属工作区的生效 provider(设置工作区默认 > 内置回落)
@@ -2063,10 +2038,11 @@ impl AppHost {
             .iter()
             .map(|p| {
                 let mut v = serde_json::to_value(p).unwrap_or(Value::Null);
-                v["credentialReady"] = Value::Bool(
-                    self.resolve_provider_key(p, &self.default_workspace())
-                        .is_some(),
-                );
+                // 明文不出视图:api_key 以「已设置」布尔呈现
+                let key_set = p.api_key.as_ref().is_some_and(|k| !k.is_empty());
+                v.as_object_mut().map(|o| o.remove("api_key"));
+                v["apiKeySet"] = Value::Bool(key_set);
+                v["credentialReady"] = Value::Bool(self.resolve_provider_key(p).is_some());
                 v["modelsCached"] = Value::Bool(!self.models_for(&p.id).is_empty());
                 v
             })
@@ -2589,6 +2565,29 @@ impl AppHost {
         Ok(())
     }
 
+    /// 设置文件监视(外部编辑实时感知;照源 watch 语义)。轮询 mtime
+    /// (单文件 1s 间隔,零依赖);变更时吸收进内存并同步 MCP 端口池
+    /// (mcp/status 帧自动广播;provider/模型等其余项各消费点读取即最新)。
+    /// Weak 引用:宿主全体释放即自停,不阻进程退出
+    pub fn start_settings_watcher(self: &Arc<Self>) {
+        let host = Arc::downgrade(self);
+        let spawned = std::thread::Builder::new()
+            .name("settings-watch".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let Some(host) = host.upgrade() else { break };
+                    if host.settings.reload_if_changed() {
+                        host.sync_mcp_ports();
+                    }
+                }
+            })
+            .is_ok();
+        if !spawned {
+            eprintln!("[dsh-core] 设置监视线程创建失败(拉取式 reload 仍生效)");
+        }
+    }
+
     /// 端口池对照 settings enabled 清单同步:禁用/移除的端口停机并移除,
     /// 新增/配置变更的端口启动/重启(未变的不动)。设置动作与真实会话
     /// attach 前各调一次(attach 兜底恢复进程启动后尚未连接的存量清单)
@@ -2739,14 +2738,20 @@ impl AppHost {
         if let Some(r) = &entry.credential_ref
             && crate::credentials::parse_credential_ref(r).is_none()
         {
-            return Err(RpcError::bad_request(
-                "凭据引用须为 env:NAME / dotenv:NAME / keychain:SERVICE/ACCOUNT",
-            ));
+            return Err(RpcError::bad_request("凭据引用须为 env:NAME"));
         }
         self.settings
             .update(
                 |s| match s.providers.iter_mut().find(|p| p.id == entry.id) {
-                    Some(slot) => *slot = entry.clone(),
+                    Some(slot) => {
+                        // api_key = None 意为「保留已存值」(编辑卡留空 = 不改
+                        // 密钥;写入走 Some,清空密钥存空串)
+                        let keep_key = entry.api_key.is_none().then(|| slot.api_key.clone());
+                        *slot = entry.clone();
+                        if let Some(k) = keep_key {
+                            slot.api_key = k;
+                        }
+                    }
                     None => s.providers.push(entry.clone()),
                 },
             )
@@ -2759,7 +2764,7 @@ impl AppHost {
     }
 
     /// 删除 provider(悬空的工作区引用由 provider() 内置回落兜底;
-    /// 凭据记录不随之删除——钥匙串/`.env` 是用户资产)
+    /// 条目连带其 api_key 一并移除)
     pub fn remove_provider(&self, id: &str) -> Result<(), RpcError> {
         self.settings
             .update(|s| s.providers.retain(|p| p.id != id))
@@ -2794,47 +2799,7 @@ impl AppHost {
     /// 凭据可解析态(设置页状态行;不回明文)
     pub fn credential_status(&self, provider_id: &str) -> bool {
         let provider = self.settings.read().provider(Some(provider_id));
-        provider.id == provider_id
-            && self
-                .resolve_provider_key(&provider, &self.default_workspace())
-                .is_some()
-    }
-
-    /// 录入凭据(写入钥匙串默认槽或工作区 `.env`,provider 引用同步
-    /// 指向新记录;明文不落 settings.json)
-    pub fn store_credential(
-        &self,
-        provider_id: &str,
-        secret: &str,
-        target: CredentialStore,
-    ) -> Result<(), RpcError> {
-        if secret.is_empty() {
-            return Err(RpcError::bad_request("凭据不可为空"));
-        }
-        let provider = self.settings.read().provider(Some(provider_id));
-        if provider.id != provider_id {
-            return Err(RpcError::bad_request("未知 provider"));
-        }
-        let (write, refstr) = match target {
-            CredentialStore::Keychain => {
-                let kc = self.keychain.read().expect("keychain 锁中毒(宿主 bug)");
-                let write = kc.set(KEYCHAIN_SERVICE, provider_id, secret);
-                (write, format!("keychain:{KEYCHAIN_SERVICE}/{provider_id}"))
-            }
-            CredentialStore::Dotenv => {
-                let name = crate::credentials::default_env_name(provider_id);
-                let write = dsh_app::write_dotenv_key(&self.default_workspace(), &name, secret);
-                (write, format!("dotenv:{name}"))
-            }
-        };
-        write.map_err(|e| RpcError::internal(format!("凭据写入失败:{e}")))?;
-        self.settings
-            .update(|s| {
-                if let Some(p) = s.providers.iter_mut().find(|p| p.id == provider_id) {
-                    p.credential_ref = Some(refstr);
-                }
-            })
-            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
+        provider.id == provider_id && self.resolve_provider_key(&provider).is_some()
     }
 
     /// 重命名(标题覆盖;持久化 + 清单/历史投影可见)
@@ -2931,7 +2896,7 @@ impl AppHost {
                 return Ok(());
             }
             let key = host
-                .resolve_provider_key(&provider, &ws_root)
+                .resolve_provider_key(&provider)
                 .ok_or_else(|| "provider 凭据缺席".to_string())?;
             let mut transport = dsh_app::build_raw_transport(
                 &resolved,
@@ -3502,17 +3467,15 @@ impl AppHost {
                 l,
             )
         } else {
-            // 真实模式凭据:四级链(显式注入 > 引用 > env/.env > 钥匙串);
-            // 缺席即拒绝——provider key 只在装配点解析,不缓存(设置页
-            // 录入后下次装配即生效)
-            let key = self
-                .resolve_provider_key(&provider, &ws_root)
-                .ok_or_else(|| {
-                    RpcError::internal(format!(
-                        "provider {} 凭据缺席:请在设置中配置 API key",
-                        provider.id
-                    ))
-                })?;
+            // 真实模式凭据:凭据链(显式注入 > 设置 api_key > env: 引用 >
+            // 默认环境变量名);缺席即拒绝——provider key 只在装配点解析,
+            // 不缓存(设置页录入后下次装配即生效)
+            let key = self.resolve_provider_key(&provider).ok_or_else(|| {
+                RpcError::internal(format!(
+                    "provider {} 凭据缺席:请在设置中配置 API key",
+                    provider.id
+                ))
+            })?;
             let transport = dsh_app::build_raw_transport(
                 &resolved,
                 &key,
@@ -6808,7 +6771,7 @@ mod tests {
         });
         host.upsert_provider(p).unwrap();
 
-        host.fetch_billing("deepseek", &ws).await.expect("查询成功");
+        host.fetch_billing("deepseek").await.expect("查询成功");
 
         let view = host.settings_view();
         let me = view["providers"]
@@ -8123,7 +8086,7 @@ mod tests {
         assert_eq!(host.session_model("s1"), "deepseek-v4-pro");
         assert_eq!(host.session_preset("s1"), "minimal");
         assert_eq!(host.session_effort("s1").as_deref(), Some("low"));
-        assert!(host.sessions_root.join("settings.json").exists());
+        assert!(host.sessions_root.join("settings.yaml").exists());
 
         // 模拟重启:同会话根重建宿主——内存覆盖清零,设置层接管
         let host2 = AppHost::new_at(
@@ -8160,10 +8123,10 @@ mod tests {
         assert_eq!(host2.session_model("s1"), "toml-model", "dsh.toml > 设置层");
     }
 
-    /// provider 注册表 CRUD + 凭据录入(钥匙串/.env)+ 引用回写
+    /// provider 注册表 CRUD + 凭据录入(settings `api_key`)+ 状态翻转
     #[tokio::test]
     async fn provider_registry_and_credential_surface() {
-        // 空 key 宿主(凭据链不走显式注入,四级链行为可见)
+        // 空 key 宿主(凭据链不走显式注入,链行为可见)
         let dir =
             std::env::temp_dir().join(format!("dsh-core-provreg-{}", Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -8172,7 +8135,6 @@ mod tests {
             Uuid::new_v4().simple()
         ));
         let host = Arc::new(AppHost::new_at(dir, true, "", sroot).unwrap());
-        host.set_keychain(Arc::new(crate::credentials::InMemoryKeychain::new()));
 
         // 初始:内置 deepseek,各级缺席
         assert!(!host.credential_status("deepseek"));
@@ -8189,18 +8151,17 @@ mod tests {
         bad.base_url = "ftp://x".into();
         assert!(host.upsert_provider(bad).is_err());
 
-        // 新 provider + 钥匙串录入:引用回写、状态翻转
+        // 新 provider + 明文录入:api_key 落设置、状态翻转
         let acme = ProviderEntry {
             id: "acme".into(),
             base_url: "https://acme.example/v1".into(),
             dialect: "openai-chat".into(),
             credential_ref: None,
+            api_key: Some("sk-acme".into()),
             default_model: Some("acme-1".into()),
             ..crate::settings::builtin_provider()
         };
         host.upsert_provider(acme).unwrap();
-        host.store_credential("acme", "sk-acme", CredentialStore::Keychain)
-            .unwrap();
         assert!(host.credential_status("acme"));
         let stored = host
             .providers()
@@ -8208,10 +8169,11 @@ mod tests {
             .find(|p| p.id == "acme")
             .unwrap();
         assert_eq!(
-            stored.credential_ref.as_deref(),
-            Some("keychain:dsh/acme"),
-            "录入后引用指向钥匙串默认槽"
+            stored.api_key.as_deref(),
+            Some("sk-acme"),
+            "明文存于设置条目"
         );
+        assert_eq!(stored.credential_ref, None);
 
         // 工作区默认 provider 切到 acme:模型走 provider 默认、清单为其视角
         let ws_name = host.workspace_names()[0].clone();
@@ -8857,29 +8819,31 @@ mod tests {
         assert_eq!(host2.settings_view()["busyEnter"], "steer");
     }
 
-    /// dotenv 录入目标(默认工作区 .env + 引用回写 + 链上可解析)
+    /// 明文录入持久化:api_key 落设置文件,重启后链上可解析
     #[test]
-    fn credential_dotenv_target() {
+    fn credential_settings_key_persists() {
         let host = temp_host("credenv");
-        host.set_keychain(Arc::new(crate::credentials::InMemoryKeychain::new()));
-        host.store_credential("deepseek", "sk-env", CredentialStore::Dotenv)
-            .unwrap();
-        assert!(host.workspace.join(".env").exists());
         let stored = host
             .providers()
             .into_iter()
             .find(|p| p.id == "deepseek")
             .unwrap();
-        assert_eq!(
-            stored.credential_ref.as_deref(),
-            Some("dotenv:DEEPSEEK_API_KEY")
-        );
         // temp_host 显式 key="test-key" 优先——空 key 宿主上验证链解析
         let ws = host.workspace.clone();
         let sroot = host.sessions_root.clone();
         let bare = AppHost::new_at(ws, true, "", sroot).unwrap();
-        bare.set_keychain(Arc::new(crate::credentials::InMemoryKeychain::new()));
+        assert!(!bare.credential_status("deepseek"), "未录入前缺席");
+        bare.upsert_provider(ProviderEntry {
+            api_key: Some("sk-env".into()),
+            ..stored
+        })
+        .unwrap();
         assert!(bare.credential_status("deepseek"));
+        // 重启(重新 open 设置)后仍在
+        let ws2 = bare.workspace.clone();
+        let sroot2 = bare.sessions_root.clone();
+        let again = AppHost::new_at(ws2, true, "", sroot2).unwrap();
+        assert!(again.credential_status("deepseek"), "重启保留");
     }
 
     /// durable 队列:replay_inbox 折叠语义(入队/编辑/认领/转移)

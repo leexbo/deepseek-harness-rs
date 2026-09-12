@@ -30,6 +30,7 @@ pub mod invariant;
 pub mod responses;
 pub mod streaming;
 pub mod transport;
+pub mod usage;
 
 pub use adapters::{ProviderAdapter, adapter_by_name};
 pub use anthropic::{AnthropicMapper, GenericAnthropicAdapter};

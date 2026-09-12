@@ -277,7 +277,7 @@ impl FrameMapper for ResponsesMapper {
                     if let Some(usage) = response.get("usage")
                         && usage.is_object()
                     {
-                        events.push(StreamEvent::Usage(usage.clone()));
+                        events.push(StreamEvent::Usage(crate::usage::normalize_responses(usage)));
                     }
                 }
                 events.extend(self.flush());

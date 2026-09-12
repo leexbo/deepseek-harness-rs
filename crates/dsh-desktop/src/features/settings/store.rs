@@ -1,5 +1,5 @@
 //! 设置功能的 store 域:设置页路由/快照/onboarding、provider 编辑器
-//! (增删改/钥匙串/探测)、通用区偏好下拉(preset/权限/语言/busy-enter)
+//! (增删改/凭据/探测)、通用区偏好下拉(preset/权限/语言/busy-enter)
 //! 与全权确认。视图见 features::settings::views。
 
 use std::collections::{HashMap, HashSet};
@@ -78,7 +78,7 @@ pub(crate) struct SettingsStore {
     pub adding_provider: bool,
     /// 首运行 setup 卡已手动关闭的 provider(本会话内回退普通行)
     pub dismissed_setup: HashSet<String>,
-    /// 编辑卡 API key 输入(write-only;应用时经钥匙串落盘)
+    /// 编辑卡 API key 输入(write-only;应用时随条目存 settings)
     pub key_input: Option<Entity<InputState>>,
     /// provider 表单显示名输入
     pub set_form_name: Option<Entity<InputState>>,
@@ -597,8 +597,8 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 应用编辑/添加卡:key 非空先落钥匙串,再 upsert provider 字段;
-    /// 成功 → 保存通告 + 静默探测 + 刷新 + 关卡
+    /// 应用编辑/添加卡:key 非空随条目直存 settings(provider `api_key`);
+    /// 留空 = 保留已存值。成功 → 保存通告 + 静默探测 + 刷新 + 关卡
     pub fn apply_provider_editor(&mut self, cx: &mut Context<Self>) {
         let id = if let Some(id) = &self.settings.editing_provider {
             id.clone()
@@ -621,23 +621,19 @@ impl AppStore {
             .as_ref()
             .map(|i| i.read(cx).value().trim().to_string())
             .unwrap_or_default();
-        if !key.is_empty()
-            && let Err(e) = self.bridge.host().store_credential(
-                &id,
-                &key,
-                dsh_core::credentials::CredentialStore::Keychain,
-            )
-        {
-            self.push_local_notice(&format!("凭据写入失败:{}", e.message), cx);
-            return;
-        }
-        let existing_ref = self.settings.settings_snapshot["providers"]
+        let existing = self.settings.settings_snapshot["providers"]
             .as_array()
             .and_then(|ps| {
                 ps.iter()
                     .find(|p| p["id"].as_str() == Some(id.as_str()))
-                    .and_then(|p| p["credential_ref"].as_str().map(String::from))
+                    .cloned()
             });
+        let existing_ref = existing
+            .as_ref()
+            .and_then(|p| p["credential_ref"].as_str().map(String::from));
+        // 输入留空 = 不改已存 key(None = 保留,write-only 语义;
+        // 视图不回明文,不存在「从快照回填」)
+        let api_key = (!key.is_empty()).then_some(key);
         let model = self
             .settings
             .set_form_model
@@ -654,6 +650,7 @@ impl AppStore {
                 .unwrap_or_default(),
             dialect: self.settings.set_form_dialect.clone(),
             credential_ref: existing_ref,
+            api_key,
             default_model: if model.is_empty() { None } else { Some(model) },
             display_name: self
                 .settings
@@ -799,7 +796,7 @@ impl AppStore {
     }
 
     /// 从端点拉取可用模型:base_url/方言取表单;key = 表单值(空 = 交给
-    /// host 按既有四级链解析,仅已保存 provider 生效)。结果进弹层多选
+    /// host 按既有凭据链解析,仅已保存 provider 生效)。结果进弹层多选
     pub fn open_fetch_models(&mut self, provider_id: &str, cx: &mut Context<Self>) {
         let base_url = self
             .settings
@@ -912,10 +909,9 @@ impl AppStore {
         cx.notify();
         let store = cx.entity().clone();
         let host = self.bridge.host().clone();
-        let ws = self.bridge.host().workspace().to_path_buf();
         let rx = self
             .bridge
-            .call(async move { host.fetch_billing(&pid, &ws).await });
+            .call(async move { host.fetch_billing(&pid).await });
         cx.spawn(async move |_this, cx| {
             let result = rx.await.unwrap_or_else(|e| Err(format!("{e}")));
             store.update(cx, |s, cx| {
@@ -974,7 +970,6 @@ impl AppStore {
         cx.notify();
         let store = cx.entity().clone();
         let host = self.bridge.host().clone();
-        let ws = self.bridge.host().workspace().to_path_buf();
         let rx = self.bridge.call(async move {
             match cfg {
                 Some(cfg) => {
@@ -984,7 +979,7 @@ impl AppStore {
                     host.set_billing_cache(&pid, snap).map_err(|e| e.message)?;
                     Ok(())
                 }
-                None => host.fetch_billing(&pid, &ws).await,
+                None => host.fetch_billing(&pid).await,
             }
         });
         cx.spawn(async move |_this, cx| {

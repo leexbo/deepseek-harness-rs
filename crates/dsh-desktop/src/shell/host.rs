@@ -51,6 +51,8 @@ impl HostBridge {
             Some(root) => AppHost::new_at(workspace, fake, api_key, root)?,
             None => AppHost::new(workspace, fake, api_key)?,
         });
+        // 外部编辑 settings.yaml 实时感知(吸收 + MCP 端口池同步)
+        host.start_settings_watcher();
         // 启动即探测模型清单(attach 前缓存就绪,不落到编造默认模型名)
         runtime.block_on(host.ensure_models());
 

@@ -48,17 +48,12 @@ impl StatsAgg {
                 let detail = &data["detail"];
                 if boundary == "llm" && op == "request-done" {
                     self.llm_ms += detail["durationMs"].as_i64().unwrap_or(0);
+                    // usage 为映射器归一后的规范形(见 dsh-llm::usage)
                     let usage = &detail["usage"];
-                    let pt = usage["prompt_tokens"].as_u64().unwrap_or(0);
+                    let pt = usage["input_tokens"].as_u64().unwrap_or(0);
                     self.input_tokens += pt;
-                    self.output_tokens += usage["completion_tokens"].as_u64().unwrap_or(0);
-                    // DeepSeek 顶层 prompt_cache_hit_tokens;OpenAI 兼容端点
-                    // 走嵌套 prompt_tokens_details.cached_tokens
-                    self.cached_tokens += usage["prompt_cache_hit_tokens"]
-                        .as_u64()
-                        .or(usage["cached_tokens"].as_u64())
-                        .or(usage["prompt_tokens_details"]["cached_tokens"].as_u64())
-                        .unwrap_or(0);
+                    self.output_tokens += usage["output_tokens"].as_u64().unwrap_or(0);
+                    self.cached_tokens += usage["cached_tokens"].as_u64().unwrap_or(0);
                     if pt > 0 {
                         self.context_used = pt;
                     }
@@ -134,9 +129,9 @@ mod tests {
             "detail": {
                 "durationMs": 1000,
                 "usage": {
-                    "prompt_tokens": prompt,
-                    "completion_tokens": completion,
-                    "prompt_cache_hit_tokens": cached,
+                    "input_tokens": prompt,
+                    "output_tokens": completion,
+                    "cached_tokens": cached,
                     "ttftMs": 200,
                 },
             },
@@ -179,8 +174,7 @@ mod tests {
         assert_eq!(a.to_json(Breakdown::default())["contextUsed"], 12_000);
     }
 
-    /// OpenAI 兼容端点的嵌套口径:prompt_tokens_details.cached_tokens
-    /// 也计入命中(DeepSeek 顶层字段优先)
+    /// 归一形只认规范键;非规范键(如 raw wire 形)计零不误报
     #[test]
     fn nested_cached_tokens_counted() {
         let mut a = StatsAgg::default();
@@ -189,9 +183,9 @@ mod tests {
             &json!({
                 "boundary": "llm", "operation": "request-done",
                 "detail": { "durationMs": 1000, "usage": {
-                    "prompt_tokens": 10_000,
-                    "completion_tokens": 100,
-                    "prompt_tokens_details": { "cached_tokens": 8_000 },
+                    "input_tokens": 10_000,
+                    "output_tokens": 100,
+                    "cached_tokens": 8_000,
                 }},
             }),
         );

@@ -2,12 +2,14 @@
 //!
 //! 承载运行时可变项:onboarding 完成态、provider 注册表([`ProviderEntry`)、
 //! 工作区级默认([`WorkspaceDefaults`],projectKey 键控——setter 落盘目标)。
-//! 文件为 `<DSH_RS_HOME|~/.dshrs>/settings.json`,与工作区 `dsh.toml`
+//! 文件为 `<DSH_RS_HOME|~/.dshrs>/settings.yaml`,与工作区 `dsh.toml`
 //! 分层(合并序:内置默认 < 本设置 < 工作区 dsh.toml < 会话内存覆盖)。
 //!
-//! 写入原子(tmp + rename,同目录保证 POSIX 原子性);损坏文件旁置备份后
-//! 回落内置默认——设置可重配,不值得拒启(与 fail-closed 不冲突:缺席
-//! 凭据的失败发生在装配层,那里才拒绝)。
+//! 写入原子(tmp + rename,同目录保证 POSIX 原子性);启动时损坏文件
+//! 旁置备份后回落内置默认——设置可重配,不值得拒启(与 fail-closed
+//! 不冲突:缺席凭据的失败发生在装配层,那里才拒绝)。运行中外部编辑
+//! 经 [`SettingsStore::reload_if_changed`] 吸收:解析失败保持内存旧值
+//! (编辑器半途保存不致配置清空)。
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -30,9 +32,11 @@ pub struct ProviderEntry {
     pub base_url: String,
     /// provider 方言(openai-chat / anthropic / openai-responses)
     pub dialect: String,
-    /// 凭据引用(`env:NAME` / `dotenv:NAME` / `keychain:SERVICE/ACCOUNT`;
-    /// None = 走默认链,见 `credentials::resolve_credential`)
+    /// 凭据引用(`env:NAME`;None = 走默认链,见 `credentials::resolve_credential`)
     pub credential_ref: Option<String>,
+    /// 凭证明文(设置文件直存;设置页录入即写此处)
+    #[serde(default)]
+    pub api_key: Option<String>,
     /// 默认模型(None = 装配默认 + 探测清单回落)
     pub default_model: Option<String>,
     /// 卡片显示名(缺席 = 用 id)
@@ -434,14 +438,14 @@ fn default_busy_enter() -> String {
     "queue".into()
 }
 
-/// 内置默认 provider(与历史装配默认同参:`DEEPSEEK_API_KEY` 环境变量
-/// 用户与既有的 env/`.env` 行为无感迁移)
+/// 内置默认 provider(凭据走默认环境变量名 `DEEPSEEK_API_KEY`)
 pub fn builtin_provider() -> ProviderEntry {
     ProviderEntry {
         id: "deepseek".into(),
         base_url: "https://api.deepseek.com/v1".into(),
         dialect: "openai-chat".into(),
         credential_ref: None,
+        api_key: None,
         default_model: None,
         display_name: None,
         models: Vec::new(),
@@ -490,21 +494,37 @@ impl SettingsFile {
     }
 }
 
-/// 设置存储:进程内单副本(Mutex 串行化)+ 文件原子写。
+/// 设置存储:进程内单副本(Mutex 串行化)+ 文件原子写 + 外部编辑吸收。
 ///
 /// `open` 不写盘(打开应用不产生写副作用);首次 `update` 才落盘。
+/// 运行中外部编辑器改动经 [`Self::reload_if_changed`] 吸收;`update`
+/// 落盘前也会先吸收外部版本,UI 保存不覆盖外部编辑。
 pub struct SettingsStore {
     path: PathBuf,
     inner: Mutex<SettingsFile>,
+    /// 上次读入/写出的文件 mtime(毫秒;None = 文件尚不存在)。
+    /// 外部编辑检测的快检依据
+    loaded_mtime: Mutex<Option<u128>>,
 }
 
 impl SettingsStore {
     /// 打开存储:文件缺失 → 内置默认;读取/解析/版本不符 → 旁置
     /// `settings.corrupt-<ms>` 备份后用内置默认(留人工恢复路径)。
     pub fn open(path: PathBuf) -> Self {
-        let file = match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<SettingsFile>(&text) {
-                Ok(f) if f.version == SETTINGS_VERSION => f,
+        let file = Self::read_file(&path).unwrap_or_default();
+        let loaded_mtime = file_mtime(&path);
+        Self {
+            path,
+            inner: Mutex::new(file),
+            loaded_mtime: Mutex::new(loaded_mtime),
+        }
+    }
+
+    /// 读盘解析(启动路径)。损坏/版本不符 → 旁置备份后回落默认
+    fn read_file(path: &std::path::Path) -> Option<SettingsFile> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => match serde_norway::from_str::<SettingsFile>(&text) {
+                Ok(f) if f.version == SETTINGS_VERSION => Some(f),
                 _ => {
                     let backup = path.with_extension(format!(
                         "corrupt-{}",
@@ -513,48 +533,86 @@ impl SettingsStore {
                             .map(|d| d.as_millis())
                             .unwrap_or(0)
                     ));
-                    let _ = std::fs::rename(&path, &backup);
+                    let _ = std::fs::rename(path, &backup);
                     eprintln!(
-                        "[dsh-core] settings.json 损坏或版本不符,已旁置 {} 后回落默认",
+                        "[dsh-core] settings.yaml 损坏或版本不符,已旁置 {} 后回落默认",
                         backup.display()
                     );
-                    SettingsFile::default()
+                    Some(SettingsFile::default())
                 }
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => SettingsFile::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(SettingsFile::default()),
             Err(e) => {
-                eprintln!("[dsh-core] settings.json 读取失败({e}),回落默认");
-                SettingsFile::default()
+                eprintln!("[dsh-core] settings.yaml 读取失败({e}),回落默认");
+                Some(SettingsFile::default())
             }
-        };
-        Self {
-            path,
-            inner: Mutex::new(file),
         }
     }
 
-    /// 当前快照(克隆)
+    /// 当前快照(克隆)。落盘文件 mtime 比内存记载新时先吸收外部编辑
+    /// (拉取式实时感知:打开设置页/装配点读取即最新)
     pub fn read(&self) -> SettingsFile {
+        self.reload_if_changed();
         self.inner
             .lock()
             .expect("settings 锁中毒(宿主 bug)")
             .clone()
     }
 
+    /// 外部编辑吸收:mtime 比上次读入/写出新 → 重读解析替换内存。
+    /// 解析失败保持内存旧值 + 日志(编辑器半途保存不致配置清空);
+    /// 旁置备份仅保留在启动 [`Self::open`] 语义
+    pub fn reload_if_changed(&self) -> bool {
+        let Some(mtime) = file_mtime(&self.path) else {
+            return false;
+        };
+        let mut loaded = self.loaded_mtime.lock().expect("settings 锁中毒(宿主 bug)");
+        if *loaded == Some(mtime) {
+            return false;
+        }
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("[dsh-core] settings.yaml 重读失败({e}),保持内存旧值");
+                return false;
+            }
+        };
+        match serde_norway::from_str::<SettingsFile>(&text) {
+            Ok(f) if f.version == SETTINGS_VERSION => {
+                *self.inner.lock().expect("settings 锁中毒(宿主 bug)") = f;
+                *loaded = Some(mtime);
+                true
+            }
+            _ => {
+                eprintln!("[dsh-core] settings.yaml 外部改动解析失败,保持内存旧值");
+                false
+            }
+        }
+    }
+
     /// 应用变更并原子落盘(草稿克隆上执行闭包;序列化或写盘失败时
-    /// 内存保持旧值,整次更新作废——不留「盘上新内存旧」的分裂态)。
+    /// 整次更新作废——不留「盘上新内存旧」的分裂态)。落盘前先吸收
+    /// 外部编辑,闭包在外部最新版上执行,UI 保存不覆盖外部改动
     pub fn update<R>(&self, f: impl FnOnce(&mut SettingsFile) -> R) -> anyhow::Result<R> {
+        self.reload_if_changed();
         let mut guard = self.inner.lock().expect("settings 锁中毒(宿主 bug)");
         let mut draft = guard.clone();
         let out = f(&mut draft);
-        let text = serde_json::to_string_pretty(&draft)?;
+        let text = serde_norway::to_string(&draft)?;
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let tmp = self.path.with_extension("json.tmp");
+        let tmp = self.path.with_file_name(format!(
+            "{}.tmp",
+            self.path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("settings.yaml")
+        ));
         std::fs::write(&tmp, &text)?;
         std::fs::rename(&tmp, &self.path)?;
         *guard = draft;
+        *self.loaded_mtime.lock().expect("settings 锁中毒(宿主 bug)") = file_mtime(&self.path);
         Ok(out)
     }
 
@@ -562,6 +620,15 @@ impl SettingsStore {
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
+}
+
+/// 文件 mtime(自 epoch 的毫秒;缺失 = None)
+fn file_mtime(path: &std::path::Path) -> Option<u128> {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
 }
 
 #[cfg(test)]
@@ -666,12 +733,12 @@ mod tests {
     /// 损坏文件:旁置备份 + 回落默认,原路径不再阻塞
     #[test]
     fn corrupt_file_sidecar_and_default() {
-        // 用目录包一层,保证文件名带 .json 后缀(与真实
-        // ~/.dshrs/settings.json 的 with_extension 行为一致)
+        // 用目录包一层,保证文件名带 .yaml 后缀(与真实
+        // ~/.dshrs/settings.yaml 的 with_extension 行为一致)
         let dir = temp_path("corrupt");
         std::fs::create_dir_all(&dir).expect("建目录");
-        let path = dir.join("settings.json");
-        std::fs::write(&path, "{ not json").expect("写损坏文件");
+        let path = dir.join("settings.yaml");
+        std::fs::write(&path, "{ not yaml").expect("写损坏文件");
         let store = SettingsStore::open(path.clone());
         assert_eq!(store.read(), SettingsFile::default());
         let sidecar = dir
@@ -695,9 +762,10 @@ mod tests {
     fn version_mismatch_treated_as_corrupt() {
         let dir = temp_path("ver");
         std::fs::create_dir_all(&dir).expect("建目录");
-        let path = dir.join("settings.json");
-        let mut text = serde_json::to_string(&SettingsFile::default()).unwrap();
-        text = text.replace("\"version\":1", "\"version\":99");
+        let path = dir.join("settings.yaml");
+        let text = serde_norway::to_string(&SettingsFile::default())
+            .expect("序列化默认")
+            .replace("version: 1", "version: 99");
         std::fs::write(&path, text).expect("写旧版本文件");
         let store = SettingsStore::open(path.clone());
         assert_eq!(store.read().version, 1);
@@ -710,7 +778,68 @@ mod tests {
         let path = temp_path("tmp");
         let store = SettingsStore::open(path.clone());
         store.update(|_| ()).expect("写");
-        assert!(!path.with_extension("json.tmp").exists());
+        let tmp = path.with_file_name(format!(
+            "{}.tmp",
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+        ));
+        assert!(!tmp.exists());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 外部编辑吸收:编辑器写盘后 read() 拿到新值;解析失败保持内存
+    /// 旧值(半途保存不致配置清空)
+    #[test]
+    fn external_edit_reloaded_on_read() {
+        let path = temp_path("ext");
+        let store = SettingsStore::open(path.clone());
+        store
+            .update(|s| {
+                s.onboarded = true;
+                s.providers.push(builtin_provider());
+            })
+            .expect("初版落盘");
+        // 外部编辑器直接改文件(mtime 变)
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            &path,
+            "version: 1\nonboarded: false\nworkspaces: {}\nproviders:\n  - id: acme\n    base_url: https://acme.example/v1\n    dialect: openai-chat\n    api_key: sk-ext\n",
+        )
+        .expect("外部写入");
+        let f = store.read();
+        assert!(!f.onboarded, "外部版本被吸收");
+        assert_eq!(f.providers[0].api_key.as_deref(), Some("sk-ext"));
+        // 解析失败 → 保持内存旧值
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, "{ not yaml").expect("外部写坏");
+        let f = store.read();
+        assert_eq!(f.providers[0].api_key.as_deref(), Some("sk-ext"));
+        assert_eq!(f.providers.len(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// update 前吸收外部版本:UI 保存不覆盖编辑器改动
+    #[test]
+    fn update_absorbs_external_edit_first() {
+        let path = temp_path("absorb");
+        let store = SettingsStore::open(path.clone());
+        store.update(|s| s.onboarded = true).expect("初版落盘");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            &path,
+            "version: 1\nonboarded: true\nworkspaces: {}\nproviders:\n  - id: acme\n    base_url: https://acme.example/v1\n    dialect: openai-chat\n",
+        )
+        .expect("外部加 provider");
+        store
+            .update(|s| s.workspaces.entry("--w--".into()).or_default().model = Some("m".into()))
+            .expect("UI 保存");
+        let f = SettingsStore::open(path.clone()).read();
+        assert!(
+            f.providers.iter().any(|p| p.id == "acme"),
+            "外部 provider 不被 UI 保存覆盖"
+        );
+        assert_eq!(f.workspace("--w--").model.as_deref(), Some("m"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -774,6 +903,7 @@ mod tests {
             base_url: "https://open.bigmodel.cn/api/anthropic".into(),
             dialect: "anthropic".into(),
             credential_ref: None,
+            api_key: None,
             default_model: Some("glm-4.7".into()),
             display_name: Some("智谱 GLM".into()),
             models: vec!["glm-4.7".into(), "glm-4.7-flash".into()],
