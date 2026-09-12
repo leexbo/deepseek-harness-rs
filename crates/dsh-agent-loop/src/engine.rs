@@ -1903,7 +1903,7 @@ mod streaming_tests {
             LlmEvent::Usage(serde_json::Value::Null),
             LlmEvent::Chunk("答".into()),
             LlmEvent::AssistantMessage(serde_json::json!({ "content": "答" })),
-            LlmEvent::Usage(serde_json::json!({ "prompt_tokens": 10, "completion_tokens": 5 })),
+            LlmEvent::Usage(serde_json::json!({ "input_tokens": 10, "output_tokens": 5 })),
             LlmEvent::Usage(serde_json::json!({ "ttftMs": 120 })),
             LlmEvent::Done,
         ]]);
@@ -1931,7 +1931,7 @@ mod streaming_tests {
             .expect("request-done 落档");
         assert_eq!(
             done.data["detail"]["usage"],
-            serde_json::json!({ "prompt_tokens": 10, "completion_tokens": 5, "ttftMs": 120 }),
+            serde_json::json!({ "input_tokens": 10, "output_tokens": 5, "ttftMs": 120 }),
             "null 帧让位,真实用量与 ttft 合并"
         );
     }

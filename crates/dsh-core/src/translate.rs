@@ -361,7 +361,7 @@ impl Translator {
                 self.last_usage = Some(json!({
                     "durationMs": detail["durationMs"].as_i64().unwrap_or(0),
                     "ttftMs": usage["ttftMs"].as_i64(),
-                    "completionTokens": usage["completion_tokens"].as_u64(),
+                    "outputTokens": usage["output_tokens"].as_u64(),
                 }));
                 return None;
             }
@@ -937,7 +937,7 @@ mod tests {
         assert_eq!(page.events[2].data["content"][0]["text"], "q2");
     }
     /// llm request-done 用量附着:audit 事件本身丢弃,但下一个
-    /// assistant/message 的 data 携带 usage(durationMs/ttftMs/completionTokens)
+    /// assistant/message 的 data 携带 usage(durationMs/ttftMs/outputTokens)
     #[test]
     fn usage_attached_to_assistant_message() {
         let mut tr = Translator::new(info());
@@ -950,7 +950,7 @@ mod tests {
                     "boundary": "llm",
                     "operation": "request-done",
                     "detail": { "durationMs": 3400, "usage": {
-                        "completion_tokens": 120, "ttftMs": 500 } },
+                        "output_tokens": 120, "ttftMs": 500 } },
                 })
             ))
             .is_none(),
@@ -961,7 +961,7 @@ mod tests {
             .expect("assistant/message");
         assert_eq!(
             out.data["usage"],
-            json!({ "durationMs": 3400, "ttftMs": 500, "completionTokens": 120 })
+            json!({ "durationMs": 3400, "ttftMs": 500, "outputTokens": 120 })
         );
         // 用量只附着一次:下一个 message 无 usage
         let next = tr

@@ -473,10 +473,9 @@ fn deepseek_responses_stream_reasoning_and_usage() {
             StreamEvent::Reasoning(" thinking…".into()),
             StreamEvent::Chunk("Hel".into()),
             StreamEvent::Chunk("lo".into()),
-            // 终结帧:先 usage 再定稿消息,最后 Done
+            // 终结帧:先 usage(归一形)再定稿消息,最后 Done
             StreamEvent::Usage(json!({
-                "input_tokens": 10, "output_tokens": 5,
-                "output_tokens_details": {"reasoning_tokens": 3}
+                "input_tokens": 10, "output_tokens": 5, "reasoning_tokens": 3
             })),
             StreamEvent::AssistantMessage(json!({
                 "content": "Hello", "tool_calls": []

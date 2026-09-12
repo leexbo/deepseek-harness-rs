@@ -59,7 +59,7 @@ pub enum ChatNode {
         reasoning: String,
         /// 流式进行中
         streaming: bool,
-        /// 定稿用量(durationMs/ttftMs/completionTokens)
+        /// 定稿用量(durationMs/ttftMs/outputTokens)
         usage: Option<Value>,
         /// 持久消息 id(assistant/message 落档;反馈定位 key)
         message_id: String,
@@ -627,7 +627,7 @@ impl ChatState {
             };
             let ms = u["durationMs"].as_i64()?;
             let ttft = u["ttftMs"].as_i64().unwrap_or(0);
-            let toks = u["completionTokens"].as_u64().unwrap_or(0);
+            let toks = u["outputTokens"].as_u64().unwrap_or(0);
             let mut meta = format!("耗时 {}", fmt_duration(ms));
             if ttft > 0 {
                 meta.push_str(&format!(" · 首 token {ttft}ms"));
@@ -1117,7 +1117,7 @@ mod tests {
                     "turn": 1, "step": 1,
                     "message": { "id": "m1", "role": "assistant",
                         "content": [ { "type": "text", "text": "hello" } ] },
-                    "usage": { "durationMs": 100, "ttftMs": 50, "completionTokens": 5 },
+                    "usage": { "durationMs": 100, "ttftMs": 50, "outputTokens": 5 },
                 }),
             ),
             ev(

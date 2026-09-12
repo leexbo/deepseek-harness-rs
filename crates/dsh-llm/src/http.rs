@@ -81,6 +81,32 @@ fn parse_retry_after_ms(v: &str) -> Option<u64> {
         .filter(|ms| *ms > 0)
 }
 
+/// 首块是否 SSE 帧(字段行 data:/event:/id:/retry: / 注释行;容忍空白前缀)
+fn looks_like_sse(first: &[u8]) -> bool {
+    let t = String::from_utf8_lossy(first);
+    let t = t.trim_start();
+    ["data:", "event:", "id:", "retry:", ":"]
+        .iter()
+        .any(|p| t.starts_with(p))
+}
+
+/// 2xx 但响应体不是 SSE:端点可能以 200 + JSON 错误体应答(bigmodel
+/// 坏 key 实测形态)。体含 `error` 对象且 `code` 可解释为 HTTP 状态
+/// → 按状态归类(401/403 → AUTH,不可重试);其余返回 None,交由
+/// 引擎按空响应处理(既有语义)
+fn classify_body_error(body: &str) -> Option<TransportError> {
+    let trimmed = body.trim_start();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    let v: Value = serde_json::from_str(body).ok()?;
+    let code = v["error"]["code"]
+        .as_u64()
+        .or_else(|| v["error"]["code"].as_str()?.parse::<u64>().ok())?;
+    let status = reqwest::StatusCode::from_u16(u16::try_from(code).ok()?).ok()?;
+    Some(classify_status(status, None, body.to_string()))
+}
+
 /// 连接建立超时(TCP+TLS)
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// 读超时:任意两次字节间的最长等待。覆盖「请求已发出但服务端零
@@ -195,8 +221,19 @@ impl LlmTransport for HttpTransport {
         let mut first_chunk_at: Option<std::time::Duration> = None;
         let mut decoder = MappedDecoder::new(self.config.stream_mode, self.adapter.mapper());
         let mut events = Vec::new();
+        // 200 + 非 SSE 体(坏 key 时端点以 200 + JSON 错误体应答):整段
+        // 攒为错误体,循环结束后归类
+        let mut sse_confirmed = false;
+        let mut error_body = String::new();
         let mut response = response;
         while let Some(chunk) = response.chunk().await.map_err(classify_reqwest)? {
+            if !sse_confirmed {
+                if !looks_like_sse(&chunk) {
+                    error_body.push_str(&String::from_utf8_lossy(&chunk));
+                    continue;
+                }
+                sse_confirmed = true;
+            }
             for event in decoder.feed(&chunk) {
                 if let Some(mapped) = map_event(event) {
                     if first_chunk_at.is_none() && matches!(mapped, LlmEvent::Chunk(_)) {
@@ -205,6 +242,11 @@ impl LlmTransport for HttpTransport {
                     events.push(mapped);
                 }
             }
+        }
+        if !error_body.is_empty()
+            && let Some(err) = classify_body_error(&error_body)
+        {
+            return Err(err);
         }
         for event in decoder.finish() {
             if let Some(mapped) = map_event(event) {
@@ -263,8 +305,18 @@ impl LlmTransport for HttpTransport {
         let started = std::time::Instant::now();
         let mut first_chunk_at: Option<std::time::Duration> = None;
         let mut decoder = MappedDecoder::new(self.config.stream_mode, self.adapter.mapper());
+        // 200 + 非 SSE 体:同 collect 路径,攒错误体归类
+        let mut sse_confirmed = false;
+        let mut error_body = String::new();
         let mut response = response;
         while let Some(chunk) = response.chunk().await.map_err(classify_reqwest)? {
+            if !sse_confirmed {
+                if !looks_like_sse(&chunk) {
+                    error_body.push_str(&String::from_utf8_lossy(&chunk));
+                    continue;
+                }
+                sse_confirmed = true;
+            }
             for event in decoder.feed(&chunk) {
                 if let Some(mapped) = map_event(event) {
                     if std::env::var_os("DSH_PROBE").is_some() {
@@ -282,6 +334,11 @@ impl LlmTransport for HttpTransport {
                     let _ = tx.send(mapped);
                 }
             }
+        }
+        if !error_body.is_empty()
+            && let Some(err) = classify_body_error(&error_body)
+        {
+            return Err(err);
         }
         for event in decoder.finish() {
             if let Some(mapped) = map_event(event) {

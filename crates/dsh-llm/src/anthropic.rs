@@ -259,8 +259,9 @@ impl FrameMapper for AnthropicMapper {
         match v["type"].as_str().unwrap_or_default() {
             "message_start" => {
                 let usage = v["message"]["usage"].clone();
-                if usage.as_object().is_some_and(|o| !o.is_empty()) {
-                    vec![StreamEvent::Usage(usage)]
+                let normalized = crate::usage::normalize_anthropic(&usage);
+                if normalized.as_object().is_some_and(|o| !o.is_empty()) {
+                    vec![StreamEvent::Usage(normalized)]
                 } else {
                     Vec::new()
                 }
@@ -311,11 +312,14 @@ impl FrameMapper for AnthropicMapper {
                 Vec::new()
             }
             "message_delta" => {
-                // stop_reason 与增量 usage
-                if v["usage"].is_object() {
-                    vec![StreamEvent::Usage(v["usage"].clone())]
-                } else {
-                    Vec::new()
+                // stop_reason 与增量 usage(归一;输出侧累计帧)
+                let usage = v["usage"]
+                    .as_object()
+                    .map(|_| crate::usage::normalize_anthropic(&v["usage"]))
+                    .filter(|u| u.as_object().is_some_and(|o| !o.is_empty()));
+                match usage {
+                    Some(u) => vec![StreamEvent::Usage(u)],
+                    None => Vec::new(),
                 }
             }
             "message_stop" => {

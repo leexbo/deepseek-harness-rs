@@ -428,10 +428,14 @@ fn send_roundtrip(
     let key = if fake {
         String::new()
     } else {
-        // 测试 cwd 在 crate 目录;key 从仓库根 .env 读(与 CLI 同源)
-        std::env::set_current_dir(env!("CARGO_MANIFEST_DIR").to_owned() + "/../..")
-            .expect("回到仓库根失败");
-        dsh_core::Resolved::resolve_api_key(None).expect("api key 解析失败")
+        // 真实模式用例依赖环境变量 DEEPSEEK_API_KEY(缺席则跳过)
+        match std::env::var("DEEPSEEK_API_KEY") {
+            Ok(v) if !v.is_empty() => v,
+            _ => {
+                eprintln!("[skip] 真实模式 send_roundtrip 需要 DEEPSEEK_API_KEY");
+                return;
+            }
+        }
     };
     let root = std::env::temp_dir().join(format!(
         "dsh-desktop-send-{}-{}",

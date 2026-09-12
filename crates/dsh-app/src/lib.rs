@@ -122,71 +122,15 @@ impl Resolved {
         })
     }
 
-    /// API key:CLI 参数 > DEEPSEEK_API_KEY 环境变量 > cwd `.env` 文件。
+    /// API key:CLI 参数 > DEEPSEEK_API_KEY 环境变量。
     ///
-    /// `.env` 回退覆盖「source 未 export 的 shell 变量子进程不可见」
-    /// 场景。只读取 DEEPSEEK_API_KEY 一项,不回显。
+    /// 只读取 DEEPSEEK_API_KEY 一项,不回显。本地 provider 密钥
+    /// 存设置文件(provider `api_key`),不依赖进程环境。
     pub fn resolve_api_key(cli_key: Option<String>) -> Result<String> {
         cli_key
             .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())
-            .or_else(|| dotenv_key("DEEPSEEK_API_KEY"))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "需要 --api-key、环境变量 DEEPSEEK_API_KEY 或 .env 中的 DEEPSEEK_API_KEY"
-                )
-            })
+            .ok_or_else(|| anyhow::anyhow!("需要 --api-key 或环境变量 DEEPSEEK_API_KEY"))
     }
-}
-
-/// 从 cwd 的 `.env` 读单个键(`KEY=VALUE` 行,容忍引号与空白;
-/// 文件缺失/键不存在返回 None)
-fn dotenv_key(key: &str) -> Option<String> {
-    dotenv_key_at(std::path::Path::new("."), key)
-}
-
-/// 从指定目录的 `.env` 读单个键(凭据 seam 的工作区级回退;
-/// 解析行为与 cwd 版一致,由 [`dotenv_value`] 单测锁定)
-pub fn dotenv_key_at(dir: &Path, key: &str) -> Option<String> {
-    let text = std::fs::read_to_string(dir.join(".env")).ok()?;
-    dotenv_value(&text, key)
-}
-
-/// 把键值写入目录 `.env`(已有该键则整行替换,否则追加;
-/// 文件不存在则创建)。值含换行时拒绝(行式格式不容纳)。
-pub fn write_dotenv_key(dir: &Path, key: &str, value: &str) -> Result<()> {
-    if value.contains('\n') || value.contains('\r') {
-        anyhow::bail!("凭据值含换行,无法写入 .env 行式格式");
-    }
-    let path = dir.join(".env");
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let prefix = format!("{key}=");
-    let mut lines: Vec<String> = text.lines().map(String::from).collect();
-    let mut newline = format!("{prefix}{value}");
-    match lines.iter_mut().find(|l| l.trim().starts_with(&prefix)) {
-        Some(line) => *line = std::mem::take(&mut newline),
-        None => {
-            if !lines.is_empty() && !text.ends_with('\n') {
-                lines.push(String::new()); // 原末行无换行时先补空行再追加
-            }
-            lines.push(newline);
-        }
-    }
-    let out = format!("{}\n", lines.join("\n"));
-    std::fs::write(&path, out).with_context(|| format!("写入 {} 失败", path.display()))
-}
-
-/// `.env` 文本中取单个键的值(纯函数,解析行为由单测锁定)
-fn dotenv_value(text: &str, key: &str) -> Option<String> {
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix(&format!("{key}=")) {
-            let value = rest.trim().trim_matches('"').trim_matches('\'');
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
 }
 
 /// prompt 组装的静态部分(会话期不变;模式/计划态每 turn 从日志读)
@@ -623,7 +567,7 @@ pub fn load_log(path: &str) -> Result<EventLog> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dotenv_value, load_log, prompt_parts};
+    use super::{load_log, prompt_parts};
 
     #[test]
     fn prompt_parts_two_sentence_identity_with_interpolation() {
@@ -663,25 +607,6 @@ mod tests {
         let header = crate::build_header(&parts, &log.lock().expect("测试日志锁"));
         assert!(header.system.contains("Check the [exit code: N] marker"));
         assert!(!header.system.contains("# Check the"), "工具节无标题");
-    }
-
-    #[test]
-    fn dotenv_parsing() {
-        let text = "\
-# comment
-DEEPSEEK_API_KEY=sk-abc
-OTHER=\"quoted value\"
-EMPTY=
-";
-        assert_eq!(
-            dotenv_value(text, "DEEPSEEK_API_KEY").as_deref(),
-            Some("sk-abc")
-        );
-        assert_eq!(dotenv_value(text, "OTHER").as_deref(), Some("quoted value"));
-        // 空值/缺失键/前缀撞名都取不到
-        assert_eq!(dotenv_value(text, "EMPTY"), None);
-        assert_eq!(dotenv_value(text, "MISSING"), None);
-        assert_eq!(dotenv_value(text, "DEEPSEEK"), None);
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! 桌面为唯一 UI)。关窗即退出。
 //!
 //! 用法:`dsh-desktop [--workspace <dir>] [--fake]`
-//! - workspace 默认当前目录(api key 按 dsh 约定从环境/.env 解析);
+//! - workspace 默认当前目录(api key 从环境变量解析);
 //! - fake 用假 provider 驱动(自检/演示)。
 
 // Windows release 下不弹控制台
@@ -54,9 +54,9 @@ fn main() {
     let workspace = args
         .workspace
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    // 真实模式凭据:env/.env 有则注入(最高优先);缺席不拒启——
-    // 四级链还可在运行时从设置/钥匙串解析,首运行 onboarding
-    // 也依赖「无 key 可进应用」
+    // 真实模式凭据:环境变量有则注入(最高优先);缺席不拒启——
+    // 凭据链还可在运行时从设置(provider api_key)解析,首运行
+    // onboarding 也依赖「无 key 可进应用」
     let api_key = if args.fake {
         String::new()
     } else {
