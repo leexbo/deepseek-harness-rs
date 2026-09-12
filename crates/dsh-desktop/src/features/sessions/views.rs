@@ -640,8 +640,15 @@ pub fn ws_menu_card(
         Some(i) => (i > 0, i + 1 < names.len(), i == 0),
         None => (false, false, false),
     };
-    let (rename, up, down, remove) = (store.clone(), store.clone(), store.clone(), store.clone());
-    let (wid_r, wid_u, wid_d, wid_x) = (
+    let (rename, up, down, remove, clear) = (
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
+    );
+    let (wid_r, wid_u, wid_d, wid_x, wid_c) = (
+        ws.to_string(),
         ws.to_string(),
         ws.to_string(),
         ws.to_string(),
@@ -692,6 +699,14 @@ pub fn ws_menu_card(
                 },
             ))
         })
+        .child(menu_item(
+            "清空会话",
+            fixed(IconName::Delete, 13.),
+            move |_, _, cx| {
+                let id = wid_c.clone();
+                clear.update(cx, |st, cx| st.ask_clear_workspace_sessions(&id, cx));
+            },
+        ))
         .when(!is_default, |el| {
             el.child(menu_item(
                 "移除",

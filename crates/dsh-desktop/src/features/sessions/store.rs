@@ -14,6 +14,15 @@ use crate::shell::reducer;
 use crate::shell::store::AppStore;
 use dsh_core::proto::HistoryValue;
 
+/// 待确认删除目标(单会话 / 工作区全部会话;确认模态按形态呈现)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeleteTarget {
+    /// 单会话 id
+    One(String),
+    /// 工作区全部会话(名 + 侧栏清单 id 集;隐藏子代理由宿主级联)
+    Workspace { name: String, ids: Vec<String> },
+}
+
 /// 会话与工作区树功能切片状态(侧栏行/组/工作区菜单开态与坐标锚、
 /// 重命名与删除目标、工作区路径/标题/分支表、折叠组)。
 #[derive(Default)]
@@ -24,8 +33,8 @@ pub(crate) struct SessionsStore {
     pub row_menu_pos: Option<gpui_kit::Point<gpui_kit::Pixels>>,
     /// 重命名目标会话
     pub rename_target: Option<String>,
-    /// 待确认删除的会话(确认模态)
-    pub delete_target: Option<String>,
+    /// 待确认删除目标(确认模态)
+    pub delete_target: Option<DeleteTarget>,
     /// 重命名输入态(挂窗后建)
     pub rename_input: Option<Entity<InputState>>,
     /// 标题栏工作区下拉开态
@@ -478,17 +487,43 @@ impl AppStore {
 
     /// 打开删除确认(菜单「删除」入口;确认后才执行)
     pub fn ask_delete_session(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.sessions.delete_target = Some(id.to_string());
+        self.sessions.delete_target = Some(DeleteTarget::One(id.to_string()));
         self.sessions.menu_open_session = None;
+        cx.notify();
+    }
+
+    /// 工作区行菜单「清空会话」:收集该工作区全部会话进确认模态
+    /// (隐藏子代理不在侧栏清单,由宿主级联带走)
+    pub fn ask_clear_workspace_sessions(&mut self, ws: &str, cx: &mut Context<Self>) {
+        self.sessions.menu_open_ws = None;
+        let default = self.default_workspace();
+        let ids: Vec<String> = self
+            .state
+            .sessions
+            .iter()
+            .filter(|s| reducer::workspace_of(&s.session_id, &default) == ws)
+            .map(|s| s.session_id.clone())
+            .collect();
+        if ids.is_empty() {
+            cx.notify();
+            return;
+        }
+        self.sessions.delete_target = Some(DeleteTarget::Workspace {
+            name: ws.to_string(),
+            ids,
+        });
         cx.notify();
     }
 
     /// 确认删除(执行并收模态)
     pub fn confirm_delete_session(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.sessions.delete_target.take() else {
+        let Some(target) = self.sessions.delete_target.take() else {
             return;
         };
-        self.delete_session(&id, cx);
+        match target {
+            DeleteTarget::One(id) => self.delete_session(&id, cx),
+            DeleteTarget::Workspace { ids, .. } => self.delete_sessions(&ids, cx),
+        }
         cx.notify();
     }
 
@@ -504,8 +539,36 @@ impl AppStore {
             self.push_local_notice(&format!("删除失败:{}", e.message), cx);
             return;
         }
+        let ids = [id.to_string()];
+        self.after_local_delete(&ids, cx);
+    }
+
+    /// 批量删除(工作区清空):逐个走宿主(子代理级联在宿主侧);
+    /// 已被级联带走的子代理(id 不存在)容忍跳过
+    pub fn delete_sessions(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        for id in ids {
+            if let Err(e) = self.bridge.host().delete_session(id)
+                && e.code != "session-not-found"
+            {
+                self.push_local_notice(&format!("删除失败:{}", e.message), cx);
+                return;
+            }
+        }
+        self.after_local_delete(ids, cx);
+    }
+
+    /// 删除后的本地收口:刷新清单(含宿主级联带走的子代理),当前
+    /// 会话若已不在活清单(被直接删或作为子代理被级联删)→ 切「剩余
+    /// 首个,无则新建」。按活清单校验而非被删 ids——级联删除的会话
+    /// 不在 ids 里,漏检会留下幽灵视图
+    fn after_local_delete(&mut self, _ids: &[String], cx: &mut Context<Self>) {
         self.refresh_list();
-        if self.state.current_id.as_deref() == Some(id) {
+        let current_gone = self
+            .state
+            .current_id
+            .as_deref()
+            .is_none_or(|c| !self.state.sessions.iter().any(|s| s.session_id == c));
+        if current_gone {
             match self.state.sessions.first().map(|s| s.session_id.clone()) {
                 Some(next) => self.open_session(&next, cx),
                 None => self.create_session(cx),

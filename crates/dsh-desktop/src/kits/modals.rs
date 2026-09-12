@@ -282,15 +282,24 @@ pub(crate) fn rename_modal(store: &Entity<AppStore>, cx: &App) -> impl IntoEleme
         )
 }
 
-/// 删除会话确认模态(mask + 小卡;点遮罩/取消 = 关闭,「删除」执行)
+/// 删除会话确认模态(mask + 小卡;点遮罩/取消 = 关闭,「删除」执行。
+/// 单会话/工作区清空两形态,标题与主体行按目标呈现)
 pub(crate) fn delete_confirm_modal(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let st = store.read(cx);
-    let id = st
+    let target = st
         .sessions
         .delete_target
         .clone()
         .expect("delete_target 在场");
-    let title = st.title_for(&id);
+    let (head, subject) = match &target {
+        crate::features::sessions::store::DeleteTarget::One(id) => {
+            ("删除会话".to_string(), st.title_for(id))
+        }
+        crate::features::sessions::store::DeleteTarget::Workspace { name, ids } => (
+            "清空会话".to_string(),
+            format!("{name} · {} 个会话(隐藏子代理一并移除)", ids.len()),
+        ),
+    };
     let (ok, cancel, mask) = (store.clone(), store.clone(), store.clone());
     div()
         .id("delete-overlay")
@@ -332,7 +341,7 @@ pub(crate) fn delete_confirm_modal(store: &Entity<AppStore>, cx: &App) -> impl I
                             div()
                                 .text_size(px(14.))
                                 .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                .child("删除会话"),
+                                .child(head),
                         ),
                 )
                 .child(
@@ -357,7 +366,7 @@ pub(crate) fn delete_confirm_modal(store: &Entity<AppStore>, cx: &App) -> impl I
                                         .min_w(px(0.))
                                         .truncate()
                                         .text_color(theme::LABEL_2())
-                                        .child(title),
+                                        .child(subject),
                                 ),
                         )
                         .child(

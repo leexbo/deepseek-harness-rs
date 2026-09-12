@@ -1934,7 +1934,9 @@ fn session_row_menu_deletes_session(cx: &mut TestAppContext) {
     );
     assert_eq!(
         cx.update(|app| store.read(app).sessions.delete_target.clone()),
-        Some(s2.clone()),
+        Some(crate::features::sessions::store::DeleteTarget::One(
+            s2.clone()
+        )),
         "确认目标应为 s2"
     );
     // 先验证取消路径:点「取消」不删除
