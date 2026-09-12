@@ -48,9 +48,11 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
             .blur_radius(gpui_kit::px(10.)),
         ])
         .child(attachments::draft_rail(store, cx))
-        // 输入卡总高捕获(渲染期 paint;composer 下拉锚卡的定位分子,
-        // 见 ChatState.composer_h)。absolute 层不占 flex 位、无 hitbox
-        // 不挡交互;变化守卫在 note_composer_h(防每帧 notify 死循环)
+        // 输入卡总高/宽捕获(渲染期 paint;composer 下拉锚卡的定位分子
+        // 与命令/技能菜单卡的「跟输入卡同宽」宽度来源,见
+        // ChatState.composer_h / composer_w)。absolute 层不占 flex 位、
+        // 无 hitbox 不挡交互;变化守卫在 note_composer_size(防每帧
+        // notify 死循环)
         .child({
             let cap = store.clone();
             div()
@@ -60,8 +62,10 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 .child(
                     gpui_kit::canvas(
                         move |b, _, cx| {
-                            let h = b.size.height.as_f32();
-                            cap.update(cx, |st, cx| st.note_composer_h(h, cx));
+                            let size = b.size;
+                            cap.update(cx, |st, cx| {
+                                st.note_composer_size(size.width.as_f32(), size.height.as_f32(), cx)
+                            });
                         },
                         |_, _, _, _| {},
                     )
@@ -276,7 +280,14 @@ fn bottom_row(
         .child(menu_slot(
             cmd_trigger,
             (menu == ComposerMenu::Commands)
-                .then(|| commands_card(store, cmds.clone(), &st.chat.skill_entries)),
+                .then(|| {
+                    commands_card(
+                        store,
+                        cmds.clone(),
+                        &st.chat.skill_entries,
+                        st.chat.composer_w,
+                    )
+                }),
             anchor_bottom,
         ))
         // 「+」与模式 chips 之间的细竖线分组
@@ -425,7 +436,7 @@ fn at_completion_card(
             );
         }
     }
-    menu_card(rows)
+    menu_card(rows, None)
 }
 
 /// @ 补全单行(图标 + label;默认素底,高亮/hover 灰底)
@@ -518,6 +529,7 @@ fn commands_card(
     store: &Entity<AppStore>,
     cmds: Vec<dsh_core::registry::CommandDescriptor>,
     skills: &[super::store::SkillEntry],
+    composer_w: f32,
 ) -> gpui_kit::AnyElement {
     let mut rows: Vec<gpui_kit::AnyElement> = vec![section_label("添加").into_any_element()];
     rows.push(
@@ -606,7 +618,11 @@ fn commands_card(
             );
         }
     }
-    menu_card(rows)
+    // 跟输入卡同宽(拍板):无宽度约束时 taffy 文本按 max-content
+    // 定宽,长描述把卡撑到超窗、行内 truncate 永不生效。触发钮距卡左
+    // 缘 10px(bottom_row 内边距),减 10 对齐卡右缘;首帧捕获 0 →
+    // 不约束,下一帧校准(同 composer_h 锚定模式)
+    menu_card(rows, (composer_w > 0.).then(|| composer_w - 10.))
 }
 
 /// 指令行(源 CommandMenu 行:命令名黑 semibold + 描述灰同行;
@@ -773,7 +789,7 @@ fn context_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                 .into_any_element(),
         );
     }
-    menu_card(children)
+    menu_card(children, None)
 }
 
 /// 权限下拉卡(选项来自 describe permissions;当前值勾选)。
@@ -810,7 +826,7 @@ pub(crate) fn permission_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::A
             .into_any_element()
         })
         .collect();
-    menu_card(rows)
+    menu_card(rows, None)
 }
 
 /// 模型 + 推理等级下拉(模型表空则略模型区;等级 low/high/max)
@@ -925,7 +941,7 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
     }
     // ── 级联子卡(模型选择;挂主卡左侧,右缘窗口放不下右侧)──
     let sub = st.chat.composer_submenu;
-    let main = menu_card(rows);
+    let main = menu_card(rows, None);
     let mut wrap = div().relative().child(main);
     if sub == Some(crate::features::chat::ComposerSubmenu::Models) {
         let mut sub_rows: Vec<gpui_kit::AnyElement> = vec![];
@@ -1026,11 +1042,18 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
 /// flex 容器 + overflow scroll 在 taffy 中 min-content 泄内容高)。
 /// 浮层面浅色取白(白底;灰 LAYER 是画布 hover 语言)、
 /// 深色取 LAYER(浮层比画布亮一阶)
-fn menu_card(children: Vec<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
+/// 菜单卡(分区行列表浮层)。max_w 传入时宽度收敛——taffy 无约束
+/// 文本按 max-content 定宽,长内容行必须外部给约束,行内 truncate
+/// 才会生效(at 补全由锚定层 left/right 定宽,传 None 即可)
+fn menu_card(
+    children: Vec<gpui_kit::AnyElement>,
+    max_w: Option<f32>,
+) -> gpui_kit::AnyElement {
     div()
         .id("composer-menu-card")
         .debug_selector(|| "composer-menu-card".to_string())
         .min_w(px(220.))
+        .when_some(max_w, |el, w| el.max_w(px(w)))
         .max_h(px(300.))
         .overflow_y_scroll()
         .rounded(px(12.))
