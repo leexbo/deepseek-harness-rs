@@ -1190,7 +1190,12 @@ fn plan_archive_card(
                     .overflow_y_scroll()
                     .text_size(px(13.))
                     .text_color(theme::LABEL_2())
-                    .child(crate::kits::markdown::render(key, plan)),
+                    .child(crate::kits::markdown::render(
+                        key,
+                        plan,
+                        crate::kits::markdown::CHAT_ORDER_BASE
+                            + (1 + ix as u64) * crate::kits::markdown::ORDER_STRIDE,
+                    )),
             )
         })
 }
@@ -1254,12 +1259,22 @@ fn user_bubble(
 /// [`gpui_kit::base::SelectableText`] 参与窗口选择(拖选/复制)。
 fn bubble_rich_text(ix: usize, text: &str) -> impl IntoElement {
     let tokens = super::reference::scan_at_tokens(text);
+    // 气泡 order:聊天域 + 消息序 × 步长 + 段序(与 assistant 正文/
+    // 计划卡同一公式;分区背景见 markdown::PANEL_ORDER_BASE 注释)
+    let order = |seg: usize| {
+        crate::kits::markdown::CHAT_ORDER_BASE
+            + (1 + ix as u64) * crate::kits::markdown::ORDER_STRIDE
+            + seg as u64
+    };
     if tokens.is_empty() {
         return div()
-            .child(gpui_kit::base::SelectableText::new(
-                gpui_kit::SharedString::from(format!("user-sel-{ix}-0")),
-                text.to_string(),
-            ))
+            .child(
+                gpui_kit::base::SelectableText::new(
+                    gpui_kit::SharedString::from(format!("user-sel-{ix}-0")),
+                    text.to_string(),
+                )
+                .document_order(order(0)),
+            )
             .into_any_element();
     }
     let mut children: Vec<gpui_kit::AnyElement> = Vec::new();
@@ -1275,10 +1290,10 @@ fn bubble_rich_text(ix: usize, text: &str) -> impl IntoElement {
         *seg += 1;
         children.push(
             div()
-                .child(gpui_kit::base::SelectableText::new(
-                    id,
-                    text[range].to_string(),
-                ))
+                .child(
+                    gpui_kit::base::SelectableText::new(id, text[range].to_string())
+                        .document_order(order(*seg)),
+                )
                 .into_any_element(),
         );
     };
@@ -1417,11 +1432,19 @@ fn assistant_block(
         // mermaid 卡片集:动作钩子 + per-key 状态快照(控件在卡片上,
         // 放大/缩放/下载/图表-代码切换;查看器是纯图,不把控件带进去)
         let cards = build_mermaid_cards(&s, cx);
+        let order = crate::kits::markdown::CHAT_ORDER_BASE
+            + (1 + ix as u64) * crate::kits::markdown::ORDER_STRIDE;
         col = col.child(if streaming {
-            crate::kits::markdown::render_streaming_clickable(&key, text, Some(cards.clone()))
-                .into_any_element()
+            crate::kits::markdown::render_streaming_clickable(
+                &key,
+                text,
+                Some(cards.clone()),
+                order,
+            )
+            .into_any_element()
         } else {
-            crate::kits::markdown::render_clickable(&key, text, Some(cards)).into_any_element()
+            crate::kits::markdown::render_clickable(&key, text, Some(cards), order)
+                .into_any_element()
         });
         // 定稿后可复制(流式中复制半截无意义);正文下方左对齐
         // 常显动作行(文档流内,非浮层)= 复制 + 消息反馈(赞/踩/备注)

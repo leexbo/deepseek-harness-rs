@@ -523,12 +523,13 @@ fn panel_plan_content(latest: Option<(String, PlanStatus)>) -> impl IntoElement 
                                 .child(status_text),
                         ),
                 )
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .text_color(theme::LABEL_2())
-                        .child(crate::kits::markdown::render("panel-plan", &plan)),
-                );
+                .child(div().text_size(px(13.)).text_color(theme::LABEL_2()).child(
+                    crate::kits::markdown::render(
+                        "panel-plan",
+                        &plan,
+                        crate::kits::markdown::PANEL_ORDER_BASE,
+                    ),
+                ));
         }
     }
     col

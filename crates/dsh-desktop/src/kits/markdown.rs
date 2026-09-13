@@ -28,10 +28,23 @@ use super::cache::MemoCache;
 use gpui_kit::{InteractiveElement, StatefulInteractiveElement};
 use gpui_kit::{IntoElement, ParentElement, Styled, div, px};
 
+/// 聊天列文档 order 基址(SelectableText 的 document_order 分区,见
+/// [`PANEL_ORDER_BASE`] 注释)。
+pub const CHAT_ORDER_BASE: u64 = 1 << 20;
+/// 右栏(轨迹/计划卡)文档 order 基址。gpui-base 选择契约:跨参与者
+/// 圈选按 order 区间 [min..=max],`SelectableText` 未设置时全部为 0,
+/// 跨段拖选会把窗口内一切可选文本整段卷入(聊天拖选泄漏到右栏的
+/// 根因)。两域基址互不相交;文档序 × [`ORDER_STRIDE`] + 块序,
+/// 域内每参与者唯一且跨帧稳定。
+pub const PANEL_ORDER_BASE: u64 = 1 << 40;
+/// 单文档 order 步长(块序上限;超长文档块序溢出步长仅回退为
+/// order 撞号,不会圈入他域)。
+pub const ORDER_STRIDE: u64 = 4096;
+
 /// 渲染 markdown 文本(节点级唯一前缀作元素 id;同时作 parse 缓存键)。
 /// mermaid 图不可点击(轨迹/计划页等无查看器场景)。
-pub fn render(prefix: &str, text: &str) -> impl IntoElement {
-    render_clickable(prefix, text, None)
+pub fn render(prefix: &str, text: &str, order_base: u64) -> impl IntoElement {
+    render_clickable(prefix, text, None, order_base)
 }
 
 /// 带 mermaid 卡片集上下文的渲染(聊天消息流用):cards = 动作钩子 +
@@ -41,11 +54,13 @@ pub fn render_clickable(
     prefix: &str,
     text: &str,
     cards: Option<crate::kits::mermaid::MermaidCards>,
+    order_base: u64,
 ) -> impl IntoElement {
     let blocks = parse_cached(prefix, text);
     let mut children: Vec<gpui_kit::AnyElement> = Vec::with_capacity(blocks.len());
     for (ix, block) in blocks.iter().enumerate() {
-        children.push(render_block(prefix, ix, block, cards.clone()).into_any_element());
+        children
+            .push(render_block(prefix, ix, block, cards.clone(), order_base).into_any_element());
     }
     div().children(children)
 }
@@ -55,6 +70,7 @@ pub fn render_streaming_clickable(
     prefix: &str,
     text: &str,
     cards: Option<crate::kits::mermaid::MermaidCards>,
+    order_base: u64,
 ) -> impl IntoElement {
     let blocks = parse_cached(prefix, text);
     let mut children: Vec<gpui_kit::AnyElement> = Vec::with_capacity(blocks.len());
@@ -62,9 +78,14 @@ pub fn render_streaming_clickable(
     for (ix, block) in blocks.iter().enumerate() {
         if ix == last {
             let with_cursor = cursor_block(block);
-            children.push(render_block(prefix, ix, &with_cursor, cards.clone()).into_any_element());
+            children.push(
+                render_block(prefix, ix, &with_cursor, cards.clone(), order_base)
+                    .into_any_element(),
+            );
         } else {
-            children.push(render_block(prefix, ix, block, cards.clone()).into_any_element());
+            children.push(
+                render_block(prefix, ix, block, cards.clone(), order_base).into_any_element(),
+            );
         }
     }
     div().children(children)
@@ -282,8 +303,10 @@ fn render_block(
     ix: usize,
     block: &Block,
     cards: Option<crate::kits::mermaid::MermaidCards>,
+    order_base: u64,
 ) -> impl IntoElement {
     let id = |tag: &str| gpui_kit::SharedString::from(format!("{prefix}-md-{tag}-{ix}"));
+    let order = order_base + ix as u64;
     match block {
         Block::Heading(level, text) => {
             let size = match level {
@@ -302,10 +325,10 @@ fn render_block(
                 // SelectableText 自身不设光标,悬停须由容器承担 = 文本可选的
                 // 视觉提示(否则与普通文字无别)
                 .cursor_text()
-                .child(gpui_kit::base::SelectableText::new(
-                    id("h-sel"),
-                    text.clone(),
-                ))
+                .child(
+                    gpui_kit::base::SelectableText::new(id("h-sel"), text.clone())
+                        .document_order(order),
+                )
                 .into_any_element()
         }
         Block::Paragraph(text) => div()
@@ -315,10 +338,10 @@ fn render_block(
             .text_color(crate::kits::theme::LABEL())
             .line_height(gpui_kit::relative(1.75))
             .cursor_text()
-            .child(gpui_kit::base::SelectableText::new(
-                id("p-sel"),
-                text.clone(),
-            ))
+            .child(
+                gpui_kit::base::SelectableText::new(id("p-sel"), text.clone())
+                    .document_order(order),
+            )
             .into_any_element(),
         Block::Code(code, lang, closed) => {
             // mermaid 优先:syntect 无此语法,直接交给图渲染管线
@@ -396,9 +419,12 @@ fn render_block(
                         .text_color(crate::kits::theme::LABEL_3())
                         .child(marker),
                 )
-                .child(div().min_w(px(0.)).flex_1().cursor_text().child(
-                    gpui_kit::base::SelectableText::new(id("li-sel"), text.clone()),
-                ))
+                .child(
+                    div().min_w(px(0.)).flex_1().cursor_text().child(
+                        gpui_kit::base::SelectableText::new(id("li-sel"), text.clone())
+                            .document_order(order),
+                    ),
+                )
                 .into_any_element()
         }
         Block::Quote(text) => div()
@@ -411,10 +437,10 @@ fn render_block(
             .text_color(crate::kits::theme::LABEL_3())
             .line_height(gpui_kit::relative(1.75))
             .cursor_text()
-            .child(gpui_kit::base::SelectableText::new(
-                id("q-sel"),
-                text.clone(),
-            ))
+            .child(
+                gpui_kit::base::SelectableText::new(id("q-sel"), text.clone())
+                    .document_order(order),
+            )
             .into_any_element(),
         Block::Rule => div()
             .id(id("rule"))
@@ -428,6 +454,7 @@ fn render_block(
 
 #[cfg(test)]
 mod selection_tests {
+    use gpui_kit::component::StyledExt as _;
     use gpui_kit::{
         AppContext as _, IntoElement, Modifiers, MouseButton, ParentElement as _, Render,
         Styled as _, Window, div, px,
@@ -436,11 +463,13 @@ mod selection_tests {
     struct MdView;
     impl Render for MdView {
         fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
-            div().size_full().child(
-                div()
-                    .w(px(400.))
-                    .child(super::render("mdsel", "可选择的正文段落内容")),
-            )
+            div()
+                .size_full()
+                .child(div().w(px(400.)).child(super::render(
+                    "mdsel",
+                    "可选择的正文段落内容",
+                    super::CHAT_ORDER_BASE,
+                )))
         }
     }
 
@@ -480,6 +509,81 @@ mod selection_tests {
         assert!(
             !selected.trim().is_empty(),
             "拖选后应选中文本,实际 {selected:?}"
+        );
+    }
+
+    /// 双文档视图:左列 = 聊天域(两个段落块),右列 = 右栏域(一块),
+    /// 两列同一 y 带——拖选的窗口 y 范围与右栏文本重叠(泄漏的视觉
+    /// = 选中高亮按窗口坐标逐行投影,只有 y 重叠的行背景变色)。
+    /// 守两域 SelectableText 的 order 分区装配
+    struct TwoDocsView;
+    impl Render for TwoDocsView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            div().size_full().child(
+                div()
+                    .w(px(600.))
+                    .flex()
+                    .child(div().w(px(300.)).child(super::render(
+                        "chatdoc",
+                        "聊天块甲的正文内容\n\n聊天块乙的正文内容",
+                        super::CHAT_ORDER_BASE,
+                    )))
+                    .child(div().w(px(300.)).child(super::render(
+                        "paneldoc",
+                        "右栏面板的独有文本内容",
+                        super::PANEL_ORDER_BASE,
+                    ))),
+            )
+        }
+    }
+
+    /// 跨域拖选泄漏回归锁:`SelectableText` 未设 document_order 时全部
+    /// order=0,圈选区间 [0..=0] 命中一切同域参与者——聊天列跨段拖选
+    /// 会把右栏(面板计划卡/轨迹 markdown)整段卷进选中与复制文本。
+    /// 分区 order 后两域区间不相交,异域不再被卷入
+    #[gpui_kit::test]
+    fn cross_document_drag_does_not_spill_across_order_partitions(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let v = cx.new(|_| TwoDocsView);
+            gpui_kit::component::Root::new(v, window, cx)
+        });
+        let _ = view;
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        // 聊天列(左,x<300)内斜向拖选块甲→块乙;右栏列(右)同一 y 带
+        // 有文本——无 order 分区时拖选的窗口 y 范围会逐行投影到右栏
+        // participant 上(同行行背景变色的泄漏视觉)。纯竖向同 x 拖选
+        // 在 gpui-base endpoint 映射下选不中,斜向为自然拖选轨迹
+        cx.simulate_mouse_down(
+            gpui_kit::point(px(20.), px(8.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            gpui_kit::point(px(120.), px(50.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            gpui_kit::point(px(120.), px(50.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        let selected = cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            gpui_kit::base::TextSelection::selected_text(window, cx)
+        });
+        assert!(
+            selected.contains("块甲的正文内容") && selected.contains("块乙的正文内容"),
+            "聊天域内跨块拖选应选中两块,实际 {selected:?}"
+        );
+        assert!(
+            !selected.contains("右栏面板"),
+            "右栏域不得被聊天拖选卷入(泄漏回归),实际 {selected:?}"
         );
     }
 }
