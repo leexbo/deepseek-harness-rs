@@ -28,6 +28,9 @@ pub(crate) struct AskStore {
     /// 问答卡「其他」输入(自定义文本;挂窗后经 ensure_ask_input 懒建,
     /// render 期读值渲染,Change 订阅写回 ask_state.custom[当前题])
     pub ask_input: Option<Entity<TextareaState>>,
+    /// 「其他」输入已同步的 (卡 rpcId, 题序):同步只在卡/题切换时做——
+    /// 按值比对回写会与输入法组合打架(set_value 重置光标到句首)
+    pub ask_input_synced: Option<(String, usize)>,
     /// 审批卡选项②「否,并告诉它应该如何做不同」的行内输入(直接在
     /// 卡内输入,非拒绝后聚焦 composer;ensure 懒建同上)
     pub plan_decline_input: Option<Entity<TextareaState>>,
@@ -307,6 +310,38 @@ impl AppStore {
         self.ask.ask_input = Some(input);
     }
 
+    /// 「其他」输入渲染期同步:仅在卡身份/题序切换时回写草稿值
+    /// (custom[题序]);输入期间按值比对回写会经 set_value 把光标
+    /// 重置到句首(多行 0..0),与输入法组合冲突
+    pub fn sync_ask_input(
+        &mut self,
+        call_id: &str,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .ask
+            .ask_input_synced
+            .as_ref()
+            .is_some_and(|(c, i)| c == call_id && *i == index)
+        {
+            return;
+        }
+        self.ensure_ask_input(window, cx);
+        self.ask.ask_input_synced = Some((call_id.to_string(), index));
+        let custom = self
+            .ask
+            .ask_state
+            .as_ref()
+            .and_then(|s| s.custom.get(index))
+            .cloned()
+            .unwrap_or_default();
+        if let Some(input) = &self.ask.ask_input {
+            input.update(cx, |s, cx| s.set_value(&custom, window, cx));
+        }
+    }
+
     /// pager 前后翻题
     pub fn set_ask_index(&mut self, idx: usize, cx: &mut Context<Self>) {
         self.ensure_ask_state();
@@ -371,6 +406,7 @@ impl AppStore {
                 .collect()
         };
         self.ask.ask_state = None;
+        self.ask.ask_input_synced = None;
         self.answer_ask(answers, cx);
     }
 }

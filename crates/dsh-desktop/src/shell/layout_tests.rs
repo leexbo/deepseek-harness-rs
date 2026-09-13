@@ -3131,6 +3131,82 @@ fn ask_user_question_card_pops_via_pump(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 问答卡「其他」输入:渲染期不得回写(逐帧按值比对 set_value 会把
+/// 光标拍回句首、与输入法组合冲突)。契约 = 同一卡/题重复同步为 no-op,
+/// 用户已键入的值不被草稿值覆盖。
+/// 回归锚:此前 render 每帧 `displayed != custom → set_value(custom)`,
+/// 光标恒被重置到 0。
+#[gpui_kit::test]
+fn ask_custom_input_not_rewritten_each_frame(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "ask-custom-sync");
+    let sid = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("自动新建会话应在场");
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.entry(id).or_default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:seed".into(),
+                text: "先聊着".into(),
+                images: vec![],
+            });
+        });
+    });
+    let questions: Vec<serde_json::Value> = serde_json::from_value(serde_json::json!([
+        { "id": "q1", "header": "确认", "question": "继续?", "multi_select": false }
+    ]))
+    .unwrap();
+    cx.update(|app| store.update(app, |st, cx| st.ask_questions_json(&sid, questions, cx)));
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        cx.run_until_parked();
+        if wcx.debug_bounds("ask-question").is_some() {
+            break;
+        }
+    }
+    assert!(wcx.debug_bounds("ask-question").is_some(), "问答卡未弹出");
+    let rpc_id = cx
+        .update(|app| {
+            store
+                .read(app)
+                .state
+                .pending_ask
+                .as_ref()
+                .map(|a| a.rpc_id.clone())
+        })
+        .expect("pending_ask 应在场");
+
+    // 首次同步建输入框;模拟用户键入 "abc"
+    wcx.update(|window, cx| {
+        let rpc = rpc_id.clone();
+        store.update(cx, |st, cx| {
+            st.sync_ask_input(&rpc, 0, window, cx);
+            if let Some(input) = &st.ask.ask_input {
+                input.update(cx, |s, cx| s.set_value("abc", window, cx));
+            }
+        });
+    });
+    // 重复同卡/题同步(模拟下一帧 render)→ 不得覆盖用户输入
+    wcx.update(|window, cx| {
+        let rpc = rpc_id.clone();
+        store.update(cx, |st, cx| st.sync_ask_input(&rpc, 0, window, cx));
+    });
+    let value = wcx.update(|_window, cx| {
+        store.read(cx).ask.ask_input.as_ref().map(|e| {
+            use gpui_kit::component::input::TextareaState;
+            let guard = e.read(cx);
+            TextareaState::value(guard).to_string()
+        })
+    });
+    assert_eq!(
+        value.as_deref(),
+        Some("abc"),
+        "同卡重复同步不得回写用户输入(光标会被拍回句首)"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 问答卡选项含长 ASCII 词元(不可断行)时不得撑破卡片:内容列
 /// min_w(0) 让文本换行,选项行右缘不超出卡右缘(此前 flex item
 /// 缺省最小宽 = max-content,整卡溢出弹窗)

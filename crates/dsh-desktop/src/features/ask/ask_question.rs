@@ -57,14 +57,10 @@ pub fn render(
         .and_then(|s| s.custom.get(index))
         .cloned()
         .unwrap_or_default();
-    // 「其他」输入懒建 + 值随当前题同步(与 composer 清空同:渲染期 set_value)
-    store.update(cx, |st, cx| st.ensure_ask_input(window, cx));
-    if let Some(input) = store.read(cx).ask.ask_input.clone() {
-        let displayed = input.read(cx).value().to_string();
-        if displayed != custom {
-            input.update(cx, |s, cx| s.set_value(custom.clone(), window, cx));
-        }
-    }
+    // 「其他」输入懒建 + 同步仅在卡/题切换时回写(按值比对回写会经
+    // set_value 把光标拍回句首,与输入法组合冲突)
+    let call_id = ask.rpc_id.clone();
+    store.update(cx, |st, cx| st.sync_ask_input(&call_id, index, window, cx));
     let multi = q.multi_select.unwrap_or(false);
     let options = q.options.clone().unwrap_or_default();
 
