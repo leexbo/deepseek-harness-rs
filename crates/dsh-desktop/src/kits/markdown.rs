@@ -297,7 +297,15 @@ fn render_block(
                 .text_size(px(size))
                 .font_weight(gpui_kit::FontWeight::BOLD)
                 .text_color(crate::kits::theme::LABEL())
-                .child(text.clone())
+                // I 型光标 + 可选择文本(gpui-base 选择基建;需祖先
+                // TextSelectionLayer 才有拖选,无层时静默退化为普通文本)。
+                // SelectableText 自身不设光标,悬停须由容器承担 = 文本可选的
+                // 视觉提示(否则与普通文字无别)
+                .cursor_text()
+                .child(gpui_kit::base::SelectableText::new(
+                    id("h-sel"),
+                    text.clone(),
+                ))
                 .into_any_element()
         }
         Block::Paragraph(text) => div()
@@ -306,7 +314,11 @@ fn render_block(
             .text_size(px(14.))
             .text_color(crate::kits::theme::LABEL())
             .line_height(gpui_kit::relative(1.75))
-            .child(text.clone())
+            .cursor_text()
+            .child(gpui_kit::base::SelectableText::new(
+                id("p-sel"),
+                text.clone(),
+            ))
             .into_any_element(),
         Block::Code(code, lang, closed) => {
             // mermaid 优先:syntect 无此语法,直接交给图渲染管线
@@ -384,7 +396,9 @@ fn render_block(
                         .text_color(crate::kits::theme::LABEL_3())
                         .child(marker),
                 )
-                .child(div().min_w(px(0.)).flex_1().child(text.clone()))
+                .child(div().min_w(px(0.)).flex_1().cursor_text().child(
+                    gpui_kit::base::SelectableText::new(id("li-sel"), text.clone()),
+                ))
                 .into_any_element()
         }
         Block::Quote(text) => div()
@@ -396,7 +410,11 @@ fn render_block(
             .text_size(px(14.))
             .text_color(crate::kits::theme::LABEL_3())
             .line_height(gpui_kit::relative(1.75))
-            .child(text.clone())
+            .cursor_text()
+            .child(gpui_kit::base::SelectableText::new(
+                id("q-sel"),
+                text.clone(),
+            ))
             .into_any_element(),
         Block::Rule => div()
             .id(id("rule"))
@@ -405,6 +423,64 @@ fn render_block(
             .w_full()
             .bg(crate::kits::theme::BORDER())
             .into_any_element(),
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use gpui_kit::{
+        AppContext as _, IntoElement, Modifiers, MouseButton, ParentElement as _, Render,
+        Styled as _, Window, div, px,
+    };
+
+    struct MdView;
+    impl Render for MdView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            div().size_full().child(
+                div()
+                    .w(px(400.))
+                    .child(super::render("mdsel", "可选择的正文段落内容")),
+            )
+        }
+    }
+
+    /// markdown 正文拖选契约:真机窗口由 `component::Root` 提供唯一选择层
+    /// (Root 内建 TextSelectionLayer + activate_scope),别再自挂第二层;
+    /// 本用例复刻该配置,守 markdown 段落的 SelectableText 装配不回退成裸文本
+    #[gpui_kit::test]
+    fn markdown_paragraph_is_selectable(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let v = cx.new(|_| MdView);
+            gpui_kit::component::Root::new(v, window, cx)
+        });
+        let _ = view;
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.simulate_mouse_down(
+            gpui_kit::point(px(8.), px(8.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            gpui_kit::point(px(200.), px(8.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            gpui_kit::point(px(200.), px(8.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        let selected = cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            gpui_kit::base::TextSelection::selected_text(window, cx)
+        });
+        assert!(
+            !selected.trim().is_empty(),
+            "拖选后应选中文本,实际 {selected:?}"
+        );
     }
 }
 

@@ -74,6 +74,9 @@ pub struct AppStore {
     pub billing_card_open: bool,
     /// 徽标渲染期捕获 bounds(计费卡片根级渲染的锚定分子,同权限 chip)
     pub billing_chip_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
+    /// 剪贴板快捷键 App 级拦截订阅(cmd-v 图片粘贴 / cmd-c 文档选中复制;
+    /// 挂窗一次;见 attach_window_state 注册点)
+    pub clipboard_intercept: Option<gpui_kit::Subscription>,
     /// 系统外观观察者订阅(窗口挂载时注册一次,drop = 退订)
     pub appearance_sub: Option<gpui_kit::Subscription>,
     /// 全库检索功能切片状态(侧栏搜索输入/命中面板/跳转定位;域与行为见
@@ -151,6 +154,7 @@ impl AppStore {
             billing_tick: None,
             billing_card_open: false,
             billing_chip_bounds: None,
+            clipboard_intercept: None,
             attachments: AttachmentsStore::default(),
             ask: AskStore::default(),
             feedback: FeedbackStore::default(),
@@ -221,6 +225,46 @@ impl AppStore {
         self.start_billing_tick(cx);
         // 模型探测兜底(挂窗一次):清单缺席的 provider 静默拉 /models
         self.ensure_models_probed(cx);
+        // 剪贴板快捷键 App 级拦截(挂窗一次)。gpui 分发序 = interceptor
+        // → key binding → 元素 listener;输入框的 Paste/Copy binding 在
+        // 第二步就消费掉 cmd-v/cmd-c,元素级 capture 与 Root on_action
+        // 都收不到——拦截器排最前:
+        //   cmd-v:剪贴板含图 → 入附件草稿轨并阻断(输入组件 paste 只读
+        //          text(),图片会被吞成空串);纯文本放行;
+        //   cmd-c:窗口存在文档选中(聊天正文)→ 复制该选中并阻断输入框
+        //          自身 Copy;无文档选中时放行(输入框内选中照常复制)
+        if self.clipboard_intercept.is_none() {
+            let store = cx.entity().clone();
+            self.clipboard_intercept = Some(cx.intercept_keystrokes(move |ev, window, cx| {
+                if !ev.keystroke.modifiers.platform {
+                    return;
+                }
+                match ev.keystroke.key.as_str() {
+                    "v" => {
+                        let Some(item) = cx.read_from_clipboard() else {
+                            return;
+                        };
+                        let images = crate::features::chat::composer::clipboard_image_bytes(&item);
+                        if images.is_empty() {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        store.update(cx, |st, _cx| {
+                            st.intake_images(&images);
+                        });
+                    }
+                    "c" => {
+                        let text = gpui_kit::base::TextSelection::selected_text(window, cx);
+                        if text.trim().is_empty() {
+                            return;
+                        }
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+                        cx.stop_propagation();
+                    }
+                    _ => {}
+                }
+            }));
+        }
         if self.chat.composer_input.is_none() {
             let composer = cx.new(|cx| {
                 TextareaState::new(window, cx)
@@ -241,7 +285,8 @@ impl AppStore {
                         }
                         let raw = input.read(cx).value().to_string();
                         let text = raw.trim_end_matches('\n').trim().to_string();
-                        if !text.is_empty() {
+                        // 纯图片(空文本)可发——内容组装在 send 内
+                        if !text.is_empty() || !this.attachments.draft_images.is_empty() {
                             this.send(&text, cx);
                             this.chat.pending_composer_clear = true;
                         }

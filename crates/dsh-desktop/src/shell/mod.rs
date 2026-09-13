@@ -74,6 +74,24 @@ impl WorkspaceView {
                 hotkey_store.update(cx, |st, cx| st.open_panel_tab(panel::PanelTab::Plan, cx));
             },
         );
+        // 聊天正文右键「复制」:App 级全局 on_action(右键原生菜单派发的动作
+        // 在 bubble 末尾送达全局监听,不受焦点/dispatch path 限制)。选中文
+        // 本在右键弹菜单时已抓取(stash,见 chat_pane::render),此处只写剪贴板
+        // ——App 级 handler 无 Window,而分发期 Window 已被可变借用,再取
+        // 窗口读选中会失败。
+        let copy_store = store.clone();
+        gpui_kit::App::on_action(
+            cx,
+            move |_: &chat::chat_pane::CopyChatSelection, cx: &mut gpui_kit::App| {
+                copy_store.update(cx, |st, cx| {
+                    if let Some(text) = st.chat.pending_copy_text.take()
+                        && !text.trim().is_empty()
+                    {
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+                    }
+                });
+            },
+        );
         Self {
             store,
             #[cfg(test)]

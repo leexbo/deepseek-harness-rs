@@ -1605,6 +1605,200 @@ fn menu_closes_on_outside_click(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 图片粘贴全链路:剪贴板含图 → cmd-v → 入草稿附件轨。
+/// 回归锚:元素级 capture_key_down 永不触发(gpui 分发序 =
+/// interceptor → key binding → 元素 listener;输入框 Paste binding 在
+/// 第二步就消费 cmd-v),修复落在 App 级 intercept_keystrokes。
+#[gpui_kit::test]
+fn paste_clipboard_image_lands_in_draft(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "paste-img");
+    // 造 2×2 红点 PNG → 剪贴板图条目
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        2,
+        2,
+        image::Rgba([255, 0, 0, 255]),
+    ))
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .expect("编码 PNG 失败");
+    let item = gpui_kit::ClipboardItem::new_image(&gpui_kit::Image::from_bytes(
+        gpui_kit::ImageFormat::Png,
+        png,
+    ));
+    cx.write_to_clipboard(item);
+
+    // 聚焦输入框后按 cmd-v
+    click_sel(&mut wcx, "composer-hit");
+    cx.run_until_parked();
+    wcx.simulate_keystrokes("cmd-v");
+    cx.run_until_parked();
+
+    let n = cx.update(|app| store.read(app).attachments.draft_images.len());
+    assert_eq!(n, 1, "cmd-v 粘贴图片应入草稿轨,实际 {n} 张");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 聊天正文拖选(真机路径复刻:WorkspaceView + Root + 消息列表):
+/// 在助手正文上按下→拖→抬起,Window 应有选中文本。回归 #6:
+/// 聊天区文字「无法选择复制」。
+#[gpui_kit::test]
+fn chat_body_text_is_drag_selectable(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "sel-text");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+    // 预置助手正文(hero 空会话不渲染聊天栈;仅一条 → 列表钉底可见)
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.entry(id.clone()).or_default();
+            chat.nodes.push(ChatNode::Assistant {
+                key: "a:0:0".into(),
+                text: "这是一段可被选择复制的助手正文内容。".into(),
+                reasoning: String::new(),
+                streaming: false,
+                usage: None,
+                message_id: "m-0".into(),
+            });
+        });
+    });
+    redraw(cx, &mut wcx);
+    let c = wcx.debug_bounds("composer-hit").expect("输入区 bounds");
+    let b = wcx.debug_bounds("node-0").expect("助手正文 bounds 缺失");
+    assert!(
+        b.bottom() <= c.top(),
+        "助手行须完整落在输入区之上的列表视口:node={b:?} composer_top={:?}",
+        c.top()
+    );
+    let y = b.origin.y + px(12.);
+    wcx.simulate_mouse_down(
+        gpui_kit::Point {
+            x: b.origin.x + px(4.),
+            y,
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    wcx.simulate_mouse_move(
+        gpui_kit::Point {
+            x: b.origin.x + b.size.width - px(4.),
+            y,
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    wcx.simulate_mouse_up(
+        gpui_kit::Point {
+            x: b.origin.x + b.size.width - px(4.),
+            y,
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    redraw(cx, &mut wcx);
+    let selected = wcx.update(gpui_kit::base::TextSelection::selected_text);
+    assert!(
+        !selected.trim().is_empty(),
+        "聊天正文拖选后应可取到选中文本,实际 {selected:?}"
+    );
+    // 复制半场:cmd-c 后剪贴板应含选中文本(Root on_action_copy)
+    wcx.simulate_keystrokes("cmd-c");
+    cx.run_until_parked();
+    let clip = cx.read_from_clipboard().and_then(|i| i.text());
+    assert!(
+        clip.as_deref().is_some_and(|t| t.contains("可被选择复制")),
+        "cmd-c 后剪贴板应含选中文本,实际 {clip:?}"
+    );
+    // 右键菜单动作:右键时抓选中 → App 级 on_action 写剪贴板
+    // (AppKit 原生菜单本机不可在测试内弹出,故复刻右键抓取 + 派发动作验接线)
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(String::new()));
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            st.chat.pending_copy_text = Some(selected.clone())
+        });
+    });
+    wcx.dispatch_action(crate::features::chat::chat_pane::CopyChatSelection);
+    cx.run_until_parked();
+    let clip2 = cx.read_from_clipboard().and_then(|i| i.text());
+    assert!(
+        clip2.as_deref().is_some_and(|t| t.contains("可被选择复制")),
+        "CopyChatSelection 应把选中写入剪贴板,实际 {clip2:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 用户气泡文字可拖选(原「聊天区域文字都无法选择复制」含用户消息):
+/// 气泡文本经 SelectableText 参与窗口选择,拖选后可取到选中文本。
+#[gpui_kit::test]
+fn user_bubble_text_is_drag_selectable(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "sel-user");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.entry(id.clone()).or_default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:0".into(),
+                text: "用户发送的这段文字应当可以拖选复制。".into(),
+                images: vec![],
+            });
+        });
+    });
+    redraw(cx, &mut wcx);
+    let c = wcx.debug_bounds("composer-hit").expect("输入区 bounds");
+    let b = wcx
+        .debug_bounds("user-bubble-0")
+        .expect("用户气泡 bounds 缺失");
+    assert!(
+        b.bottom() <= c.top(),
+        "用户气泡须在输入区之上的列表视口:{b:?}"
+    );
+    let y = b.origin.y + b.size.height / 2.;
+    wcx.simulate_mouse_down(
+        gpui_kit::Point {
+            x: b.origin.x + px(22.),
+            y,
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    wcx.simulate_mouse_move(
+        gpui_kit::Point {
+            x: b.right() - px(22.),
+            y,
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    wcx.simulate_mouse_up(
+        gpui_kit::Point {
+            x: b.right() - px(22.),
+            y,
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    redraw(cx, &mut wcx);
+    let selected = wcx.update(gpui_kit::base::TextSelection::selected_text);
+    assert!(
+        !selected.trim().is_empty(),
+        "用户气泡文字拖选后应可取到选中文本,实际 {selected:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 首条消息后标题 = 内容摘录(60 字):turn 开始边沿刷清单即取到;
 /// 回归锚:此前 history 对空会话恒下发 title=""(title_of 烧穿空串),
 /// 客户端 titles 表被空串永久遮蔽,清单摘录进不来 → 标题永远「新会话」
@@ -5810,6 +6004,82 @@ fn onboarding_modal_later_completes(cx: &mut TestAppContext) {
     assert!(
         !cx.update(|app| store.read(app).settings.needs_onboarding),
         "引导完成不再弹"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 粘贴提取帮手:剪贴板图片条目 → 字节(截获接线的语义层;capture
+/// 键击在测试分发器不触发,接线真机验证)
+#[test]
+fn clipboard_image_bytes_extracts_image_entries() {
+    use crate::features::chat::composer::clipboard_image_bytes;
+    let png = b"png-bytes".to_vec();
+    let item = gpui_kit::ClipboardItem::new_image(&gpui_kit::Image {
+        format: gpui_kit::ImageFormat::Png,
+        bytes: png.clone(),
+        id: 1,
+    });
+    assert_eq!(clipboard_image_bytes(&item), vec![png]);
+    // 纯文本剪贴板 → 空(不截获,放行默认文本粘贴)
+    assert!(clipboard_image_bytes(&gpui_kit::ClipboardItem::new_string("hi".into())).is_empty());
+}
+
+/// 纯图片消息可发(composer 空文本 + 草稿图在场):落盘 user/message
+/// 含图片块、无文本块——双守卫放宽的回归锁
+#[gpui_kit::test]
+fn image_only_message_sends(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "img-send");
+    // 1x1 PNG(标准最小图;走与粘贴截获同一 intake 入轨)
+    let png = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    )
+    .unwrap();
+    cx.update(|app| {
+        store.update(app, |st, _cx| {
+            assert!(
+                st.intake_images(std::slice::from_ref(&png)),
+                "1x1 PNG 应入轨"
+            );
+        });
+    });
+    wcx.run_until_parked();
+
+    // 空文本 + 草稿图 → 点发送:user/message 图片块在场且无文本块
+    assert!(wcx.debug_bounds("send").is_some(), "发送钮在场(纯图不禁用)");
+    click_sel(&mut wcx, "send");
+    let host = cx.update(|app| store.read(app).bridge.host().clone());
+    let sid = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("会话在场");
+    let mut found = None;
+    for _ in 0..200 {
+        wcx.run_until_parked();
+        let log = host.export_session_log(&sid).unwrap_or_default();
+        found = log
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find(|v| v["type"] == "user/message")
+            .map(|v| v["data"]["content"].clone());
+        if found.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let content = found.expect("纯图消息应落 user/message");
+    assert!(
+        content
+            .as_array()
+            .is_some_and(|a| a.iter().any(|b| b["type"] == "image")),
+        "应含图片块:{content}"
+    );
+    assert!(
+        !content
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["type"] == "text"),
+        "空文本不应产文本块:{content}"
     );
     let _ = std::fs::remove_dir_all(root);
 }

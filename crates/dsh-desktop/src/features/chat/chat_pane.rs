@@ -8,11 +8,13 @@
 use gpui_kit::component::IconName;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::WindowExt;
+use gpui_kit::component::native_menu::NativeMenu;
 use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, Div, Entity, InteractiveElement, IntoElement,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    MouseButton, MouseDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    Window, actions, div, px,
 };
 
 use super::projection::{
@@ -24,6 +26,11 @@ use crate::shell::metrics::{H_PAD, NAV_GUTTER_W, RUN_CLOCK_AFTER_SECS, SCROLLBAR
 use std::sync::Arc;
 
 use crate::shell::store::AppStore;
+
+// 聊天正文右键「复制」:复制窗口级文档选中(聊天文字拖选)。不复用输入框
+// 的 Copy(输入框聚焦时会先消费,复制到空输入选区);选中文本在右键弹菜单
+// 时抓取,动作经 App 级全局 on_action 收口写剪贴板(见 shell/mod.rs)。
+actions!(chat_pane, [CopyChatSelection]);
 
 /// 消息区整体(相对容器 + 虚拟化列 + 回底钮)
 pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -244,6 +251,24 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 // 容器(turn_status/底部栈/hero)同款 padding 保中心线
                 .pl(px(H_PAD + NAV_GUTTER_W))
                 .pr(px(H_PAD + SCROLLBAR_GUTTER_W))
+                // 右键:有文档选中 → 原生菜单「复制」(复制拖选的聊天正文)。
+                // 无选中不弹(与系统文本区一致);选中文本在此抓取(菜单动作
+                // 经 App 级 on_action 消费,那里无 window 回读实时选中)
+                .on_mouse_down(MouseButton::Right, {
+                    let menu_store = store.clone();
+                    move |ev: &MouseDownEvent, window, cx| {
+                        if !gpui_kit::base::TextSelection::has_selection(window, cx) {
+                            return;
+                        }
+                        let text = gpui_kit::base::TextSelection::selected_text(window, cx);
+                        menu_store.update(cx, |st, _cx| {
+                            st.chat.pending_copy_text = Some(text);
+                        });
+                        NativeMenu::new()
+                            .menu("复制", Box::new(CopyChatSelection))
+                            .show(ev.position, window, cx);
+                    }
+                })
                 // 列表满宽:滚轮命中区 = 整个消息区(行级居中由 item
                 // 包裹层承担,见上方 justify_center)
                 .child(list.h_full().w_full().py(px(8.))),
@@ -1206,6 +1231,8 @@ fn user_bubble(
                 .v_flex()
                 .items_end()
                 .gap(px(8.))
+                // I 型光标 = 文本可选的视觉提示(选择基建见 markdown.rs)
+                .cursor_text()
                 // 布局测试钩子:气泡自身 bounds(短消息贴合内容/长消息封顶 wrap)
                 .debug_selector(move || format!("user-bubble-{ix}"))
                 // 图消息先渲染缩略(单图 single/多图 tile),后接文本。
@@ -1216,35 +1243,51 @@ fn user_bubble(
                         store, images, cx,
                     ))
                 })
-                .when(!text.is_empty(), |el| el.child(bubble_rich_text(text))),
+                .when(!text.is_empty(), |el| el.child(bubble_rich_text(ix, text))),
         )
         .child(copy_button(store, cx, ("copy-user", ix), key, text))
 }
 
 /// 用户气泡富文本:`@file`/`@folder`/`@session` 渲染成胶囊(源 refChip),
 /// 其余文本原样分段。GPUI 无真正 inline 混排,以 flex-wrap 近似:
-/// 文本片段与胶囊同为 flex item,断行由 wrap 承担。
-fn bubble_rich_text(text: &str) -> impl IntoElement {
+/// 文本片段与胶囊同为 flex item,断行由 wrap 承担。文本片段经
+/// [`gpui_kit::base::SelectableText`] 参与窗口选择(拖选/复制)。
+fn bubble_rich_text(ix: usize, text: &str) -> impl IntoElement {
     let tokens = super::reference::scan_at_tokens(text);
     if tokens.is_empty() {
-        return div().child(text.to_string()).into_any_element();
+        return div()
+            .child(gpui_kit::base::SelectableText::new(
+                gpui_kit::SharedString::from(format!("user-sel-{ix}-0")),
+                text.to_string(),
+            ))
+            .into_any_element();
     }
     let mut children: Vec<gpui_kit::AnyElement> = Vec::new();
     let mut cursor = 0;
-    for tok in &tokens {
-        if tok.start > cursor {
-            children.push(
-                div()
-                    .child(text[cursor..tok.start].to_string())
-                    .into_any_element(),
-            );
+    let mut seg = 0usize;
+    let text_seg = |range: std::ops::Range<usize>,
+                    children: &mut Vec<gpui_kit::AnyElement>,
+                    seg: &mut usize| {
+        if range.is_empty() {
+            return;
         }
+        let id = gpui_kit::SharedString::from(format!("user-sel-{ix}-{}", *seg));
+        *seg += 1;
+        children.push(
+            div()
+                .child(gpui_kit::base::SelectableText::new(
+                    id,
+                    text[range].to_string(),
+                ))
+                .into_any_element(),
+        );
+    };
+    for tok in &tokens {
+        text_seg(cursor..tok.start, &mut children, &mut seg);
         children.push(bubble_ref_chip(tok).into_any_element());
         cursor = tok.end;
     }
-    if cursor < text.len() {
-        children.push(div().child(text[cursor..].to_string()).into_any_element());
-    }
+    text_seg(cursor..text.len(), &mut children, &mut seg);
     div()
         .flex()
         .flex_wrap()

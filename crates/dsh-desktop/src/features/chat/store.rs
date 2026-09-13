@@ -256,6 +256,9 @@ pub(crate) struct ChatStore {
     pub enter_at_completion: bool,
     /// 最近复制成功的消息 key(图标 Copy→Check 反馈;定时清除)
     pub copied_key: Option<String>,
+    /// 聊天正文右键「复制」抓取的选中文本(右键弹菜单时抓);App 级
+    /// on_action 消费写入剪贴板(无 Window,无法回读实时选中)
+    pub pending_copy_text: Option<String>,
     /// Mermaid 图查看器(打开态;None = 关闭)
     pub mermaid_viewer: Option<MermaidViewer>,
     /// 查看器缩放的防抖重光栅任务(替换 = 取消旧 timer;见
@@ -317,6 +320,7 @@ impl Default for ChatStore {
             at_completion: None,
             enter_at_completion: false,
             copied_key: None,
+            pending_copy_text: None,
             mermaid_viewer: None,
             mermaid_reraster: None,
             mermaid_cards: HashMap::new(),

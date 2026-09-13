@@ -140,7 +140,21 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 }
             }
         })
+        // 图片粘贴:App 级键拦截在 attach_window_state 注册(不在元素
+        // 上)——gpui 分发序 interceptor → binding → 元素 capture,输入
+        // 框 Paste binding 先消费 cmd-v,元素级永不触发
         .debug_selector(|| "composer-card".to_string())
+}
+
+/// 剪贴板条目里的图片字节(图片粘贴入轨的提取帮手;纯文本 → 空)
+pub(crate) fn clipboard_image_bytes(item: &gpui_kit::ClipboardItem) -> Vec<Vec<u8>> {
+    item.entries()
+        .iter()
+        .filter_map(|e| match e {
+            gpui_kit::ClipboardEntry::Image(img) => Some(img.bytes.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// 命令行(输入卡内、输入框上缘):`/name` 品牌色 + 参数 hint 灰字 +
@@ -1143,6 +1157,7 @@ fn send_or_stop(store: &Entity<AppStore>, running: bool) -> impl IntoElement {
     };
     div()
         .id(id)
+        .debug_selector(move || id.to_string())
         .flex()
         .size(px(34.))
         .flex_shrink_0()
@@ -1161,14 +1176,15 @@ fn send_or_stop(store: &Entity<AppStore>, running: bool) -> impl IntoElement {
                 if running {
                     st.cancel_current(cx);
                 } else {
-                    // 与 Enter 订阅同一条路径:读值发送 + 延迟清空
+                    // 与 Enter 订阅同一条路径:读值发送 + 延迟清空;
+                    // 纯图片(空文本)可发——内容组装在 send 内
                     let text = st
                         .chat
                         .composer_input
                         .as_ref()
                         .map(|e| e.read(cx).value().trim().to_string())
                         .unwrap_or_default();
-                    if !text.is_empty() {
+                    if !text.is_empty() || !st.attachments.draft_images.is_empty() {
                         st.send(&text, cx);
                         st.chat.pending_composer_clear = true;
                     }
