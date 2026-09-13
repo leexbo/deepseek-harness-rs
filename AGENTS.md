@@ -1,6 +1,6 @@
 ## 1. 编码约束 (Coding Constraints)
 
-- **[Error] (MUST)**: 库层强制 `thiserror`，装配层强制 `anyhow`。**(FORBIDDEN)**: 业务逻辑出现 `unwrap()` / `expect()`。
+- **[Error] (MUST)**: 库层强制 `thiserror`，装配层强制 `anyhow`。**(FORBIDDEN)**: 无前置保证的 `unwrap()` / `expect()`。**(ALLOWED)**: ① 守卫/构造已保证非空后的不变式断言（`expect` 须带说明前提的消息）；② 数学上不可失败的序列化。锁获取统一恢复式 `lock().unwrap_or_else(|p| p.into_inner())`，禁止 `expect("锁中毒")`——后台任务 panic 不得连坐整个进程；数据完整性由结构自身校验兜底（如 `EventLog` 的 seq 连续性守卫），不靠进程崩溃。
 - **[Deps] (MUST)**: 统一锁定于 `[workspace.dependencies]`。**(FORBIDDEN)**: 未经指令授权的 `cargo update`。
 - **[Wasm] (MUST)**: 100% 重放确定性。**(FORBIDDEN)**: 组件内直读系统时钟/随机数，强制通过 WASI 显式 import。
 - **[FFI] (MUST)**: Linux 沙箱隔离使用纯 Rust 实现 (如 `landlock`)。**(FORBIDDEN)**: 引入任何 C 交付物。
