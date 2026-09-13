@@ -153,11 +153,14 @@ fn parse_questions(args: &Value) -> Result<Vec<QuestionItem>, String> {
         return Err("questions 不能为空".to_string());
     }
     arr.iter()
-        .map(|q| {
-            let id = q["id"]
-                .as_str()
-                .ok_or_else(|| "每个 question 需要 id".to_string())?
-                .to_string();
+        .enumerate()
+        .map(|(i, q)| {
+            // id 宽容兜底:缺席/空串自动生成 q1/q2…(应答回带同值,语义
+            // 不损;部分模型无视 required 的 id,硬报错只会白耗一轮)
+            let id = match q["id"].as_str() {
+                Some(s) if !s.trim().is_empty() => s.to_string(),
+                _ => format!("q{}", i + 1),
+            };
             let question = q["question"]
                 .as_str()
                 .ok_or_else(|| "每个 question 需要 question 文本".to_string())?
@@ -225,9 +228,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_questions_rejects_missing_id() {
-        let args = json!({ "questions": [ { "question": "无 id" } ] });
-        assert!(parse_questions(&args).is_err());
+    fn parse_questions_autogenerates_missing_id() {
+        // id 宽容兜底:缺席自动生成 q1(应答回带同值);显式空串同途
+        let args = json!({ "questions": [
+            { "question": "无 id" },
+            { "id": "  ", "question": "空白 id" },
+            { "id": "keep", "question": "显式 id 保留" },
+        ]});
+        let q = parse_questions(&args).unwrap();
+        assert_eq!(q[0].id, "q1");
+        assert_eq!(q[1].id, "q2");
+        assert_eq!(q[2].id, "keep");
     }
 
     #[test]
