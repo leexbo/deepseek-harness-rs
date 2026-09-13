@@ -27,15 +27,19 @@ pub struct HostBridge {
 
 impl HostBridge {
     /// 装配:runtime → AppHost → 模型探测(阻塞)→ 双流订阅 + 基线帧。
+    /// 生产档:4-worker runtime。
     pub fn new(
         workspace: PathBuf,
         fake: bool,
         api_key: &str,
     ) -> anyhow::Result<(Self, mpsc::UnboundedReceiver<ServerRequest>)> {
-        Self::new_at(workspace, fake, api_key, None)
+        Self::build(workspace, fake, api_key, None, 4)
     }
 
-    /// 指定会话根构建(测试注入临时根,避免污染 ~/.dshrs)
+    /// 指定会话根构建(测试注入临时根,避免污染 ~/.dshrs)。
+    /// runtime 用 2 worker:测试二进制内并行装配大量 harness,4 worker
+    /// × N 会线程超卖,放大帧泵与轮询的竞争;1 worker 则把 fetch_billing
+    /// 等 HTTP 往返与泵任务串行化,并行负载下偶发饿死 —— 2 为折中
     #[allow(dead_code)]
     pub fn new_at(
         workspace: PathBuf,
@@ -43,8 +47,18 @@ impl HostBridge {
         api_key: &str,
         sessions_root: Option<PathBuf>,
     ) -> anyhow::Result<(Self, mpsc::UnboundedReceiver<ServerRequest>)> {
+        Self::build(workspace, fake, api_key, sessions_root, 2)
+    }
+
+    fn build(
+        workspace: PathBuf,
+        fake: bool,
+        api_key: &str,
+        sessions_root: Option<PathBuf>,
+        workers: usize,
+    ) -> anyhow::Result<(Self, mpsc::UnboundedReceiver<ServerRequest>)> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)
+            .worker_threads(workers)
             .enable_all()
             .build()?;
         let host = Arc::new(match sessions_root {
@@ -59,12 +73,15 @@ impl HostBridge {
         let (frames_tx, frames_rx) = mpsc::unbounded();
         // 滞后自愈:广播容量打满(burst > 512)时 recv 返回 Lagged 并丢段,
         // `while let Ok` 会让消费任务**静默死亡**——此后所有帧(含
-        // question/requested)永久不到达 UI。Lagged 时拉一次 mux_baseline
-        // 重同步未决态(问题/队列快照),直播段内丢的个别事件帧由回合内
-        // 后续帧自然覆盖;仅 Closed 才收尾
+        // question/requested)永久不到达 UI。Lagged 时按流拉各自基线重
+        // 同步:mux = 会话态(subscribed/队列/控制终态/未决问题——终态
+        // 帧兜住回声类事件,丢段后 UI 仍能收敛);host = workspace 清单
+        // 变更通知(客户端幂等重拉);session-status 不补,丢一条运行态
+        // 由下一次 jobs 帧覆盖。仅 Closed 才收尾
         let resync_host = host.clone();
         let resync_tx = frames_tx.clone();
-        for mut rx in [host.mux_subscribe(), host.host_subscribe()] {
+        for (mut rx, host_stream) in [(host.mux_subscribe(), false), (host.host_subscribe(), true)]
+        {
             let tx = frames_tx.clone();
             let resync_host = resync_host.clone();
             let resync_tx = resync_tx.clone();
@@ -77,9 +94,14 @@ impl HostBridge {
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            // 丢段:拉当前未决基线重同步,继续消费
+                            // 丢段:拉当前基线重同步,继续消费
                             eprintln!("[host-bridge] 帧流滞后,基线重同步");
-                            for frame in resync_host.mux_baseline() {
+                            let baseline = if host_stream {
+                                resync_host.host_baseline()
+                            } else {
+                                resync_host.mux_baseline()
+                            };
+                            for frame in baseline {
                                 if resync_tx.unbounded_send(frame).is_err() {
                                     break;
                                 }

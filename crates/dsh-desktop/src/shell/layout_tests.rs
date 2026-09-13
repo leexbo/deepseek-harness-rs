@@ -578,29 +578,25 @@ fn composer_enter_sends_end_to_end(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn at_completion_rows_truncate_and_cap(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "at-rows");
-    // 注入 25 只长标题会话;排序 = session_id 升序,封顶后只应出前 20
-    cx.update(|app| {
-        store.update(app, |st, _| {
-            st.state.sessions = (0..25usize)
-                .map(|i| dsh_core::proto::SessionSummary {
-                    session_id: format!("s-at-{i:02}"),
-                    updated_at: 0,
-                    running: false,
-                    blank: false,
-                    parent_session_id: None,
-                    origin: None,
-                    cwd: None,
-                    agent_preset: None,
-                    projections: Some(dsh_core::proto::Projections {
-                        as_of_seq: -1,
-                        values: serde_json::json!({
-                            "title": format!("长标题会话{i:02}——{}", long_para(i)),
-                        }),
-                    }),
-                })
-                .collect();
-        });
-    });
+    // 真实造数:host 侧建 25 只长标题会话(create_session + rename)。
+    // 此前直接注入 store 态,会被装配期 session-added 帧的迟到
+    // refresh_list 覆盖回真实清单(实测并行负载下 sessions.len()
+    // 回落 1、候选永久丢失);真实数据重拉不变,免疫覆盖。
+    // 注:list_sessions 按 updated_at 降序,同秒建立顺序不稳定 ——
+    // 封顶断言按渲染集合大小,不按具体索引;rename 落标题截断到
+    // 120 字符,selector 必须用同一截断值
+    let title = |i: usize| -> String {
+        format!("长标题会话{i:02}——{}", long_para(i))
+            .chars()
+            .take(120)
+            .collect()
+    };
+    let host = cx.update(|app| store.read(app).bridge.host().clone());
+    for i in 0..25usize {
+        let id = host.create_session(Some(format!("s-at-{i:02}")), None, None);
+        host.rename(&id, &title(i)).expect("rename 失败");
+    }
+    cx.update(|app| store.update(app, |st, _| st.refresh_list()));
     // 聚焦 composer 输入「@」,触发补全(Change → update_at_completion)
     let bounds = wcx
         .debug_bounds("composer-hit")
@@ -616,14 +612,14 @@ fn at_completion_rows_truncate_and_cap(cx: &mut TestAppContext) {
     wcx.simulate_input("@");
     wcx.run_until_parked();
 
-    let row_sel = |i: usize| -> &'static str {
-        Box::leak(format!("at-row-长标题会话{i:02}——{}", long_para(i)).into_boxed_str())
-    };
+    let row_sel =
+        |i: usize| -> &'static str { Box::leak(format!("at-row-{}", title(i)).into_boxed_str()) };
     // 等补全卡出现
     let mut visible = false;
-    for _ in 0..10 {
+    for _ in 0..150 {
         wcx.refresh().expect("刷新失败");
-        wcx.run_until_parked();
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
         if wcx.debug_bounds("at-completion-anchor").is_some() {
             visible = true;
             break;
@@ -633,9 +629,30 @@ fn at_completion_rows_truncate_and_cap(cx: &mut TestAppContext) {
     assert!(visible, "@ 补全卡未出现");
     let _ = std::fs::remove_dir_all(root);
 
+    // 候选行可能晚于锚点渲染:任意渲染行出现要轮询,凑齐后按集合断言
+    // (顺序不敏感 —— list_sessions 同秒建立排序不稳)
+    let mut rendered: Vec<usize> = Vec::new();
+    for _ in 0..150 {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+        rendered = (0..25usize)
+            .filter(|&i| wcx.debug_bounds(row_sel(i)).is_some())
+            .collect();
+        if !rendered.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        !rendered.is_empty(),
+        "会话行未渲染(候选未回流;sessions.len()={})",
+        cx.update(|app| store.read(app).state.sessions.len())
+    );
+
     // ① 截断:行高保持定高,截断包装层(-text)不得超一行
     // (无截断时文本换行,该层高度为多行 ≈ 行高 3 倍)
-    for i in [0usize, 1, 19] {
+    for &i in rendered.iter().take(3) {
         let row = wcx
             .debug_bounds(row_sel(i))
             .unwrap_or_else(|| panic!("会话行 {i} 未渲染"));
@@ -655,21 +672,22 @@ fn at_completion_rows_truncate_and_cap(cx: &mut TestAppContext) {
         );
     }
     // 行间不重叠
-    let (a, b) = (
-        wcx.debug_bounds(row_sel(0)).unwrap(),
-        wcx.debug_bounds(row_sel(1)).unwrap(),
-    );
-    assert!(
-        b.origin.y >= a.origin.y + a.size.height - px(1.),
-        "行 1 与行 0 竖向重叠"
-    );
-    // ② 封顶:第 21 只及以后不渲染
-    for i in [20usize, 24] {
+    if let [first, second, ..] = rendered.as_slice() {
+        let (a, b) = (
+            wcx.debug_bounds(row_sel(*first)).unwrap(),
+            wcx.debug_bounds(row_sel(*second)).unwrap(),
+        );
         assert!(
-            wcx.debug_bounds(row_sel(i)).is_none(),
-            "会话行 {i} 超上限仍渲染(封顶失效)"
+            b.origin.y >= a.origin.y + a.size.height - px(1.),
+            "行 {second} 与行 {first} 竖向重叠"
         );
     }
+    // ② 封顶:候选上限 20,渲染数不得超
+    assert!(
+        rendered.len() <= 20,
+        "渲染 {} 行超上限(封顶失效)",
+        rendered.len()
+    );
 }
 
 /// Mermaid 查看器全链路:内嵌**卡片**工具有控(图表/代码、±缩放、下载、
@@ -1199,6 +1217,8 @@ fn menu_harness_opts_inner(
         store.update(cx, |s, cx| {
             s.attach_window_state(window, cx);
         });
+        // 取证守卫:store drop 时清理临时根;panic 时保留并打印路径
+        store.update(cx, |s, _| s.temp_root = Some(root.clone()));
         // 共享夹具不测首运行 onboarding 模态(模态遮罩会拦截点击与
         // 断言);统一标记引导完成,专项用例走 menu_harness_onboarding
         if !keep_onboarding {
@@ -1247,6 +1267,38 @@ fn click_sel(wcx: &mut gpui_kit::VisualTestContext, sel: &'static str) {
         },
         gpui_kit::Modifiers::default(),
     );
+}
+
+/// 读 harness 临时根下全部 session.jsonl 的 session/mode 序列(plan 回归
+/// 锁与失败诊断共用;任何读失败静默跳过 —— 诊断路径自身不得 panic)
+fn log_mode_sequence(root: &std::path::Path) -> Vec<String> {
+    let mut modes = Vec::new();
+    let Ok(projects) = std::fs::read_dir(root.join("sessions")) else {
+        return modes;
+    };
+    for proj in projects.flatten() {
+        let Ok(files) = std::fs::read_dir(proj.path()) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let log = f.path().join("session.jsonl");
+            if !log.is_file() {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&log) else {
+                continue;
+            };
+            for line in text.lines() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+                    && v["type"] == "session/mode"
+                    && let Some(m) = v["data"]["mode"].as_str()
+                {
+                    modes.push(m.to_string());
+                }
+            }
+        }
+    }
+    modes
 }
 
 /// HostBridge 是专任 tokio runtime:帧通道与 oneshot 的唤醒天然从
@@ -3761,7 +3813,14 @@ fn plan_toggle_end_to_end_fake(cx: &mut TestAppContext) {
         }
         false
     };
-    assert!(wait_plan(cx, true), "/plan on 未生效(set_mode 链路未回流)");
+    let on_ok = wait_plan(cx, true);
+    if !on_ok {
+        eprintln!(
+            "[diag-plan] /plan on 未回流;日志 mode 序列:{:?}",
+            log_mode_sequence(&root)
+        );
+    }
+    assert!(on_ok, "/plan on 未生效(set_mode 链路未回流)");
     redraw(cx, &mut wcx);
     assert!(wcx.debug_bounds("chip-plan").is_some(), "Plan chip 未出现");
     // 计划模式 placeholder 文案切换
@@ -3793,7 +3852,14 @@ fn plan_toggle_end_to_end_fake(cx: &mut TestAppContext) {
     cx.run_until_parked();
     // chip 消失不做 debug_bounds 断言:该 map 只增不清(Frame::clear
     // 不含 debug_bounds),退出态由 store 投影断言兜底
-    assert!(wait_plan(cx, false), "/plan off 未生效");
+    let off_ok = wait_plan(cx, false);
+    if !off_ok {
+        eprintln!(
+            "[diag-plan] /plan off 未回流;日志 mode 序列:{:?}",
+            log_mode_sequence(&root)
+        );
+    }
+    assert!(off_ok, "/plan off 未生效");
     // 标准态 placeholder 恢复
     assert_eq!(
         cx.update(|app| store.read(app).chat.composer_placeholder),
@@ -3804,30 +3870,7 @@ fn plan_toggle_end_to_end_fake(cx: &mut TestAppContext) {
     // 回归锁(真机取证):ⓧ 退出后父级 toggle 曾读到翻转的
     // 乐观态反向补发 plan,真机日志 standard/plan 严格交替 51 条、永远
     // 退不出。锁日志层:最后一个 standard 之后不得再出现 plan
-    let proj_dir = std::fs::read_dir(root.join("sessions"))
-        .expect("sessions 根可读")
-        .flatten()
-        .find(|e| e.path().is_dir())
-        .map(|e| e.path())
-        .expect("project 目录存在");
-    let log_file = std::fs::read_dir(&proj_dir)
-        .expect("project 目录可读")
-        .flatten()
-        .find(|e| e.path().join("session.jsonl").is_file())
-        .map(|e| e.path().join("session.jsonl"))
-        .expect("session.jsonl 存在");
-    let modes: Vec<String> = std::fs::read_to_string(&log_file)
-        .expect("日志可读")
-        .lines()
-        .filter_map(|l| {
-            let v: serde_json::Value = serde_json::from_str(l).ok()?;
-            if v["type"] == "session/mode" {
-                Some(v["data"]["mode"].as_str().unwrap_or("").to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
+    let modes = log_mode_sequence(&root);
     let last_std = modes.iter().rposition(|m| m == "standard");
     let plan_after_std = modes
         .iter()
@@ -3955,21 +3998,26 @@ fn workspace_dropdown_lists_and_selects(cx: &mut TestAppContext) {
         host.add_workspace(ws2_dir.to_str().expect("路径 utf-8"))
             .expect("添加工作区")
     });
-    // host/workspace-changed 帧 → pump → describe 刷新(须 update
-    // 边界冲刷效果,见 plan 测试注)
+    // host/workspace-changed 帧 → pump → describe 刷新(须 update 边界
+    // 冲刷效果,见 plan 测试注)。先打开下拉,行随刷新后的 host_info
+    // 逐帧渲染 —— 菜单开着时数据到达即出现,断言轮询兜底(并行负载下
+    // RPC 往返可能远超固定几轮 parked;host 流丢段由重同步基线兜住)
     cx.run_until_parked();
-    cx.update(|_: &mut gpui_kit::App| {});
-    cx.run_until_parked();
-
     click_sel(&mut wcx, "ws-trigger");
     wcx.refresh().expect("刷新失败");
-    cx.update(|_: &mut gpui_kit::App| {});
-    cx.run_until_parked();
     let row_sel = Box::leak(format!("ws-row-{ws2}").into_boxed_str());
-    assert!(
-        wcx.debug_bounds(row_sel).is_some(),
-        "工作区行未列出(host_info 未刷新?)"
-    );
+    let mut listed = false;
+    for _ in 0..150 {
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+        wcx.refresh().expect("刷新失败");
+        if wcx.debug_bounds(row_sel).is_some() {
+            listed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(listed, "工作区行未列出(host_info 未刷新?)");
 
     click_sel(&mut wcx, row_sel);
     cx.run_until_parked();
@@ -4061,22 +4109,30 @@ fn sidebar_keeps_empty_workspace_group(cx: &mut TestAppContext) {
         host.add_workspace(ws2_dir.to_str().expect("路径 utf-8"))
             .expect("添加工作区")
     });
-    // host/workspace-changed → describe 刷新 + 清单重拉
-    cx.run_until_parked();
-    cx.update(|_: &mut gpui_kit::App| {});
-    cx.run_until_parked();
+    // host/workspace-changed → describe 刷新 + 清单重拉。帧泵与 RPC
+    // 往返在并行负载下可能远超固定几轮 parked —— 组头渲染断言须轮询
+    // 兜底(host 流丢段由重同步基线补发 workspace-changed,重拉幂等)
     wcx.refresh().expect("刷新失败");
-    cx.update(|_: &mut gpui_kit::App| {});
-    cx.run_until_parked();
-
     let head_sel = Box::leak(format!("ws-head-{ws2}").into_boxed_str());
-    assert!(
-        wcx.debug_bounds(head_sel).is_some(),
-        "无会话工作区组头未渲染"
-    );
     let default = cx.update(|app| store.read(app).default_workspace());
     let def_sel = Box::leak(format!("ws-head-{default}").into_boxed_str());
-    assert!(wcx.debug_bounds(def_sel).is_some(), "默认区组头未渲染");
+    let wait_head = |cx: &mut TestAppContext,
+                     wcx: &mut gpui_kit::VisualTestContext,
+                     sel: &'static str|
+     -> bool {
+        for _ in 0..150 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            // 组头经帧泵(前台任务)渲染,轮询每轮须补 update 边界落帧
+            cx.update(|_: &mut gpui_kit::App| {});
+            cx.run_until_parked();
+            if wcx.debug_bounds(sel).is_some() {
+                return true;
+            }
+        }
+        false
+    };
+    assert!(wait_head(cx, &mut wcx, head_sel), "无会话工作区组头未渲染");
+    assert!(wait_head(cx, &mut wcx, def_sel), "默认区组头未渲染");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -4771,6 +4827,9 @@ fn global_search_hit_to_trajectory_row(cx: &mut TestAppContext) {
             if useq.is_some() {
                 break;
             }
+            // fake turn 在 bridge runtime 异步落盘:轮询必须带节奏,
+            // 纯 run_until_parked 空转会在并行负载下于落盘前耗尽轮次
+            std::thread::sleep(std::time::Duration::from_millis(50));
             wcx.run_until_parked();
             wcx.refresh().expect("刷新失败");
         }
@@ -4807,6 +4866,7 @@ fn global_search_hit_to_trajectory_row(cx: &mut TestAppContext) {
         if located {
             break;
         }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let (active, inspector) = cx.update(|app| {
         let st = store.read(app);

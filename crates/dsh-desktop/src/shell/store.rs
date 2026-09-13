@@ -124,6 +124,21 @@ pub struct AppStore {
     pub trajectory: TrajectoryStore,
     /// 本地通告序号(Notice key 去重用)
     local_notice_seq: u64,
+    /// 测试 harness 临时根(取证守卫:panic 时保留并打印路径,正常
+    /// drop 清理;生产恒 None)
+    pub temp_root: Option<std::path::PathBuf>,
+}
+
+impl Drop for AppStore {
+    fn drop(&mut self) {
+        if let Some(root) = self.temp_root.take() {
+            if std::thread::panicking() {
+                eprintln!("[temp-keep] 测试失败,临时根保留取证:{}", root.display());
+            } else {
+                let _ = std::fs::remove_dir_all(&root);
+            }
+        }
+    }
 }
 
 impl AppStore {
@@ -177,6 +192,7 @@ impl AppStore {
             subagents: SubagentsStore::default(),
             trajectory: TrajectoryStore::default(),
             local_notice_seq: 0,
+            temp_root: None,
         };
         if sessions.is_empty() {
             // 空仓:自动建会话再刷新(web 同款)
