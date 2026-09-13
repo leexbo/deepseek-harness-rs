@@ -65,8 +65,9 @@ impl AppStore {
         self.chat.pending_command = None;
         self.sync_active_workspace_from_current();
         self.refresh_session_cfg(id);
-        // 同步:切换会话即见终值(异步完成回调不唤醒空闲主循环)
-        self.refresh_stats_sync(id);
+        // 统计异步回填:冷路径全量折叠大日志,同步跑 GPUI 线程会
+        // 冻结切换瞬间(见 shell::AppStore::refresh_stats)
+        self.refresh_stats(id, cx);
         self.load_history(id.to_string(), cx);
         if self.trajectory_visible() {
             self.refresh_trajectory(cx);

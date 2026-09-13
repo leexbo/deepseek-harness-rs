@@ -6143,3 +6143,43 @@ fn image_only_message_sends(cx: &mut TestAppContext) {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// 统计异步回填行为锁:open_session 不得在 GPUI 线程同步算统计
+/// (session_stats 冷路径全量读+逐行解析日志再折叠两遍,大会话
+/// 切换瞬间即冻结);统计经后台计算回填,泵空后落表。同步实现下
+/// 「返回时缺席」断言即失败
+#[gpui_kit::test]
+fn open_session_stats_arrive_async_off_ui_thread(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "stats-async");
+    let sid = cx.update(|app| {
+        let st = store.read(app);
+        st.state
+            .sessions
+            .first()
+            .map(|s| s.session_id.clone())
+            .expect("夹具应建首个会话")
+    });
+    let immediate = cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.stats_by_id.clear();
+            st.open_session(&sid, cx);
+            st.stats_by_id.contains_key(&sid)
+        })
+    });
+    assert!(
+        !immediate,
+        "open_session 返回时统计不得已在表(同步算在 GPUI 线程 = 切换冻结)"
+    );
+    // 限轮询(并行负载下单发泵可能不足;真时间让宿主线程推进)
+    let mut filled = false;
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+        if cx.update(|app| store.read(app).stats_by_id.contains_key(&sid)) {
+            filled = true;
+            break;
+        }
+    }
+    assert!(filled, "泵空后统计应经异步回填落表");
+    let _ = std::fs::remove_dir_all(root);
+}

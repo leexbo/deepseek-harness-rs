@@ -516,10 +516,10 @@ impl AppStore {
                 self.refresh_workspaces();
             }
             Effect::Stats(id) => {
-                // 状态边沿**同步**拉取:session/stats 推送的丢帧自愈
-                // 安全网(tokio broadcast 滞后丢帧;单会话解析与同帧
-                // list_sessions 全量扫描同量级)
-                self.refresh_stats_sync(&id);
+                // 状态边沿拉取:session/stats 推送的丢帧自愈安全网
+                // (tokio broadcast 滞后丢帧)。冷路径全量读+折叠大日志
+                // 不能同步跑 GPUI 线程(切回大会话 UI 冻结),异步回填
+                self.refresh_stats(&id, cx);
                 // 模型可能刚经 bash 切过分支
                 self.refresh_branches();
             }
@@ -539,11 +539,30 @@ impl AppStore {
         self.state.sessions = self.bridge.host().list_sessions();
     }
 
-    /// 同步拉会话统计(打开会话/状态边沿;保证帧处理即落表)
-    pub(crate) fn refresh_stats_sync(&mut self, id: &str) {
-        if let Ok(v) = self.bridge.host().session_stats(id) {
-            self.stats_by_id.insert(id.to_string(), v);
-        }
+    /// 异步拉会话统计(打开会话/状态边沿)。session_stats 冷路径
+    /// 全量读入并逐行解析日志再做两遍折叠——大会话(>10MB)同步跑
+    /// GPUI 线程即切换瞬间冻结;经 bridge 上 tokio 计算,完成后
+    /// update+notify 回填唤醒主循环(旧同步版注释担心「异步完成不
+    /// 唤醒空闲主循环」即由此解决),统计徽标晚一拍到达
+    pub(crate) fn refresh_stats(&mut self, id: &str, cx: &mut Context<Self>) {
+        let store = cx.entity().clone();
+        let host = self.bridge.host().clone();
+        let sid = id.to_string();
+        let sid_compute = sid.clone();
+        let rx = self
+            .bridge
+            .call(async move { host.session_stats(&sid_compute) });
+        // 本仓调度器 Task 语义 = 丢弃即取消,后台任务必须 detach
+        cx.spawn(async move |_this, cx| {
+            let v = rx.await;
+            store.update(cx, |s, cx| {
+                if let Ok(Ok(v)) = v {
+                    s.stats_by_id.insert(sid, v);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     // ── handlers ───────────────────────────────────────────────
