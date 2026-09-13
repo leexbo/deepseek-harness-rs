@@ -3513,7 +3513,11 @@ mod countdown_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        let at = |mins: u64| (now + mins * 60_000).to_string();
+        // +1s 缓冲:断言按分钟取整,而 resets_countdown 内部会重新读一次
+        // 时钟(晚于本行捕获的 now)。若恰好跨毫秒边界,floor 会少 1 分钟
+        // (实测并行负载下「4天22时」偶发成「4天21时」)。缓冲把边界推到
+        // 秒级,消除该非确定。
+        let at = |mins: u64| (now + mins * 60_000 + 1_000).to_string();
         assert_eq!(
             resets_countdown(&at(4 * 1440 + 22 * 60)).as_deref(),
             Some("4天22时")
