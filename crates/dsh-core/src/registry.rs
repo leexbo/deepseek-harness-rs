@@ -843,6 +843,10 @@ fn event_frame(session_id: &str, event: crate::proto::SessionEvent) -> Option<Se
 /// 的那条 seq**:此前「只翻最后一条」在 append→读日志的间隙被并发
 /// append 插队时(SetMode 落档后紧随的入队 splice),回声永久丢失、
 /// 桌面收不到 plan/mode。
+///
+/// 日志锁中毒不丢帧:EventLog 为纯内存结构,poison 不损数据(持锁方
+/// 只是 panic 过),恢复继续读。此前 poison-else 静默吞回声且中毒是
+/// 持久态,同进程后续全部回声连坐丢失。
 fn broadcast_event(
     provider: &ProviderInfo,
     log: &Mutex<EventLog>,
@@ -850,7 +854,7 @@ fn broadcast_event(
     mux: &broadcast::Sender<ServerRequest>,
     seq: Option<u64>,
 ) {
-    let Ok(l) = log.lock() else { return };
+    let l = log.lock().unwrap_or_else(|p| p.into_inner());
     let mut tr = Translator::new(provider.clone());
     for ev in l.iter() {
         tr.translate(ev);
