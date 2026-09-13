@@ -40,6 +40,13 @@ pub const PANEL_ORDER_BASE: u64 = 1 << 40;
 /// 单文档 order 步长(块序上限;超长文档块序溢出步长仅回退为
 /// order 撞号,不会圈入他域)。
 pub const ORDER_STRIDE: u64 = 4096;
+/// 域尾哨兵 order:各域的不可见 sink 参与者(覆盖域内非文本区域,
+/// 见 `shell::SelectionDomainSink`)使用。拖动经过气泡间隙/空白时
+/// endpoint 的 hover 判定命中本域哨兵,区间止于域尾;否则回退分支
+/// (predecessor)按 y 全窗口取终点,会跳进异域把右栏卷入选区。
+pub const CHAT_TAIL_ORDER: u64 = CHAT_ORDER_BASE + u32::MAX as u64;
+/// 右栏域尾哨兵(同 [`CHAT_TAIL_ORDER`])。
+pub const PANEL_TAIL_ORDER: u64 = PANEL_ORDER_BASE + u32::MAX as u64;
 
 /// 渲染 markdown 文本(节点级唯一前缀作元素 id;同时作 parse 缓存键)。
 /// mermaid 图不可点击(轨迹/计划页等无查看器场景)。
@@ -653,6 +660,111 @@ mod selection_tests {
         assert!(
             !selected.contains("右栏面板"),
             "右栏域不得被聊天拖选卷入(泄漏回归),实际 {selected:?}"
+        );
+    }
+
+    /// 真机泄漏形态的复刻:左列文本下方留空白(气泡间隙/composer 区的
+    /// 抽象),右列文本 top 更低。拖选从聊天文本下行进入左列空白——
+    /// 此时 hover 无命中,endpoint 走 predecessor 回退(按 top≤y 全
+    /// 窗口取最大,不看 x),右栏块排得更低即被选为终点,区间
+    /// [聊天..右栏] 吞掉两域之间一切参与者
+    struct GapLeakView;
+    impl Render for GapLeakView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            // 照真机布线:窗口级聊天哨兵(栈底)+ 右栏列哨兵(盖右栏)
+            div()
+                .size_full()
+                .relative()
+                .child(
+                    div()
+                        .absolute()
+                        .size_full()
+                        .child(crate::shell::SelectionDomainSink::new(
+                            "sink-window",
+                            super::CHAT_TAIL_ORDER,
+                        )),
+                )
+                .child(
+                    div()
+                        .w(px(600.))
+                        .flex()
+                        .child(
+                            div()
+                                .w(px(300.))
+                                .v_flex()
+                                .child(super::render(
+                                    "gapchat",
+                                    "聊天块甲的正文内容",
+                                    super::CHAT_ORDER_BASE,
+                                ))
+                                // 聊天文本下方空白(非参与者区域)
+                                .child(div().h(px(300.))),
+                        )
+                        .child(
+                            div()
+                                .w(px(300.))
+                                .relative()
+                                .v_flex()
+                                .child(div().absolute().size_full().child(
+                                    crate::shell::SelectionDomainSink::new(
+                                        "sink-panel",
+                                        super::PANEL_TAIL_ORDER,
+                                    ),
+                                ))
+                                // 右栏文本 top 更低(~120):predecessor 判定胜过聊天块
+                                .child(div().h(px(120.)))
+                                .child(super::render(
+                                    "gappanel",
+                                    "右栏面板的独有文本内容",
+                                    super::PANEL_ORDER_BASE,
+                                )),
+                        ),
+                )
+        }
+    }
+
+    /// 回退泄漏回归锁:拖选进入聊天列空白时,终点必须钳在聊天域
+    /// (域尾哨兵 sink),不得经 predecessor 跳进右栏
+    #[gpui_kit::test]
+    fn drag_into_gap_does_not_spill_via_fallback(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let v = cx.new(|_| GapLeakView);
+            gpui_kit::component::Root::new(v, window, cx)
+        });
+        let _ = view;
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        // 从聊天文本按下,竖直下行进入左列空白(y=200:聊天块 top≈8 已
+        // 被越过,右栏块 top≈120 ≤ 200 满足 predecessor)
+        cx.simulate_mouse_down(
+            gpui_kit::point(px(20.), px(8.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            gpui_kit::point(px(20.), px(200.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            gpui_kit::point(px(20.), px(200.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        let selected = cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            gpui_kit::base::TextSelection::selected_text(window, cx)
+        });
+        eprintln!("[gap-leak] 选中文本 = {selected:?}");
+        assert!(
+            selected.contains("块甲的正文内容"),
+            "拖选起点在聊天文本,聊天域应被选中,实际 {selected:?}"
+        );
+        assert!(
+            !selected.contains("右栏面板"),
+            "拖入聊天列空白不得经回退分支卷入右栏(真机泄漏形态),实际 {selected:?}"
         );
     }
 }

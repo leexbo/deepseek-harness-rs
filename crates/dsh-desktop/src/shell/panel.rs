@@ -83,6 +83,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
     let (s_resize, s_resize_move) = (store.clone(), store.clone());
     let mut col = div()
         .debug_selector(|| "right-panel".to_string())
+        .relative()
         .flex_shrink_0()
         .h_full()
         .w(px(col_w))
@@ -92,6 +93,17 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         .bg(theme::BASE())
         .border_l_1()
         .border_color(theme::BORDER())
+        // 右栏域尾哨兵(栈底,盖整个面板列):右栏拖选落空时终点钳在
+        // 右栏域,同时压住窗口级聊天哨兵在本列的命中(后注册居上)
+        .child(
+            div()
+                .absolute()
+                .size_full()
+                .child(crate::shell::SelectionDomainSink::new(
+                    "sel-sink-panel",
+                    crate::kits::markdown::PANEL_TAIL_ORDER,
+                )),
+        )
         .child(panel_header(store, &tabs, active_tab))
         .child(match active_tab {
             Some(tab) => tab_body(store, tab, window, cx),

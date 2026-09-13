@@ -132,6 +132,112 @@ impl Element for SelectionRefreshDriver {
     }
 }
 
+/// 域尾哨兵:铺满一个视觉域的不可见选择参与者(空文本)。
+///
+/// gpui-base 拖选终点在 hover 无命中(气泡间隙/composer/空白区)时走
+/// predecessor 回退——按 top≤y 全窗口取最大、不看 x,会把相邻列
+/// (右栏面板)的块选为终点,跨域区间 [聊天..右栏] 把异域文本整段卷
+/// 入选区(真机泄漏形态,回归锁 `drag_into_gap_does_not_spill_via_
+/// fallback`)。本元素以绝对定位铺满所在容器,用公开的注册 API 挂
+/// 自定义几何参与者:域内非文本区域 hover 命中哨兵而非回退,区间
+/// 钳在本域(order = 域尾哨兵,见 [`crate::kits::markdown`] 常量)。
+/// 空 runs = 无高亮、无复制贡献。置于域容器首子(绘制序最早,注册
+/// 的 hitbox 居栈底):真实文本 hitbox 后注册居上且面积更小,hover
+/// 优先命中真实文本,哨兵只兜空白
+pub(crate) struct SelectionDomainSink {
+    id: gpui_kit::SharedString,
+    order: u64,
+}
+
+impl SelectionDomainSink {
+    pub(crate) fn new(id: impl Into<gpui_kit::SharedString>, order: u64) -> Self {
+        Self {
+            id: id.into(),
+            order,
+        }
+    }
+}
+
+impl IntoElement for SelectionDomainSink {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for SelectionDomainSink {
+    type RequestLayoutState = gpui_kit::base::TextSelectionHandle;
+    type PrepaintState = gpui_kit::Hitbox;
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone().into())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let handle = window.with_element_state(
+            global_id.expect("SelectionDomainSink must have a stable element id"),
+            |retained: Option<gpui_kit::base::TextSelectionHandle>, _| {
+                let handle =
+                    retained.unwrap_or_else(|| gpui_kit::base::TextSelectionHandle::new("", cx));
+                (handle.clone(), handle)
+            },
+        );
+        // 铺满父容器(auto 尺寸在 absolute 容器里高度会塌 0,注册的
+        // bounds 盖不住空白区,哨兵失效)
+        let style = Style {
+            size: gpui_kit::Size {
+                width: gpui_kit::Length::Definite(gpui_kit::DefiniteLength::Fraction(1.0)),
+                height: gpui_kit::Length::Definite(gpui_kit::DefiniteLength::Fraction(1.0)),
+            },
+            ..Style::default()
+        };
+        (window.request_layout(style, [], cx), handle)
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        handle: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let hitbox = window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal);
+        handle.register(
+            gpui_kit::base::TextSelectionRegistration::new(hitbox.clone(), bounds)
+                .with_document_order(self.order),
+            window,
+            cx,
+        );
+        hitbox
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        handle: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        _: &mut Window,
+        cx: &mut App,
+    ) {
+        handle.update_runs(&[], cx);
+    }
+}
+
 /// 工作区根视图(状态收口在 AppStore)
 pub struct WorkspaceView {
     store: Entity<AppStore>,
@@ -278,6 +384,12 @@ impl Render for WorkspaceView {
             // 拖选实时刷新驱动器(零尺寸;见其文档)——必须与本列同窗,
             // 监听挂在窗口级,置脏后渲染循环出帧高亮才实时
             .child(SelectionRefreshDriver)
+            // 聊天域尾哨兵:铺满窗口(栈底),拖选落空时终点钳在聊天域,
+            // 不经 predecessor 回退跳进右栏(见 SelectionDomainSink)
+            .child(div().absolute().size_full().child(SelectionDomainSink::new(
+                "sel-sink-chat",
+                crate::kits::markdown::CHAT_TAIL_ORDER,
+            )))
             .when(any_menu_open, |el| {
                 el.on_mouse_down(gpui_kit::MouseButton::Left, {
                     let store = self.store.clone();
