@@ -516,6 +516,10 @@ pub struct AppHost {
     subagent_translators: std::sync::Mutex<HashMap<String, crate::translate::Translator>>,
     /// 用户级设置(~/.dshrs/settings.yaml;setter 落盘与冷装配读取)
     settings: SettingsStore,
+    /// provider 传输面指纹(api_key/base_url/dialect;上次同步快照):
+    /// 变更检测基准——key 热生效 = 指纹 diff → 受影响空闲会话 detach,
+    /// 下次 prompt 以新凭据重装配
+    provider_fp: Mutex<ProviderFp>,
     /// 会话 → 模型覆盖(空 = 用默认;切换时 detach,下次 prompt 重装配)
     model_overrides: std::sync::RwLock<HashMap<String, String>>,
     /// 会话 → preset 覆盖(standard / minimal / 工作区自定义)
@@ -697,6 +701,10 @@ fn default_dshrs_root() -> PathBuf {
         .unwrap_or_default();
     PathBuf::from(home).join(".dshrs")
 }
+
+/// provider 传输面指纹表(provider id → api_key/base_url/dialect 快照;
+/// 热生效的变更检测基准)
+type ProviderFp = HashMap<String, (Option<String>, String, String)>;
 
 /// 项目目录键:
 /// 路径分隔符(`/` `\` `:`)→ `-`(连续折叠),危险码点 `~XXXX` 转义,
@@ -1065,6 +1073,7 @@ impl AppHost {
             api_key: api_key.to_string(),
             base,
             settings,
+            provider_fp: Mutex::new(HashMap::new()),
             sessions: std::sync::RwLock::new(HashMap::new()),
             live_children: std::sync::Mutex::new(std::collections::HashSet::new()),
             jobs_sources: std::sync::Mutex::new(HashMap::new()),
@@ -1091,6 +1100,8 @@ impl AppHost {
             feedback,
         };
         app.sweep_orphan_subagents();
+        // 传输面指纹基线(此刻无附着会话,diff 出的「变更」无目标)
+        app.sync_provider_transports();
         Ok(app)
     }
 
@@ -1116,6 +1127,62 @@ impl AppHost {
         for id in orphans {
             // 运行态孤儿(理论不可达:父已死)失败无害,下次再扫
             let _ = self.delete_session(&id);
+        }
+    }
+
+    /// provider 传输面热生效:指纹 diff 检测 api_key/base_url/dialect
+    /// 变更(设置页保存与外部编辑 settings.yaml 共用一条路),变更
+    /// provider 名下的**空闲**附着会话 detach——下次 prompt 以新凭据
+    /// 重装配,当前对话即生效,无需新建/重启。运行中会话不动(不拦
+    /// 正在跑的 turn;其后续 turn 间隙仍由本函数在下次变更时处理,
+    /// 也可由用户停止后重发触发重装配)。返回变更 provider id 集
+    pub fn sync_provider_transports(&self) -> Vec<String> {
+        let current: ProviderFp = self
+            .settings
+            .read()
+            .providers
+            .iter()
+            .map(|p| {
+                (
+                    p.id.clone(),
+                    (p.api_key.clone(), p.base_url.clone(), p.dialect.clone()),
+                )
+            })
+            .collect();
+        let mut fp = self.provider_fp.lock().expect("provider_fp 锁中毒");
+        let changed: Vec<String> = current
+            .iter()
+            .filter(|(id, v)| fp.get(id.as_str()) != Some(v))
+            .map(|(id, _)| id.clone())
+            .collect();
+        if changed.is_empty() {
+            return changed;
+        }
+        *fp = current;
+        drop(fp);
+        for pid in &changed {
+            self.detach_idle_sessions_using(pid);
+        }
+        changed
+    }
+
+    /// 使用指定 provider 的空闲附着会话全部 detach(传输参数变更的
+    /// 公共收口;会话 → 工作区 → 生效 provider 逐级解析)
+    fn detach_idle_sessions_using(&self, provider_id: &str) {
+        let ids: Vec<String> = self
+            .sessions
+            .read()
+            .expect("sessions 锁中毒")
+            .keys()
+            .cloned()
+            .collect();
+        for id in ids {
+            let (ws, _) = self.resolve_session(&id);
+            if self.provider_for(&ws).id == provider_id
+                && let Err(_e) = self.detach_if_idle(&id)
+            {
+                // 运行中:保持现装配,不拦正在跑的 turn
+            }
         }
     }
 
@@ -1152,7 +1219,7 @@ impl AppHost {
         let client = reqwest::Client::new();
         let mut req = client.get(&url);
         if let Some(key) = key {
-            req = if dialect == "anthropic" {
+            req = if dialect == "anthropic-messages" {
                 req.header("x-api-key", &key)
                     .header("anthropic-version", "2023-06-01")
             } else {
@@ -1252,11 +1319,22 @@ impl AppHost {
 
     /// 拉取 provider 计费快照:GET 配置 URL(鉴权头按方言)→ JSON 路径
     /// 求值 → BillingSnapshot 写回 settings.billing_cache(落盘持久化)。
-    /// HTTP/解析/路径全部未命中 → Err(错误串,设置页通告用)
+    /// 条目未显式配置时回落目录内置端点(内置计费默认显示);HTTP/解析/
+    /// 路径全部未命中 → Err(错误串,设置页通告用)
     pub async fn fetch_billing(&self, provider_id: &str) -> Result<(), String> {
         let provider = self.settings.read().provider(Some(provider_id));
-        let Some(billing) = provider.billing.clone() else {
-            return Err("该 provider 未配置计费端点".into());
+        let billing = match provider.billing.clone() {
+            Some(b) => b,
+            None => {
+                match crate::settings::provider_catalog()
+                    .into_iter()
+                    .find(|e| e.id == provider_id)
+                    .and_then(|e| e.billing)
+                {
+                    Some(b) => b,
+                    None => return Err("该 provider 未配置计费端点".into()),
+                }
+            }
         };
         let Some(key) = self.resolve_provider_key(&provider) else {
             return Err("凭据各级缺席,无法查询计费".into());
@@ -1309,7 +1387,10 @@ impl AppHost {
     ) -> Result<BillingSnapshot, String> {
         let client = reqwest::Client::new();
         let mut req = client.get(&cfg.url);
-        req = if dialect == "anthropic" {
+        req = if cfg.auth_style.as_deref() == Some("raw") {
+            // 裸 token(GLM 用量端点形态):Authorization: <key> 原样
+            req.header("Authorization", key)
+        } else if dialect == "anthropic-messages" {
             req.header("x-api-key", key)
                 .header("anthropic-version", "2023-06-01")
         } else {
@@ -1359,16 +1440,22 @@ impl AppHost {
                         .and_then(|p| json_path(&body, p))
                         .and_then(json_percent)
                 };
+                // 重置时间:字符串原样;epoch 毫秒数字字符串化
+                let reset_ts = |p: &Option<String>| {
+                    p.as_deref()
+                        .and_then(|p| json_path(&body, p))
+                        .and_then(|v| {
+                            v.as_str()
+                                .map(String::from)
+                                .or_else(|| v.as_f64().map(|f| f.to_string()))
+                        })
+                };
                 BillingSnapshot::Usage {
                     fetched_at_ms: now_ms,
                     pct_5h: pct(&cfg.paths.usage_5h),
                     pct_7d: pct(&cfg.paths.usage_7d),
-                    resets: cfg
-                        .paths
-                        .resets
-                        .as_deref()
-                        .and_then(|p| json_path(&body, p))
-                        .and_then(|v| v.as_str().map(String::from)),
+                    resets: reset_ts(&cfg.paths.resets),
+                    resets_7d: reset_ts(&cfg.paths.resets_7d),
                 }
             }
         };
@@ -2074,6 +2161,22 @@ impl AppHost {
                 v
             })
             .collect();
+        // 各工作区生效 provider(绑定 > 宿主默认):计费徽标/自动刷新
+        // 按「当前在用」取数,非默认工作区切换后计费跟切
+        let workspace_providers: serde_json::Map<String, Value> = self
+            .workspaces
+            .read()
+            .expect("workspaces 锁中毒")
+            .iter()
+            .map(|p| {
+                let name = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                (name, Value::String(self.provider_for(p).id))
+            })
+            .collect();
         json!({
             "onboarded": file.onboarded,
             "providers": providers,
@@ -2082,6 +2185,7 @@ impl AppHost {
             "hookBridges": serde_json::to_value(&file.hook_bridges).unwrap_or(Value::Null),
             "workspaces": serde_json::to_value(&file.workspaces).unwrap_or(Value::Null),
             "defaultProvider": self.default_provider().id,
+            "workspaceProviders": Value::Object(workspace_providers),
             "busyEnter": file.busy_enter,
             "language": file.language,
             "appearance": file.appearance,
@@ -2092,6 +2196,11 @@ impl AppHost {
             "defaultPreset": self.default_preset(),
             "defaultPermission": self.default_permission(),
         })
+    }
+
+    /// 内置 provider 目录(添加提供方流的预填数据;纯数据常量)
+    pub fn provider_catalog(&self) -> Vec<crate::settings::CatalogEntry> {
+        crate::settings::provider_catalog()
     }
 
     /// 界面语言偏好
@@ -2607,6 +2716,9 @@ impl AppHost {
                     if host.settings.reload_if_changed() {
                         host.sync_mcp_ports();
                     }
+                    // 传输面热生效独立于 reload:UI 保存与外部编辑两条路
+                    // 都经 settings 落地,指纹 diff 幂等且零成本
+                    host.sync_provider_transports();
                 }
             })
             .is_ok();
@@ -2759,7 +2871,14 @@ impl AppHost {
         if !entry.base_url.starts_with("http://") && !entry.base_url.starts_with("https://") {
             return Err(RpcError::bad_request("base_url 须以 http(s):// 开头"));
         }
-        if !["openai-chat", "anthropic", "openai-responses"].contains(&entry.dialect.as_str()) {
+        if ![
+            "openai-completions",
+            "anthropic-messages",
+            "openai-responses",
+            "glm-responses",
+        ]
+        .contains(&entry.dialect.as_str())
+        {
             return Err(RpcError::bad_request("未知方言"));
         }
         if let Some(r) = &entry.credential_ref
@@ -2787,6 +2906,9 @@ impl AppHost {
             .lock()
             .expect("models_cache 锁中毒")
             .remove(&entry.id);
+        // 传输面(api_key/base_url/dialect)变更即时生效:受影响空闲
+        // 会话 detach,当前对话下次 prompt 即以新配置重装配
+        self.sync_provider_transports();
         Ok(())
     }
 
@@ -2820,7 +2942,22 @@ impl AppHost {
         let key = project_key(&ws.display().to_string());
         self.settings
             .update(|s| s.workspaces.entry(key).or_default().provider = Some(provider_id.into()))
-            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        // 生效 provider 变了:该工作区的空闲附着会话 detach,下次
+        // prompt 以新 provider 重装配(与 key 热生效同一收口语义)
+        let ids: Vec<String> = self
+            .sessions
+            .read()
+            .expect("sessions 锁中毒")
+            .keys()
+            .cloned()
+            .collect();
+        for id in ids {
+            if self.resolve_session(&id).0 == ws {
+                let _ = self.detach_if_idle(&id);
+            }
+        }
+        Ok(())
     }
 
     /// 凭据可解析态(设置页状态行;不回明文)
@@ -6824,10 +6961,11 @@ mod tests {
             kind: BillingKind::Balance,
             url: format!("http://127.0.0.1:{port}/user/balance"),
             paths: crate::settings::BillingPaths {
-                balance: Some("balance_infos.0.total_balance".into()),
-                currency: Some("balance_infos.0.currency".into()),
+                balance: Some("$.balance_infos[0].total_balance".into()),
+                currency: Some("$.balance_infos[0].currency".into()),
                 ..Default::default()
             },
+            auth_style: None,
         });
         host.upsert_provider(p).unwrap();
 
@@ -6845,6 +6983,213 @@ mod tests {
         assert_eq!(me["billing_cache"]["currency"], "CNY");
         assert!(me["billing_cache"]["fetched_at_ms"].as_u64().unwrap() > 0);
         server.join().unwrap();
+    }
+
+    /// GLM 用量预设端到端:裸 token 鉴权(mock 捕获请求头断言无 Bearer
+    /// 前缀)+ JSONPath filter 命中 5h/周两窗 + epoch 毫秒重置时间字符串化
+    #[tokio::test]
+    async fn glm_usage_preset_raw_auth_and_filter_paths() {
+        // 空显式 key 宿主:链上 provider api_key 才会被采用(temp_host
+        // 的 "test-key" 显式注入优先级最高,会盖掉被测的裸 token)
+        let dir =
+            std::env::temp_dir().join(format!("dsh-core-billing-glm-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sroot = std::env::temp_dir().join(format!(
+            "dsh-core-billing-glm-sroot-{}",
+            Uuid::new_v4().simple()
+        ));
+        let host = Arc::new(AppHost::new_at(dir, true, "", sroot).unwrap());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let n = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"{"success":true,"code":200,"msg":"操作成功","data":{"level":"max","limits":[
+                {"type":"TIME_LIMIT","unit":5,"number":1,"usage":4000,"currentValue":213,"remaining":3787,"percentage":5,"nextResetTime":1789437886999},
+                {"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":15,"nextResetTime":1789246955101},
+                {"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":53,"nextResetTime":1789485024985}
+            ]}}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            std::io::Write::write_all(&mut stream, resp.as_bytes()).unwrap();
+            request
+        });
+
+        let mut glm = crate::settings::provider_catalog()
+            .into_iter()
+            .find(|e| e.id == "glm")
+            .unwrap();
+        if let Some(billing) = glm.billing.as_mut() {
+            billing.url = format!("http://127.0.0.1:{port}/api/monitor/usage/quota/limit");
+        }
+        let mut p = crate::settings::builtin_provider();
+        p.id = "glm".into();
+        p.base_url = glm.base_url.clone();
+        p.dialect = glm.dialect.clone();
+        p.api_key = Some("glm-test-token".into());
+        p.billing = glm.billing;
+        host.upsert_provider(p).unwrap();
+
+        host.fetch_billing("glm").await.expect("查询成功");
+
+        let request = server.join().unwrap();
+        assert!(
+            request.contains("authorization: glm-test-token\r\n")
+                || request.contains("Authorization: glm-test-token\r\n"),
+            "裸 token 鉴权(无 Bearer 前缀);实际捕获:\n{request}"
+        );
+        let view = host.settings_view();
+        let me = view["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "glm")
+            .unwrap();
+        assert_eq!(me["billing_cache"]["kind"], "usage");
+        assert_eq!(me["billing_cache"]["pct_5h"], 15);
+        assert_eq!(me["billing_cache"]["pct_7d"], 53);
+        assert_eq!(me["billing_cache"]["resets"], "1789246955101");
+        assert_eq!(me["billing_cache"]["resets_7d"], "1789485024985");
+    }
+
+    /// 条目未显式配置计费 → 目录内置端点回落(内置计费默认显示)。
+    /// 回落成立 = 错误停在凭据检查(不发请求;若未回落会提前报
+    /// 「未配置计费端点」);目录外厂商维持未配置
+    #[tokio::test]
+    async fn fetch_billing_falls_back_to_catalog_preset() {
+        let dir =
+            std::env::temp_dir().join(format!("dsh-core-billing-fb-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sroot = std::env::temp_dir().join(format!(
+            "dsh-core-billing-fb-sroot-{}",
+            Uuid::new_v4().simple()
+        ));
+        let host = Arc::new(AppHost::new_at(dir, true, "", sroot).unwrap());
+        // glm:目录内有计费预设;条目不带 billing、无凭据
+        let mut glm = crate::settings::builtin_provider();
+        glm.id = "glm".into();
+        glm.base_url = "https://open.bigmodel.cn/api/v1".into();
+        glm.dialect = "glm-responses".into();
+        host.upsert_provider(glm).unwrap();
+        let err = host.fetch_billing("glm").await.unwrap_err();
+        assert_eq!(
+            err, "凭据各级缺席,无法查询计费",
+            "应穿越目录回落分支抵达凭据检查"
+        );
+        // 目录外厂商无预设 → 维持「未配置」
+        let mut manual = crate::settings::builtin_provider();
+        manual.id = "manual-x".into();
+        host.upsert_provider(manual).unwrap();
+        let err = host.fetch_billing("manual-x").await.unwrap_err();
+        assert_eq!(err, "该 provider 未配置计费端点");
+    }
+
+    /// 快照携带各工作区生效 provider(绑定 > 宿主默认):计费徽标/
+    /// 自动刷新按「当前在用」取数的数据源,非默认工作区切换后跟切
+    #[test]
+    fn settings_view_reports_workspace_effective_providers() {
+        let host = temp_host("ws-providers");
+        let ws = host.workspace_names()[0].clone();
+        assert_eq!(
+            host.settings_view()["workspaceProviders"][ws.as_str()],
+            "deepseek",
+            "未绑定时回落宿主默认"
+        );
+        let mut glm = crate::settings::builtin_provider();
+        glm.id = "glm".into();
+        glm.base_url = "https://open.bigmodel.cn/api/v1".into();
+        glm.dialect = "glm-responses".into();
+        host.upsert_provider(glm).unwrap();
+        host.set_workspace_provider(&ws, "glm").unwrap();
+        assert_eq!(
+            host.settings_view()["workspaceProviders"][ws.as_str()],
+            "glm",
+            "工作区绑定生效"
+        );
+    }
+
+    /// 目录各计费预设对官方/实测示例响应可提取(路径与响应形态逐字对应)
+    #[test]
+    fn catalog_preset_paths_hit_documented_response_shapes() {
+        let deepseek = serde_json::json!({
+            "is_available": true,
+            "balance_infos": [{"currency": "CNY", "total_balance": "110.00",
+                "granted_balance": "10.00", "topped_up_balance": "100.00"}],
+        });
+        let kimi = serde_json::json!({
+            "code": 0,
+            "data": {"available_balance": 49.58894, "voucher_balance": 46.58893,
+                "cash_balance": 3.00001},
+            "scode": "0x0", "status": true,
+        });
+        let glm = serde_json::json!({
+            "success": true, "code": 200, "msg": "操作成功", "data": {"level": "max", "limits": [
+                {"type": "TIME_LIMIT", "unit": 5, "number": 1, "usage": 4000,
+                    "currentValue": 213, "remaining": 3787, "percentage": 5,
+                    "nextResetTime": 1789437886999u64},
+                {"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 0,
+                    "nextResetTime": 1789246955101u64},
+                {"type": "TOKENS_LIMIT", "unit": 6, "number": 1, "percentage": 53,
+                    "nextResetTime": 1789485024985u64},
+            ]},
+        });
+        for entry in crate::settings::provider_catalog() {
+            let Some(billing) = &entry.billing else {
+                continue;
+            };
+            match entry.id.as_str() {
+                "deepseek" | "kimi" => {
+                    let body = if entry.id == "deepseek" {
+                        &deepseek
+                    } else {
+                        &kimi
+                    };
+                    let expect = if entry.id == "deepseek" {
+                        "110.00"
+                    } else {
+                        "49.58894"
+                    };
+                    let amount = billing
+                        .paths
+                        .balance
+                        .as_deref()
+                        .and_then(|p| json_path(body, p))
+                        .expect("余额路径应命中");
+                    let text = amount
+                        .as_str()
+                        .map(String::from)
+                        .or_else(|| amount.as_f64().map(|f| f.to_string()))
+                        .unwrap_or_default();
+                    assert_eq!(text, expect);
+                }
+                "glm" => {
+                    let pct = |p: &Option<String>| {
+                        p.as_deref()
+                            .and_then(|p| json_path(&glm, p))
+                            .and_then(json_percent)
+                    };
+                    let ts =
+                        |p: &Option<String>| p.as_deref().and_then(|p| json_path(&glm, p)).cloned();
+                    // 真机形态:周窗 unit==6 编号 1;TIME_LIMIT 干扰项不得误命中
+                    assert_eq!(pct(&billing.paths.usage_5h), Some(0));
+                    assert_eq!(pct(&billing.paths.usage_7d), Some(53));
+                    assert_eq!(
+                        ts(&billing.paths.resets),
+                        Some(serde_json::json!(1789246955101u64))
+                    );
+                    assert_eq!(
+                        ts(&billing.paths.resets_7d),
+                        Some(serde_json::json!(1789485024985u64))
+                    );
+                }
+                other => panic!("目录出现未覆盖计费预设的厂商:{other}"),
+            }
+        }
     }
 
     fn temp_host(tag: &str) -> Arc<AppHost> {
@@ -8215,7 +8560,7 @@ mod tests {
         let acme = ProviderEntry {
             id: "acme".into(),
             base_url: "https://acme.example/v1".into(),
-            dialect: "openai-chat".into(),
+            dialect: "openai-completions".into(),
             credential_ref: None,
             api_key: Some("sk-acme".into()),
             default_model: Some("acme-1".into()),
@@ -9165,6 +9510,31 @@ mod tests {
         assert!(!host.session_log_path(&parent).exists(), "父会话已删除");
         assert!(!sub_path.exists(), "子代理会话应随父级联删除");
         assert!(fork_path.exists(), "fork 后代是独立产物,不级联");
+    }
+
+    /// provider 传输面热生效:upsert 变更 api_key/base_url/dialect →
+    /// 指纹 diff 命中该 provider(空闲会话 detach 由 upsert 内部走同
+    /// 一收口);未变 provider 不误报
+    #[test]
+    fn provider_transport_change_detected_on_upsert() {
+        let host = temp_host("prov-fp");
+        // temp_host 构造时已建基线:首查无变更
+        assert!(host.sync_provider_transports().is_empty());
+        // 直改 settings(外部编辑 settings.yaml 路径,不经 upsert 的
+        // 内部同步)→ diff 命中
+        host.settings
+            .update(|s| {
+                if let Some(p) = s.providers.iter_mut().find(|p| p.id == "deepseek") {
+                    p.api_key = Some("new".into());
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            host.sync_provider_transports(),
+            vec!["deepseek".to_string()]
+        );
+        // 幂等:再查无变更
+        assert!(host.sync_provider_transports().is_empty());
     }
 
     /// 孤儿子代理清扫:父已亡(历史无级联时期遗留)的隐藏子代理在

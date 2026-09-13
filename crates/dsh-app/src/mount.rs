@@ -539,7 +539,7 @@ mod tests {
             base_url: "https://example.invalid".into(),
             session: "dir/s.jsonl".into(),
             workspace: std::path::PathBuf::from("."),
-            dialect: "openai-chat".into(),
+            dialect: "openai-completions".into(),
             reasoning_effort: None,
             models: None,
             preset,

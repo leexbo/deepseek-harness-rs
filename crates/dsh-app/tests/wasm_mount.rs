@@ -66,7 +66,7 @@ fn resolved_at(ws: &Path, preset_id: &str) -> Resolved {
         base_url: "https://example.invalid".into(),
         session: ws.join("s.jsonl").display().to_string(),
         workspace: ws.to_path_buf(),
-        dialect: "openai-chat".into(),
+        dialect: "openai-completions".into(),
         reasoning_effort: None,
         models: None,
         preset,

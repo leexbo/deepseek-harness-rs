@@ -32,8 +32,9 @@ fn classify_reqwest(e: reqwest::Error) -> TransportError {
 }
 
 /// 非 2xx 状态归类(httpErrorCode:401/403 → AUTH;400/413 →
-/// INVALID_REQUEST;429 → RATE_LIMIT;≥500 → SERVER;其余未分类直通)
-fn classify_status(
+/// INVALID_REQUEST;429 → RATE_LIMIT;≥500 → SERVER;其余未分类直通)。
+/// crate 内共享(ext 的 200+错误体归类钩子复用状态映射)
+pub(crate) fn classify_status(
     status: reqwest::StatusCode,
     retry_after: Option<String>,
     body: String,
@@ -88,23 +89,6 @@ fn looks_like_sse(first: &[u8]) -> bool {
     ["data:", "event:", "id:", "retry:", ":"]
         .iter()
         .any(|p| t.starts_with(p))
-}
-
-/// 2xx 但响应体不是 SSE:端点可能以 200 + JSON 错误体应答(bigmodel
-/// 坏 key 实测形态)。体含 `error` 对象且 `code` 可解释为 HTTP 状态
-/// → 按状态归类(401/403 → AUTH,不可重试);其余返回 None,交由
-/// 引擎按空响应处理(既有语义)
-fn classify_body_error(body: &str) -> Option<TransportError> {
-    let trimmed = body.trim_start();
-    if !trimmed.starts_with('{') {
-        return None;
-    }
-    let v: Value = serde_json::from_str(body).ok()?;
-    let code = v["error"]["code"]
-        .as_u64()
-        .or_else(|| v["error"]["code"].as_str()?.parse::<u64>().ok())?;
-    let status = reqwest::StatusCode::from_u16(u16::try_from(code).ok()?).ok()?;
-    Some(classify_status(status, None, body.to_string()))
 }
 
 /// 连接建立超时(TCP+TLS)
@@ -244,7 +228,7 @@ impl LlmTransport for HttpTransport {
             }
         }
         if !error_body.is_empty()
-            && let Some(err) = classify_body_error(&error_body)
+            && let Some(err) = self.adapter.body_error(&error_body)
         {
             return Err(err);
         }
@@ -336,7 +320,7 @@ impl LlmTransport for HttpTransport {
             }
         }
         if !error_body.is_empty()
-            && let Some(err) = classify_body_error(&error_body)
+            && let Some(err) = self.adapter.body_error(&error_body)
         {
             return Err(err);
         }

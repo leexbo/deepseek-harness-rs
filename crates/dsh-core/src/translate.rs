@@ -486,7 +486,7 @@ mod tests {
 
     fn info() -> ProviderInfo {
         ProviderInfo {
-            provider: "openai-chat".into(),
+            provider: "openai-completions".into(),
             model: "deepseek-chat".into(),
         }
     }

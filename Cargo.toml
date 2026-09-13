@@ -26,6 +26,7 @@ rust-version = "1.97"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
+jsonpath-rust = "1.0"
 thiserror = "2"
 toml = "1"
 clap = { version = "4", features = ["derive"] }
@@ -43,7 +44,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # preset manifest 解析(k8s 形态 YAML 多文档流;serde_yaml 已归档,此为活跃接棒 fork)
 serde_norway = "0.9"
-wit-bindgen = "0.61.1"
+wit-bindgen = "0.62"
 dsh-app = { path = "crates/dsh-app" }
 dsh-core = { path = "crates/dsh-core" }
 dsh-hooks = { path = "crates/dsh-hooks" }

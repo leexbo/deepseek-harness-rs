@@ -40,7 +40,7 @@ pub use attachments::{
 };
 pub use chat::GenericChatAdapter;
 pub use ext::{
-    AnthropicExt, ChatExt, DeepSeekChatExt, DeepSeekResponsesExt, OpenAiChatExt,
+    AnthropicExt, ChatExt, DeepSeekChatExt, DeepSeekResponsesExt, GlmResponsesExt, OpenAiChatExt,
     OpenAiResponsesExt, ResponsesExt, StandardAnthropicExt,
 };
 pub use http::{HttpTransport, ProviderConfig};

@@ -411,8 +411,8 @@ fn adapter_by_name_resolves_and_rejects() {
     assert!(dsh_llm::adapters::adapter_by_name("deepseek-responses").is_some());
     assert!(dsh_llm::adapters::adapter_by_name("openai-responses").is_some());
     assert!(dsh_llm::adapters::adapter_by_name("deepseek-chat").is_some());
-    assert!(dsh_llm::adapters::adapter_by_name("openai-chat").is_some());
-    assert!(dsh_llm::adapters::adapter_by_name("anthropic").is_some());
+    assert!(dsh_llm::adapters::adapter_by_name("openai-completions").is_some());
+    assert!(dsh_llm::adapters::adapter_by_name("anthropic-messages").is_some());
     // 未知方言拒绝(fail-fast,不静默回退)
     assert!(dsh_llm::adapters::adapter_by_name("nope").is_none());
 }

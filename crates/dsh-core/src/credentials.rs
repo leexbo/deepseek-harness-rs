@@ -71,7 +71,7 @@ mod tests {
         ProviderEntry {
             id: id.into(),
             base_url: format!("https://{id}.example/v1"),
-            dialect: "openai-chat".into(),
+            dialect: "openai-completions".into(),
             credential_ref: cred_ref.map(String::from),
             api_key: api_key.map(String::from),
             default_model: None,

@@ -142,6 +142,10 @@ impl<E: ResponsesExt> ProviderAdapter for GenericResponsesAdapter<E> {
     fn mapper(&self) -> Box<dyn FrameMapper> {
         Box::new(ResponsesMapper::new())
     }
+
+    fn body_error(&self, body: &str) -> Option<dsh_agent_loop::TransportError> {
+        self.ext.body_error(body)
+    }
 }
 
 /// Responses 流映射器。

@@ -425,6 +425,40 @@ impl Render for WorkspaceView {
                     el.children(card)
                 },
             )
+            // 计费小卡片(状态栏徽标点击;右缘对齐徽标,卡底缘贴 chip 顶
+            // 上方 5px,同权限菜单模式)
+            .when(
+                self.store.read(cx).billing_card_open
+                    && !self.store.read(cx).settings.settings_open,
+                |el| {
+                    let card = self.store.read(cx).billing_chip_bounds.map(|b| {
+                        let card = statusbar::billing_card(&self.store, cx);
+                        let vh = f32::from(window.viewport_size().height);
+                        let vw = f32::from(window.viewport_size().width);
+                        div()
+                            .id("billing-card")
+                            .debug_selector(|| "billing-card".to_string())
+                            .absolute()
+                            .right(px(vw - f32::from(b.origin.x + b.size.width)))
+                            .bottom(px(vh - f32::from(b.origin.y) + 5.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::BORDER())
+                            .bg(if theme::is_dark() {
+                                theme::LAYER()
+                            } else {
+                                theme::CARD()
+                            })
+                            .shadow_md()
+                            .occlude()
+                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .child(card)
+                    });
+                    el.children(card)
+                },
+            )
             .when(
                 self.store.read(cx).sessions.rename_target.is_some()
                     || self.store.read(cx).sessions.rename_ws_target.is_some(),
@@ -443,6 +477,10 @@ impl Render for WorkspaceView {
             )
             .when(self.store.read(cx).settings.model_fetch.is_some(), |el| {
                 el.child(settings::provider_models_fetch_modal(&self.store, cx))
+            })
+            // 首运行 onboarding(无任何可用凭据;源 DeepSeekOnboardingDialog)
+            .when(self.store.read(cx).settings.needs_onboarding, |el| {
+                el.child(settings::onboarding_modal(&self.store, cx))
             })
             .when(
                 self.store.read(cx).settings.full_access_confirm.is_some(),

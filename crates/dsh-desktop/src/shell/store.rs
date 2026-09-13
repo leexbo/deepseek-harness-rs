@@ -70,6 +70,10 @@ pub struct AppStore {
     pub lineage_tick: Option<gpui_kit::Task<()>>,
     /// 额度自动刷新 5min 节拍(挂窗一次常驻;触发面见 start_billing_tick)
     pub billing_tick: Option<gpui_kit::Task<()>>,
+    /// 计费小卡片开合(状态栏徽标点击恒开;关闭走外点全关)
+    pub billing_card_open: bool,
+    /// 徽标渲染期捕获 bounds(计费卡片根级渲染的锚定分子,同权限 chip)
+    pub billing_chip_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
     /// 系统外观观察者订阅(窗口挂载时注册一次,drop = 退订)
     pub appearance_sub: Option<gpui_kit::Subscription>,
     /// 全库检索功能切片状态(侧栏搜索输入/命中面板/跳转定位;域与行为见
@@ -145,6 +149,8 @@ impl AppStore {
             run_tick: None,
             lineage_tick: None,
             billing_tick: None,
+            billing_card_open: false,
+            billing_chip_bounds: None,
             attachments: AttachmentsStore::default(),
             ask: AskStore::default(),
             feedback: FeedbackStore::default(),
@@ -200,6 +206,11 @@ impl AppStore {
             }));
         }
         self.ensure_search_input(window, cx);
+        // onboarding 模态输入框(启动判定先于挂窗;模态可见时惰建)
+        if self.settings.needs_onboarding && self.settings.onboarding_key_input.is_none() {
+            self.settings.onboarding_key_input =
+                Some(cx.new(|cx| InputState::new(window, cx).placeholder("输入 API 密钥")));
+        }
         if self.trajectory.trajectory_search.is_none() {
             self.trajectory.trajectory_search =
                 Some(cx.new(|cx| InputState::new(window, cx).placeholder("搜索")));
@@ -208,6 +219,8 @@ impl AppStore {
         self.ensure_pref_selects(window, cx);
         // 额度自动刷新节拍(挂窗一次):启动即查 + 每 5min 一轮
         self.start_billing_tick(cx);
+        // 模型探测兜底(挂窗一次):清单缺席的 provider 静默拉 /models
+        self.ensure_models_probed(cx);
         if self.chat.composer_input.is_none() {
             let composer = cx.new(|cx| {
                 TextareaState::new(window, cx)
@@ -511,8 +524,8 @@ impl AppStore {
     }
 
     /// 外点全关(composer 下拉 + hero chip 下拉 + 行内 ⋯ + 标题栏
-    /// 工作区下拉 + 面板「+」菜单;开着的菜单区自带 mousedown
-    /// stop_propagation 豁免,不会误伤自身交互)
+    /// 工作区下拉 + 面板「+」菜单 + 计费小卡片;开着的菜单区自带
+    /// mousedown stop_propagation 豁免,不会误伤自身交互)
     pub fn close_all_menus(&mut self, cx: &mut Context<Self>) {
         self.chat.composer_menu = ComposerMenu::None;
         self.hero_menu = HeroMenu::None;
@@ -521,6 +534,7 @@ impl AppStore {
         self.sessions.workspace_menu_open = false;
         self.settings.full_access_confirm = None;
         self.panel_plus_menu_at = None;
+        self.billing_card_open = false;
         self.sync_lineage_tick(cx);
         cx.notify();
     }
@@ -672,7 +686,8 @@ impl AppStore {
 
     /// 模型二级菜单选型:先切工作区默认 provider(跨 provider 时;幂等),
     /// 再设模型——set_model 校验清单并 detach_if_idle,下一轮即走新
-    /// provider + 模型
+    /// provider + 模型。生效 provider 真变化时立即拉新账:计费徽标数据源
+    /// 跟切,不等 60s 防抖/5min 节拍
     pub fn set_session_provider_model(
         &mut self,
         provider_id: &str,
@@ -686,7 +701,16 @@ impl AppStore {
             .clone()
             .or_else(|| host.workspace_names().first().cloned())
         {
-            let _ = host.set_workspace_provider(&ws, provider_id);
+            let prev = self.settings.settings_snapshot["workspaceProviders"][&ws]
+                .as_str()
+                .map(str::to_string);
+            if host.set_workspace_provider(&ws, provider_id).is_ok()
+                && prev.as_deref() != Some(provider_id)
+            {
+                self.settings_refresh(cx);
+                self.settings.billing_auto_last = None;
+                self.auto_refresh_billing(cx);
+            }
         }
         self.set_session_model(model, cx);
     }

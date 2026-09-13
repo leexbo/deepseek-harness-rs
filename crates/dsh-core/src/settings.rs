@@ -63,6 +63,10 @@ pub struct BillingConfig {
     pub url: String,
     /// 响应 JSON 提取路径
     pub paths: BillingPaths,
+    /// 鉴权头形态:缺省 = 按 provider 方言(anthropic = x-api-key,其余
+    /// = Bearer);`"raw"` = `Authorization: <key>` 原样(GLM 用量端点)
+    #[serde(default)]
+    pub auth_style: Option<String>,
 }
 
 /// 计费展示形态
@@ -76,10 +80,117 @@ pub enum BillingKind {
     Usage,
 }
 
-/// JSON 提取路径集(缺席路径 = 对应项不展示)
+/// 内置 provider 目录条目(添加提供方流的预填数据;纯数据,加厂商 = 加行)
+#[derive(Debug, Clone, Serialize)]
+pub struct CatalogEntry {
+    /// provider id(路由键;与 ProviderEntry.id 同域)
+    pub id: String,
+    /// 显示名
+    pub display_name: String,
+    /// 方言(编辑卡预填;可改)
+    pub dialect: String,
+    /// API base URL(编辑卡预填;可改。含占位符的条目须用户替换)
+    pub base_url: String,
+    /// 官方模型清单(预填;空 = 走 /models 探测)
+    pub models: Vec<String>,
+    /// 计费端点预设(None = 该厂商无可直接用的 key 认证端点)
+    pub billing: Option<BillingConfig>,
+}
+
+/// 内置 provider 目录(国内五家;端点/模型 id 均官方文档核对,见
+/// docs/plans/m43-provider-catalog.md 取证表)
+pub fn provider_catalog() -> Vec<CatalogEntry> {
+    vec![
+        CatalogEntry {
+            id: "deepseek".into(),
+            display_name: "DeepSeek".into(),
+            dialect: "openai-responses".into(),
+            base_url: "https://api.deepseek.com/v1".into(),
+            models: vec!["deepseek-flash".into(), "deepseek-v4-pro".into()],
+            billing: Some(BillingConfig {
+                kind: BillingKind::Balance,
+                url: "https://api.deepseek.com/user/balance".into(),
+                paths: BillingPaths {
+                    balance: Some("$.balance_infos[0].total_balance".into()),
+                    currency: Some("$.balance_infos[0].currency".into()),
+                    ..Default::default()
+                },
+                auth_style: None,
+            }),
+        },
+        CatalogEntry {
+            id: "glm".into(),
+            display_name: "GLM(智谱)".into(),
+            dialect: "glm-responses".into(),
+            base_url: "https://open.bigmodel.cn/api/v1".into(),
+            models: vec!["glm-5.3-flash".into()],
+            billing: Some(BillingConfig {
+                kind: BillingKind::Usage,
+                url: "https://open.bigmodel.cn/api/monitor/usage/quota/limit".into(),
+                paths: BillingPaths {
+                    // unit 级过滤取第一命中:窗数编号(number)随套餐漂移
+                    // (真机周窗 unit==6 编号 1,非历史资料的 7)
+                    usage_5h: Some(
+                        "$.data.limits[?(@.type==\"TOKENS_LIMIT\" && @.unit==3)].percentage".into(),
+                    ),
+                    usage_7d: Some(
+                        "$.data.limits[?(@.type==\"TOKENS_LIMIT\" && @.unit==6)].percentage".into(),
+                    ),
+                    resets: Some(
+                        "$.data.limits[?(@.type==\"TOKENS_LIMIT\" && @.unit==3)].nextResetTime"
+                            .into(),
+                    ),
+                    resets_7d: Some(
+                        "$.data.limits[?(@.type==\"TOKENS_LIMIT\" && @.unit==6)].nextResetTime"
+                            .into(),
+                    ),
+                    ..Default::default()
+                },
+                auth_style: Some("raw".into()),
+            }),
+        },
+        CatalogEntry {
+            id: "kimi".into(),
+            display_name: "Kimi(Moonshot)".into(),
+            dialect: "openai-responses".into(),
+            base_url: "https://api.moonshot.cn/v1".into(),
+            models: vec!["kimi-k3".into()],
+            billing: Some(BillingConfig {
+                kind: BillingKind::Balance,
+                url: "https://api.moonshot.cn/v1/users/me/balance".into(),
+                paths: BillingPaths {
+                    balance: Some("$.data.available_balance".into()),
+                    currency: None,
+                    ..Default::default()
+                },
+                auth_style: None,
+            }),
+        },
+        CatalogEntry {
+            id: "minimax".into(),
+            display_name: "MiniMax".into(),
+            dialect: "openai-responses".into(),
+            base_url: "https://api.minimax.cn/v1".into(),
+            models: vec!["MiniMax-M3".into()],
+            billing: None,
+        },
+        CatalogEntry {
+            id: "qwen".into(),
+            display_name: "Qwen(百炼)".into(),
+            dialect: "openai-responses".into(),
+            // WorkspaceId 占位:按官方文档逐工作区寻址,编辑卡内替换
+            base_url: "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+                .into(),
+            models: vec!["qwen3.8-max".into(), "qwen3.8-flash".into()],
+            billing: None,
+        },
+    ]
+}
+
+/// JSON 提取路径集(缺席路径 = 对应项不展示;值为 JSONPath)
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BillingPaths {
-    /// 余额金额路径,如 `balance_infos.0.total_balance`
+    /// 余额金额路径,如 `$.balance_infos[0].total_balance`
     #[serde(default)]
     pub balance: Option<String>,
     /// 余额货币路径(缺席 = 不显示货币)
@@ -91,9 +202,12 @@ pub struct BillingPaths {
     /// 7 天用量百分比路径
     #[serde(default)]
     pub usage_7d: Option<String>,
-    /// 重置时间路径(原样字符串展示,如 `4d22h` 或 ISO 时间)
+    /// 5 小时窗重置时间路径(epoch 毫秒或原样字符串)
     #[serde(default)]
     pub resets: Option<String>,
+    /// 7 天窗重置时间路径(缺席 = 不显示)
+    #[serde(default)]
+    pub resets_7d: Option<String>,
 }
 
 /// 最近一次计费查询快照(持久化)。**tag = "kind"**:UI 按平铺的
@@ -119,32 +233,20 @@ pub enum BillingSnapshot {
         pct_5h: Option<u8>,
         /// 7 天窗口用量百分比(0-100)
         pct_7d: Option<u8>,
-        /// 重置时间(原样字符串)
+        /// 5 小时窗重置时间(epoch 毫秒字符串;缺席 = 不显示)
         resets: Option<String>,
+        /// 7 天窗重置时间(缺席 = 不显示)
+        resets_7d: Option<String>,
     },
 }
 
-/// 极简 JSON 路径求值:点分段 + 数字段作数组下标
-/// (`balance_infos.0.total_balance` → root["balance_infos"][0]["total_balance"])。
-/// 任何一段缺失/类型不符 = None(计费展示缺席该项,不报错)
+/// 计费路径求值:标准 JSONPath(RFC 9535,jsonpath-rust)。
+/// 路径须以 `$` 开头,数组过滤用 `?[?(…)]` 表达式
+/// (如 `$.data.limits[?(@.type=="TOKENS_LIMIT")].percentage`)。
+/// 无命中 = None(计费展示缺席该项,不报错)
 pub fn json_path<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
-    let mut cur = root;
-    for seg in path.split('.') {
-        if seg.is_empty() {
-            return None;
-        }
-        match cur {
-            serde_json::Value::Array(items) => {
-                let ix: usize = seg.parse().ok()?;
-                cur = items.get(ix)?;
-            }
-            serde_json::Value::Object(map) => {
-                cur = map.get(seg)?;
-            }
-            _ => return None,
-        }
-    }
-    Some(cur)
+    use jsonpath_rust::JsonPath;
+    root.query(path).ok()?.into_iter().next()
 }
 
 /// 从 JSON 值取「数字百分比」:整数按 0-100 百分比;≤1 且带小数的值按
@@ -443,7 +545,7 @@ pub fn builtin_provider() -> ProviderEntry {
     ProviderEntry {
         id: "deepseek".into(),
         base_url: "https://api.deepseek.com/v1".into(),
-        dialect: "openai-chat".into(),
+        dialect: "openai-completions".into(),
         credential_ref: None,
         api_key: None,
         default_model: None,
@@ -592,26 +694,31 @@ impl SettingsStore {
 
     /// 应用变更并原子落盘(草稿克隆上执行闭包;序列化或写盘失败时
     /// 整次更新作废——不留「盘上新内存旧」的分裂态)。落盘前先吸收
-    /// 外部编辑,闭包在外部最新版上执行,UI 保存不覆盖外部改动
+    /// 外部编辑,闭包在外部最新版上执行,UI 保存不覆盖外部改动。
+    /// 锁序:loaded_mtime 恒先于 inner(reload 同序)——mtime 戳记
+    /// 必须在 inner 释放后打,否则并发 update ABBA 死锁
     pub fn update<R>(&self, f: impl FnOnce(&mut SettingsFile) -> R) -> anyhow::Result<R> {
         self.reload_if_changed();
-        let mut guard = self.inner.lock().expect("settings 锁中毒(宿主 bug)");
-        let mut draft = guard.clone();
-        let out = f(&mut draft);
-        let text = serde_norway::to_string(&draft)?;
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = self.path.with_file_name(format!(
-            "{}.tmp",
-            self.path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("settings.yaml")
-        ));
-        std::fs::write(&tmp, &text)?;
-        std::fs::rename(&tmp, &self.path)?;
-        *guard = draft;
+        let out = {
+            let mut guard = self.inner.lock().expect("settings 锁中毒(宿主 bug)");
+            let mut draft = guard.clone();
+            let out = f(&mut draft);
+            let text = serde_norway::to_string(&draft)?;
+            if let Some(dir) = self.path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let tmp = self.path.with_file_name(format!(
+                "{}.tmp",
+                self.path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("settings.yaml")
+            ));
+            std::fs::write(&tmp, &text)?;
+            std::fs::rename(&tmp, &self.path)?;
+            *guard = draft;
+            out
+        };
         *self.loaded_mtime.lock().expect("settings 锁中毒(宿主 bug)") = file_mtime(&self.path);
         Ok(out)
     }
@@ -867,22 +974,45 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// JSON 路径求值:点分段 + 数组下标,缺失/类型不符 = None
+    /// JSONPath 求值:基础寻址 + filter 表达式(GLM 用量端点实测形态)
     #[test]
-    fn json_path_walks_objects_and_arrays() {
+    fn json_path_evaluates_filters() {
         let v: serde_json::Value = serde_json::json!({
             "balance_infos": [ { "currency": "CNY", "total_balance": "9.52" } ],
-            "usage": { "five_hour": { "utilization": 6 }, "resets_in": "4d22h" }
+            "usage": { "five_hour": { "utilization": 6 }, "resets_in": "4d22h" },
+            "data": { "limits": [
+                { "type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 15, "nextResetTime": 1770648402389u64 },
+                { "type": "TOKENS_LIMIT", "unit": 6, "number": 7, "percentage": 42 },
+                { "type": "TIME_LIMIT", "unit": 5, "number": 1, "percentage": 45 },
+            ]},
         });
         assert_eq!(
-            json_path(&v, "balance_infos.0.total_balance").unwrap(),
+            json_path(&v, "$.balance_infos[0].total_balance").unwrap(),
             "9.52"
         );
-        assert_eq!(json_path(&v, "usage.five_hour.utilization").unwrap(), 6);
-        assert_eq!(json_path(&v, "usage.resets_in").unwrap(), "4d22h");
-        assert!(json_path(&v, "balance_infos.5.total_balance").is_none());
-        assert!(json_path(&v, "usage.nope").is_none());
-        assert!(json_path(&v, "usage.five_hour.utilization.deeper").is_none());
+        assert_eq!(json_path(&v, "$.usage.five_hour.utilization").unwrap(), 6);
+        assert_eq!(json_path(&v, "$.usage.resets_in").unwrap(), "4d22h");
+        // GLM 用量窗:按 unit/number 过滤(数组序不保证)
+        assert_eq!(
+            json_path(
+                &v,
+                "$.data.limits[?(@.type==\"TOKENS_LIMIT\" && @.unit==3 && @.number==5)].percentage"
+            )
+            .unwrap(),
+            15
+        );
+        assert_eq!(
+            json_path(
+                &v,
+                "$.data.limits[?(@.type==\"TOKENS_LIMIT\" && @.unit==6 && @.number==7)].percentage"
+            )
+            .unwrap(),
+            42
+        );
+        // 无命中/坏路径 = None
+        assert!(json_path(&v, "$.balance_infos[5].total_balance").is_none());
+        assert!(json_path(&v, "$.usage.nope").is_none());
+        assert!(json_path(&v, "not-a-jsonpath").is_none());
     }
 
     /// 百分比提取:数字/带 % 字符串皆收,截断到 0-100
@@ -901,7 +1031,7 @@ mod tests {
         let entry = ProviderEntry {
             id: "glm".into(),
             base_url: "https://open.bigmodel.cn/api/anthropic".into(),
-            dialect: "anthropic".into(),
+            dialect: "anthropic-messages".into(),
             credential_ref: None,
             api_key: None,
             default_model: Some("glm-4.7".into()),
@@ -911,17 +1041,19 @@ mod tests {
                 kind: BillingKind::Usage,
                 url: "https://proxy.example/usage".into(),
                 paths: BillingPaths {
-                    usage_5h: Some("five_hour.utilization".into()),
-                    usage_7d: Some("seven_day.utilization".into()),
-                    resets: Some("resets_in".into()),
+                    usage_5h: Some("$.five_hour.utilization".into()),
+                    usage_7d: Some("$.seven_day.utilization".into()),
+                    resets: Some("$.resets_in".into()),
                     ..Default::default()
                 },
+                auth_style: Some("raw".into()),
             }),
             billing_cache: Some(BillingSnapshot::Usage {
                 fetched_at_ms: 1_756_000_000_000,
                 pct_5h: Some(6),
                 pct_7d: Some(7),
                 resets: Some("4d22h".into()),
+                resets_7d: Some("1770000000000".into()),
             }),
         };
         let json = serde_json::to_value(&entry).unwrap();
@@ -934,7 +1066,7 @@ mod tests {
         let legacy: ProviderEntry = serde_json::from_value(serde_json::json!({
             "id": "deepseek",
             "base_url": "https://api.deepseek.com/v1",
-            "dialect": "openai-chat"
+            "dialect": "openai-completions"
         }))
         .unwrap();
         assert_eq!(legacy.display_name, None);

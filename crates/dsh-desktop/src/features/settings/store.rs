@@ -56,6 +56,12 @@ pub(crate) struct SettingsStore {
     pub settings_snapshot: serde_json::Value,
     /// 首运行引导态(未 onboarded 且默认 provider 凭据缺席)
     pub needs_onboarding: bool,
+    /// onboarding 模态输入框(挂窗后惰建;write-only,保存写默认 provider)
+    pub onboarding_key_input: Option<Entity<InputState>>,
+    /// key 输入框当前占位(模式判定;InputState 无 placeholder 读取)
+    pub key_input_placeholder: String,
+    /// onboarding 内联错误(空 key 提交 / 保存失败)
+    pub onboarding_key_error: Option<String>,
     /// 设置页 provider 表单三输入(挂窗后建;同 id 提交 = 更新)
     pub set_form_id: Option<Entity<InputState>>,
     /// provider 表单 base_url 输入
@@ -99,6 +105,18 @@ pub(crate) struct SettingsStore {
     pub set_form_path_5h: Option<Entity<InputState>>,
     pub set_form_path_7d: Option<Entity<InputState>>,
     pub set_form_path_resets: Option<Entity<InputState>>,
+    /// 计费鉴权形态(None = 方言默认;Some("raw") = 裸 token;无 UI 输入,
+    /// 目录预填带来)
+    pub set_form_billing_auth_style: Option<String>,
+    /// 内置供应商卡模式(提供方下拉 + 只填 key;适配器与目录绑定)
+    pub builtin_mode: bool,
+    /// 内置模式当前选中的目录厂商 id
+    pub builtin_picked: String,
+    /// 内置卡「自定义设置」折叠开态
+    pub builtin_advanced_open: bool,
+    /// 内置卡提供方下拉 / 自定义卡 API 格式下拉(挂窗后建)
+    pub builtin_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
+    pub dialect_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
     /// 从端点获取模型的弹层(Some = 开):候选 + 逐项勾选态
     pub model_fetch: Option<ModelFetch>,
     /// 模型拉取进行中(弹层内「获取中」态)
@@ -149,10 +167,13 @@ impl Default for SettingsStore {
             settings_open: false,
             settings_snapshot: serde_json::Value::Null,
             needs_onboarding: false,
+            onboarding_key_input: None,
+            key_input_placeholder: String::new(),
+            onboarding_key_error: None,
             set_form_id: None,
             set_form_url: None,
             set_form_model: None,
-            set_form_dialect: "openai-chat".into(),
+            set_form_dialect: "openai-completions".into(),
             settings_nav: SettingsNav::Models,
             mcp_detail: None,
             hooks_detail: None,
@@ -172,6 +193,12 @@ impl Default for SettingsStore {
             set_form_path_5h: None,
             set_form_path_7d: None,
             set_form_path_resets: None,
+            set_form_billing_auth_style: None,
+            builtin_mode: false,
+            builtin_picked: String::new(),
+            builtin_advanced_open: false,
+            builtin_select: None,
+            dialect_select: None,
             model_fetch: None,
             model_fetch_loading: false,
             billing_refreshing: None,
@@ -253,6 +280,8 @@ impl AppStore {
             }
         }
         self.ensure_pref_selects(window, cx);
+        self.ensure_builtin_select(window, cx);
+        self.ensure_dialect_select(window, cx);
         for input in [
             &self.settings.set_form_id,
             &self.settings.set_form_url,
@@ -341,6 +370,84 @@ impl AppStore {
         ));
     }
 
+    /// 内置卡提供方下拉构建(目录五家;Confirm → pick_builtin_provider)
+    fn ensure_builtin_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.builtin_select.is_some() {
+            self.sync_builtin_select(window, cx);
+            return;
+        }
+        let options: Vec<(String, String)> = dsh_core::settings::provider_catalog()
+            .into_iter()
+            .map(|e| (e.id.clone(), e.display_name.clone()))
+            .collect();
+        let labels: Vec<gpui_kit::SharedString> = options
+            .iter()
+            .map(|(_, l)| gpui_kit::SharedString::from(l.clone()))
+            .collect();
+        let index = options
+            .iter()
+            .position(|(id, _)| *id == self.settings.builtin_picked)
+            .map(|ix| IndexPath::default().row(ix));
+        let state = cx.new(|cx| SelectState::new(labels, index, window, cx));
+        cx.subscribe(
+            &state,
+            move |this, _s, event: &SelectEvent<Vec<gpui_kit::SharedString>>, cx| {
+                if let SelectEvent::Confirm(Some(label)) = event {
+                    let label_s = label.to_string();
+                    if let Some((id, _)) = options.iter().find(|(_, l)| *l == label_s) {
+                        this.pick_builtin_provider(id, cx);
+                    }
+                }
+            },
+        )
+        .detach();
+        self.settings.builtin_select = Some(state);
+    }
+
+    /// 自定义卡 API 格式下拉构建(三种;label = 方言值;Confirm 回写表单)
+    fn ensure_dialect_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        const DIALECTS: [(&str, &str); 3] = [
+            ("openai-completions", "openai-completions"),
+            ("openai-responses", "openai-responses"),
+            ("anthropic-messages", "anthropic-messages"),
+        ];
+        if let Some(select) = &self.settings.dialect_select {
+            let ix = DIALECTS
+                .iter()
+                .position(|(id, _)| *id == self.settings.set_form_dialect)
+                .unwrap_or(0);
+            select.update(cx, |s, cx| {
+                s.set_selected_index(Some(IndexPath::default().row(ix)), window, cx);
+            });
+            return;
+        }
+        let labels: Vec<gpui_kit::SharedString> = DIALECTS
+            .iter()
+            .map(|(_, l)| gpui_kit::SharedString::from(*l))
+            .collect();
+        let index = DIALECTS
+            .iter()
+            .position(|(id, _)| *id == self.settings.set_form_dialect)
+            .map(|ix| IndexPath::default().row(ix));
+        let state = cx.new(|cx| SelectState::new(labels, index, window, cx));
+        cx.subscribe(
+            &state,
+            move |this, _s, event: &SelectEvent<Vec<gpui_kit::SharedString>>, cx| {
+                if let SelectEvent::Confirm(Some(label)) = event {
+                    this.settings.set_form_dialect = label.to_string();
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+        self.settings.dialect_select = Some(state);
+    }
+
+    /// 自定义卡 API 格式下拉同步(按表单方言定位)
+    fn sync_dialect_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_dialect_select(window, cx);
+    }
+
     /// 单个偏好 Select 构建(labels + 当前项 + Confirm 落盘订阅)
     fn build_pref_select(
         options: Vec<(String, String)>,
@@ -388,20 +495,63 @@ impl AppStore {
         cx.notify();
     }
 
-    /// onboarding 重估:凭据已就绪但未标记 → 顺手完成引导
+    /// onboarding 重估:任一 provider 凭据可用 = 引导完成(源
+    /// provider-ready 语义;全部缺席才弹「添加一个 API Key」模态)
     pub fn recalc_onboarding(&mut self) {
         let onboarded = self.settings.settings_snapshot["onboarded"]
             .as_bool()
             .unwrap_or(false);
-        let default_provider = self.settings.settings_snapshot["defaultProvider"]
-            .as_str()
-            .unwrap_or("deepseek")
-            .to_string();
-        self.settings.needs_onboarding =
-            !onboarded && !self.bridge.host().credential_status(&default_provider);
+        let any_ready = self.settings.settings_snapshot["providers"]
+            .as_array()
+            .map(|ps| {
+                ps.iter()
+                    .any(|p| p["credentialReady"].as_bool().unwrap_or(false))
+            })
+            .unwrap_or(false);
+        self.settings.needs_onboarding = !onboarded && !any_ready;
         if !self.settings.needs_onboarding && !onboarded {
             let _ = self.bridge.host().set_onboarded();
         }
+    }
+
+    /// onboarding 模态「保存并继续」:key 写入默认 provider(deepseek)
+    /// 并完成引导;空 key = 内联错误(源 keyRequired)
+    pub fn onboarding_save(&mut self, cx: &mut Context<Self>) {
+        let key = self
+            .settings
+            .onboarding_key_input
+            .as_ref()
+            .map(|i| i.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        if key.is_empty() {
+            self.settings.onboarding_key_error = Some("请输入 API 密钥后继续。".into());
+            cx.notify();
+            return;
+        }
+        self.settings.onboarding_key_error = None;
+        let mut entry = self
+            .bridge
+            .host()
+            .providers()
+            .into_iter()
+            .find(|p| p.id == "deepseek")
+            .unwrap_or_else(dsh_core::settings::builtin_provider);
+        entry.api_key = Some(key);
+        if let Err(e) = self.bridge.host().upsert_provider(entry) {
+            self.settings.onboarding_key_error = Some(e.message);
+            cx.notify();
+            return;
+        }
+        let _ = self.bridge.host().set_onboarded();
+        self.settings_refresh(cx);
+        cx.notify();
+    }
+
+    /// onboarding 模态「稍后配置」:完成引导(源 complete 语义,不再弹)
+    pub fn onboarding_later(&mut self, cx: &mut Context<Self>) {
+        self.settings.onboarding_key_error = None;
+        let _ = self.bridge.host().set_onboarded();
+        self.settings_refresh(cx);
     }
 
     /// 切换默认 preset(通用区 Agent 预设行;落盘)
@@ -554,30 +704,101 @@ impl AppStore {
     /// 打开行内编辑卡(源:编辑卡在行卡内展开;预填自定义字段,key 清空)
     pub fn open_provider_editor(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.fill_provider_form(Some(id), window, cx);
-        self.ensure_key_input(window, cx);
+        self.ensure_key_input("sk-…(留空 = 保持既有凭据)", window, cx);
+        // 目录内厂商 = 内置卡(适配器与目录绑定);其余 = 自定义卡
+        let builtin = dsh_core::settings::provider_catalog()
+            .iter()
+            .any(|e| e.id == id);
+        if builtin {
+            self.settings.builtin_picked = id.to_string();
+            self.sync_builtin_select(window, cx);
+            // 旧条目模型清单为空(预设前保存)→ 目录官方清单打底,
+            // 折叠区可「从端点获取」继续更新
+            if self.settings.set_form_models.is_empty()
+                && let Some(entry) = dsh_core::settings::provider_catalog()
+                    .into_iter()
+                    .find(|e| e.id == id)
+            {
+                self.settings.set_form_models = entry.models.clone();
+            }
+        }
+        self.settings.builtin_mode = builtin;
         self.settings.editing_provider = Some(id.to_string());
         self.settings.adding_provider = false;
         self.settings.saved_provider_notice = None;
         cx.notify();
     }
 
-    /// 打开添加卡(空表单)
+    /// 内置卡提供方下拉同步(按 builtin_picked 定位)
+    fn sync_builtin_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(select) = &self.settings.builtin_select else {
+            return;
+        };
+        let ix = dsh_core::settings::provider_catalog()
+            .iter()
+            .position(|e| e.id == self.settings.builtin_picked);
+        if let Some(ix) = ix {
+            select.update(cx, |s, cx| {
+                s.set_selected_index(Some(IndexPath::default().row(ix)), window, cx);
+            });
+        }
+    }
+
+    /// 内置卡提供方切换:仅切目录键;卡片字段在渲染期从目录条目派生
+    /// (无 window 依赖),模型草稿清单按新条目重预填,apply 时整体落盘
+    pub fn pick_builtin_provider(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.settings.builtin_picked = id.to_string();
+        if let Some(entry) = dsh_core::settings::provider_catalog()
+            .into_iter()
+            .find(|e| e.id == id)
+        {
+            self.settings.set_form_models = entry.models.clone();
+        }
+        cx.notify();
+    }
+
+    /// 打开自定义供应商添加卡(空表单;API 格式三选)
     pub fn open_provider_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.fill_provider_form(None, window, cx);
-        self.ensure_key_input(window, cx);
+        self.ensure_key_input("输入 API Key", window, cx);
         self.settings.editing_provider = None;
         self.settings.adding_provider = true;
+        self.settings.builtin_mode = false;
+        self.settings.builtin_advanced_open = false;
+        self.settings.saved_provider_notice = None;
+        self.sync_dialect_select(window, cx);
+        cx.notify();
+    }
+
+    /// 打开内置供应商添加卡(提供方下拉 + 只填 key;适配器与目录绑定;
+    /// 模型草稿清单按目录条目预填,折叠区可拉端点更新)
+    pub fn open_provider_add_builtin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.fill_provider_form(None, window, cx);
+        self.ensure_key_input("输入 API 密钥,或留空使用环境认证", window, cx);
+        self.settings.editing_provider = None;
+        self.settings.adding_provider = true;
+        self.settings.builtin_mode = true;
+        self.settings.builtin_advanced_open = false;
+        self.settings.builtin_picked = "deepseek".into();
+        if let Some(entry) = dsh_core::settings::provider_catalog()
+            .into_iter()
+            .find(|e| e.id == "deepseek")
+        {
+            self.settings.set_form_models = entry.models.clone();
+        }
+        self.sync_builtin_select(window, cx);
         self.settings.saved_provider_notice = None;
         cx.notify();
     }
 
-    /// API key 输入惰建(编辑卡主字段;write-only)
-    fn ensure_key_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.settings.key_input.is_none() {
+    /// API key 输入惰建(编辑卡主字段;write-only;占位随卡片模式,
+    /// 已建且占位一致则保留原输入)
+    fn ensure_key_input(&mut self, placeholder: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let matches = self.settings.key_input_placeholder == placeholder;
+        if !matches {
             self.settings.key_input =
-                Some(cx.new(|cx| {
-                    InputState::new(window, cx).placeholder("sk-…(留空 = 保持既有凭据)")
-                }));
+                Some(cx.new(|cx| InputState::new(window, cx).placeholder(placeholder)));
+            self.settings.key_input_placeholder = placeholder.to_string();
         }
         if let Some(input) = &self.settings.key_input {
             input.update(cx, |s, cx| s.set_value("", window, cx));
@@ -603,17 +824,33 @@ impl AppStore {
         let id = if let Some(id) = &self.settings.editing_provider {
             id.clone()
         } else if self.settings.adding_provider {
-            self.settings
-                .set_form_id
-                .as_ref()
-                .map(|i| i.read(cx).value().trim().to_string())
-                .unwrap_or_default()
+            if self.settings.builtin_mode {
+                // 内置添加卡不渲染 id 输入:路由键 = 所选目录条目
+                self.settings.builtin_picked.clone()
+            } else {
+                self.settings
+                    .set_form_id
+                    .as_ref()
+                    .map(|i| i.read(cx).value().trim().to_string())
+                    .unwrap_or_default()
+            }
         } else {
             return;
         };
         if id.is_empty() {
             self.push_local_notice("provider id 不可为空", cx);
             return;
+        }
+        // 新增时查重(源 customRouteTaken):ID 是路由键,遮蔽既有条目
+        // 只会静默覆盖其配置。内置卡例外:对已存在厂商保存 = 编辑语义
+        if self.settings.editing_provider.is_none() && !self.settings.builtin_mode {
+            let taken = self.settings.settings_snapshot["providers"]
+                .as_array()
+                .is_some_and(|ps| ps.iter().any(|p| p["id"].as_str() == Some(id.as_str())));
+            if taken {
+                self.push_local_notice("该 Provider ID 已存在,请在列表中编辑它", cx);
+                return;
+            }
         }
         let key = self
             .settings
@@ -640,26 +877,59 @@ impl AppStore {
             .as_ref()
             .map(|i| i.read(cx).value().trim().to_string())
             .unwrap_or_default();
+        // 内置模式:目录条目为基底(适配器/URL/计费预设按厂商绑定),
+        // 模型列表取表单(端点拉取/手动增删会更新它)
+        let catalog_entry = if self.settings.builtin_mode {
+            dsh_core::settings::provider_catalog()
+                .into_iter()
+                .find(|e| e.id == self.settings.builtin_picked)
+        } else {
+            None
+        };
+        let mut base_url = self
+            .settings
+            .set_form_url
+            .as_ref()
+            .map(|i| i.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        let mut dialect = self.settings.set_form_dialect.clone();
+        let mut display = self
+            .settings
+            .set_form_name
+            .as_ref()
+            .map(|i| i.read(cx).value().trim().to_string())
+            .filter(|v| !v.is_empty());
+        let mut billing = self.form_billing_config(cx);
+        if let Some(entry) = &catalog_entry {
+            base_url = entry.base_url.clone();
+            dialect = entry.dialect.clone();
+            display = Some(entry.display_name.clone());
+            billing = entry.billing.clone();
+        }
+        // 已存条目的 billing_cache 不被内置保存清掉;内置默认模型 = 表单
+        // (编辑态 fill 已预填快照值)→ 目录首选;自定义保持清空即删语义
+        let saved = existing.as_ref();
+        let default_model =
+            if model.is_empty() {
+                match &catalog_entry {
+                    Some(entry) => entry.models.first().cloned().or_else(|| {
+                        saved.and_then(|p| p["default_model"].as_str().map(String::from))
+                    }),
+                    None => None,
+                }
+            } else {
+                Some(model)
+            };
         let entry = dsh_core::settings::ProviderEntry {
             id: id.clone(),
-            base_url: self
-                .settings
-                .set_form_url
-                .as_ref()
-                .map(|i| i.read(cx).value().trim().to_string())
-                .unwrap_or_default(),
-            dialect: self.settings.set_form_dialect.clone(),
+            base_url,
+            dialect,
             credential_ref: existing_ref,
             api_key,
-            default_model: if model.is_empty() { None } else { Some(model) },
-            display_name: self
-                .settings
-                .set_form_name
-                .as_ref()
-                .map(|i| i.read(cx).value().trim().to_string())
-                .filter(|v| !v.is_empty()),
+            default_model,
+            display_name: display,
             models: self.settings.set_form_models.clone(),
-            billing: self.form_billing_config(cx),
+            billing,
             billing_cache: self.settings.settings_snapshot["providers"]
                 .as_array()
                 .and_then(|ps| {
@@ -727,7 +997,9 @@ impl AppStore {
                 usage_5h: opt_path(&self.settings.set_form_path_5h),
                 usage_7d: opt_path(&self.settings.set_form_path_7d),
                 resets: opt_path(&self.settings.set_form_path_resets),
+                resets_7d: None,
             },
+            auth_style: self.settings.set_form_billing_auth_style.clone(),
         })
     }
 
@@ -798,17 +1070,32 @@ impl AppStore {
     /// 从端点拉取可用模型:base_url/方言取表单;key = 表单值(空 = 交给
     /// host 按既有凭据链解析,仅已保存 provider 生效)。结果进弹层多选
     pub fn open_fetch_models(&mut self, provider_id: &str, cx: &mut Context<Self>) {
-        let base_url = self
+        // 内置模式:URL/方言按目录条目(卡片不渲染这两个输入)
+        let catalog = if self.settings.builtin_mode {
+            dsh_core::settings::provider_catalog()
+                .into_iter()
+                .find(|e| e.id == self.settings.builtin_picked)
+        } else {
+            None
+        };
+        let form_url = self
             .settings
             .set_form_url
             .as_ref()
             .map(|i| i.read(cx).value().trim().to_string())
             .unwrap_or_default();
+        let base_url = match &catalog {
+            Some(e) => e.base_url.clone(),
+            None => form_url,
+        };
         if base_url.is_empty() {
             self.set_settings_notice(false, "先填写 Base URL 再获取模型", cx);
             return;
         }
-        let dialect = self.settings.set_form_dialect.clone();
+        let dialect = match &catalog {
+            Some(e) => e.dialect.clone(),
+            None => self.settings.set_form_dialect.clone(),
+        };
         let key = self
             .settings
             .key_input
@@ -878,9 +1165,10 @@ impl AppStore {
     }
 
     /// 额度静默自动刷新(自定时机:启动一次 + 5min 节拍 force + turn/end
-    /// 防抖)。只刷 default provider(徽标唯一数据源);未配计费端点整轮
-    /// 跳过。静默纪律:不落设置页通告、不点亮手动刷新钮 spinner;手动
-    /// (billing_refreshing)进行中跳过本轮。失败不提示,记尝试时刻防抖
+    /// 防抖)。只刷**当前工作区生效 provider**(绑定 > 宿主默认;徽标
+    /// 唯一数据源,显示端同源取数);无计费端点整轮跳过。静默纪律:不落
+    /// 设置页通告、不点亮手动刷新钮 spinner;手动(billing_refreshing)
+    /// 进行中跳过本轮。失败不提示,记尝试时刻防抖
     fn refresh_billing_auto_inner(&mut self, force: bool, cx: &mut Context<Self>) {
         if self.settings.billing_refreshing.is_some() || self.settings.billing_auto_running {
             return;
@@ -894,13 +1182,24 @@ impl AppStore {
             return;
         }
         let snap = &self.settings.settings_snapshot;
-        let Some(pid) = snap["defaultProvider"].as_str().map(str::to_string) else {
+        let ws_pid = self
+            .state
+            .active_workspace
+            .as_deref()
+            .and_then(|ws| snap["workspaceProviders"][ws].as_str())
+            .map(str::to_string);
+        let Some(pid) = ws_pid.or_else(|| snap["defaultProvider"].as_str().map(str::to_string))
+        else {
             return;
         };
+        // 计费预设默认生效:条目显式配置,或目录内厂商的内置端点回落
+        let catalog_preset = dsh_core::settings::provider_catalog()
+            .into_iter()
+            .any(|e| e.id == pid && e.billing.is_some());
         let configured = snap["providers"].as_array().is_some_and(|ps| {
             ps.iter()
                 .any(|p| p["id"].as_str() == Some(pid.as_str()) && p["billing"].is_object())
-        });
+        }) || catalog_preset;
         if !configured {
             return;
         }
@@ -1016,6 +1315,46 @@ impl AppStore {
         .detach();
     }
 
+    /// 挂窗模型探测兜底:有凭据但模型清单缺席(条目未配 + 探测缓存空;
+    /// 缓存不持久,重启即失)的 provider 静默拉 /models——模型菜单按
+    /// 清单分组,缺席即整组消失。每个缺席者一次,失败静默(保存时
+    /// probe / 菜单「从端点获取」可再探)
+    pub fn ensure_models_probed(&mut self, cx: &mut Context<Self>) {
+        let missing: Vec<String> = self.settings.settings_snapshot["providers"]
+            .as_array()
+            .map(|ps| {
+                ps.iter()
+                    .filter(|p| {
+                        p["credentialReady"].as_bool() == Some(true)
+                            && p["modelsCached"].as_bool() != Some(true)
+                    })
+                    .filter_map(|p| p["id"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if missing.is_empty() {
+            return;
+        }
+        let host = self.bridge.host().clone();
+        let store = cx.entity().clone();
+        let rxs: Vec<_> = missing
+            .into_iter()
+            .map(|pid| {
+                let h = host.clone();
+                self.bridge
+                    .call(async move { h.refresh_models(&pid).await })
+            })
+            .collect();
+        cx.spawn(async move |_this, cx| {
+            for rx in rxs {
+                let _ = rx.await;
+            }
+            store.update(cx, |s, cx| s.settings_refresh(cx));
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
     /// 打开 provider 删除确认(源:移除先经确认模态)
     pub fn ask_delete_provider(&mut self, id: &str, cx: &mut Context<Self>) {
         self.settings.saved_provider_notice = None;
@@ -1060,7 +1399,10 @@ impl AppStore {
                     ps.iter().find(|p| p["id"].as_str() == Some(id)).map(|p| {
                         (
                             p["base_url"].as_str().unwrap_or_default().to_string(),
-                            p["dialect"].as_str().unwrap_or("openai-chat").to_string(),
+                            p["dialect"]
+                                .as_str()
+                                .unwrap_or("openai-completions")
+                                .to_string(),
                             p["default_model"].as_str().unwrap_or_default().to_string(),
                             p["display_name"].as_str().unwrap_or_default().to_string(),
                             p["models"].as_array().cloned().unwrap_or_default(),
@@ -1072,7 +1414,7 @@ impl AppStore {
         let (url, dialect, model, name, models, billing) = entry.unwrap_or_else(|| {
             (
                 String::new(),
-                "openai-chat".into(),
+                "openai-completions".into(),
                 String::new(),
                 String::new(),
                 Vec::new(),
@@ -1090,6 +1432,8 @@ impl AppStore {
         let paths = |k: &str| billing["paths"][k].as_str().unwrap_or_default().to_string();
         self.settings.set_form_billing_enabled = billing.is_object();
         self.settings.set_form_billing_kind = billing_kind;
+        self.settings.set_form_billing_auth_style =
+            billing["auth_style"].as_str().map(String::from);
         let put = |slot: &mut Option<Entity<InputState>>,
                    v: String,
                    window: &mut Window,

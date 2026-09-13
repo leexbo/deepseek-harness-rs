@@ -1145,6 +1145,31 @@ fn menu_harness_opts(
     gpui_kit::VisualTestContext,
     std::path::PathBuf,
 ) {
+    menu_harness_opts_inner(cx, tag, agents_md, false)
+}
+
+/// 不预置引导完成的变体(onboarding 模态专项用例)
+fn menu_harness_onboarding(
+    cx: &mut TestAppContext,
+    tag: &str,
+) -> (
+    Entity<AppStore>,
+    gpui_kit::VisualTestContext,
+    std::path::PathBuf,
+) {
+    menu_harness_opts_inner(cx, tag, false, true)
+}
+
+fn menu_harness_opts_inner(
+    cx: &mut TestAppContext,
+    tag: &str,
+    agents_md: bool,
+    keep_onboarding: bool,
+) -> (
+    Entity<AppStore>,
+    gpui_kit::VisualTestContext,
+    std::path::PathBuf,
+) {
     use futures::StreamExt as _;
     cx.update(|app| {
         gpui_kit::component::init(app);
@@ -1174,6 +1199,15 @@ fn menu_harness_opts(
         store.update(cx, |s, cx| {
             s.attach_window_state(window, cx);
         });
+        // 共享夹具不测首运行 onboarding 模态(模态遮罩会拦截点击与
+        // 断言);统一标记引导完成,专项用例走 menu_harness_onboarding
+        if !keep_onboarding {
+            store.update(cx, |s, cx| {
+                let _ = s.bridge.host().set_onboarded();
+                s.settings_refresh(cx);
+                s.recalc_onboarding();
+            });
+        }
         // 帧泵(与 main.rs 同款;plan/事件回流依赖)
         let pump = store.clone();
         store.update(cx, |_, cx| {
@@ -1385,10 +1419,11 @@ fn billing_auto_refresh_quiet_writes_cache(cx: &mut TestAppContext) {
         kind: dsh_core::settings::BillingKind::Balance,
         url: format!("http://127.0.0.1:{port}/user/balance"),
         paths: dsh_core::settings::BillingPaths {
-            balance: Some("balance_infos.0.total_balance".into()),
-            currency: Some("balance_infos.0.currency".into()),
+            balance: Some("$.balance_infos[0].total_balance".into()),
+            currency: Some("$.balance_infos[0].currency".into()),
             ..Default::default()
         },
+        auth_style: None,
     });
     host.upsert_provider(p).unwrap();
     cx.update(|app| store.update(app, |s, cx| s.settings_refresh(cx)));
@@ -1403,7 +1438,9 @@ fn billing_auto_refresh_quiet_writes_cache(cx: &mut TestAppContext) {
         "harness 默认 provider 应为 deepseek"
     );
 
-    // 触发静默自动刷新(与 turn/end 同一入口;60s 防抖首放行)
+    // 触发静默自动刷新(与 turn/end 同一入口)。挂窗节拍的首轮强制刷新
+    // (计费预设默认生效后 deepseek 恒 configured)已记防抖戳 → 先清再触发
+    cx.update(|app| store.update(app, |s, _cx| s.settings.billing_auto_last = None));
     cx.update(|app| store.update(app, |s, cx| s.auto_refresh_billing(cx)));
     // 跨执行器(bridge tokio → 帧泵/回写)时序:轮询到缓存写入,勿单次断言
     let mut cached_kind = None;
@@ -1433,6 +1470,116 @@ fn billing_auto_refresh_quiet_writes_cache(cx: &mut TestAppContext) {
     // 静默纪律:自动路径不得落设置页通告(手动刷新才有「计费已更新」)
     let notice = cx.update(|app| store.read(app).settings.settings_notice.clone());
     assert!(notice.is_none(), "静默刷新不应落通告:{notice:?}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 切换 provider → 工作区生效 provider 跟切 + 计费立即拉新账 +
+/// 徽标显示新 provider 的 cache(数据源 = 当前工作区生效 provider,
+/// 非宿主默认;切换触发刷新不等 60s 防抖);用量形态下点击徽标弹
+/// 计费小卡片(根级渲染)
+#[gpui_kit::test]
+fn provider_switch_refreshes_billing_badge(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "billing-switch");
+    let host = cx.update(|app| store.read(app).bridge.host().clone());
+    let ws = cx
+        .update(|app| store.read(app).state.active_workspace.clone())
+        .expect("工作区在场");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 2048];
+        let _ = std::io::Read::read(&mut stream, &mut buf);
+        // GLM 用量形态(真机 limits 结构;周窗 unit==6 编号 1)
+        let body = r#"{"success":true,"code":200,"msg":"操作成功","data":{"level":"max","limits":[
+            {"type":"TIME_LIMIT","unit":5,"number":1,"percentage":5,"nextResetTime":1789437886999},
+            {"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":12,"nextResetTime":1789246955101},
+            {"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":53,"nextResetTime":1789485024985}
+        ]}}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        std::io::Write::write_all(&mut stream, resp.as_bytes()).unwrap();
+    });
+    unsafe { std::env::set_var("DSH_BILLING_SWITCH_KEY", "test-key") };
+    let mut glm = dsh_core::settings::builtin_provider();
+    glm.id = "glm".into();
+    glm.base_url = format!("http://127.0.0.1:{port}/v1");
+    glm.dialect = "glm-responses".into();
+    glm.credential_ref = Some("env:DSH_BILLING_SWITCH_KEY".into());
+    glm.models = vec!["glm-5.3-flash".into()];
+    glm.billing = Some(dsh_core::settings::BillingConfig {
+        kind: dsh_core::settings::BillingKind::Usage,
+        url: format!("http://127.0.0.1:{port}/api/monitor/usage/quota/limit"),
+        paths: dsh_core::settings::BillingPaths {
+            usage_5h: Some("$..limits[?(@.type==\"TOKENS_LIMIT\" && @.unit==3)].percentage".into()),
+            usage_7d: Some("$..limits[?(@.type==\"TOKENS_LIMIT\" && @.unit==6)].percentage".into()),
+            resets: Some(
+                "$..limits[?(@.type==\"TOKENS_LIMIT\" && @.unit==3)].nextResetTime".into(),
+            ),
+            resets_7d: Some(
+                "$..limits[?(@.type==\"TOKENS_LIMIT\" && @.unit==6)].nextResetTime".into(),
+            ),
+            ..Default::default()
+        },
+        auth_style: Some("raw".into()),
+    });
+    host.upsert_provider(glm).unwrap();
+
+    // 跨 provider 切模型(deepseek → glm):生效 provider 跟切 + 立即拉新账
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.set_session_provider_model("glm", "glm-5.3-flash", cx)
+        })
+    });
+    // 跨执行器时序 + 挂窗首轮刷新可能占住 running 槽:轮询中反复清防抖戳
+    let mut badge = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        cx.run_until_parked();
+        let glm_kind = cx.update(|app| {
+            store.read(app).settings.settings_snapshot["providers"]
+                .as_array()
+                .and_then(|ps| {
+                    ps.iter()
+                        .find(|p| p["id"] == "glm")
+                        .and_then(|p| p["billing_cache"]["kind"].as_str().map(str::to_string))
+                })
+        });
+        if glm_kind.as_deref() != Some("usage") {
+            cx.update(|app| store.update(app, |st, _cx| st.settings.billing_auto_last = None));
+            cx.update(|app| store.update(app, |st, cx| st.auto_refresh_billing(cx)));
+        }
+        wcx.refresh().expect("刷新失败");
+        if wcx.debug_bounds("statusbar-billing").is_some() {
+            badge = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        badge,
+        "切 glm 后徽标应显示 glm 的计费(生效 provider 跟切 + 新账到位)"
+    );
+    assert_eq!(
+        cx.update(|app| {
+            store.read(app).settings.settings_snapshot["workspaceProviders"][ws.as_str()].clone()
+        }),
+        serde_json::json!("glm"),
+        "工作区生效 provider 应跟切"
+    );
+    server.join().unwrap();
+    // 点击徽标 → 计费小卡片(根级渲染;恢复时间来自 cache 的两窗重置戳)
+    click_sel(&mut wcx, "statusbar-billing");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("billing-card").is_some(),
+        "点击徽标应弹计费小卡片"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -4237,12 +4384,77 @@ fn provider_editor_postures(cx: &mut TestAppContext) {
             .as_deref(),
         Some("deepseek")
     );
-    // 「添加」→ 添加卡(id 输入 + 编辑器)
+    // 「添加提供方」→ 内置卡(提供方下拉 + key;适配器与目录绑定)
     click_sel(&mut wcx, "provider-add");
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
-    assert!(cx.update(|app| store.read(app).settings.adding_provider));
+    assert!(cx.update(|app| {
+        let st = store.read(app);
+        st.settings.adding_provider && st.settings.builtin_mode
+    }));
+    assert!(wcx.debug_bounds("provider-add-card").is_some());
+    assert_eq!(
+        cx.update(|app| store.read(app).settings.builtin_picked.clone()),
+        "deepseek"
+    );
+    // 目录模型预填 + 折叠区可交互模型块(端点获取在场)
+    assert!(
+        !cx.update(|app| store.read(app).settings.set_form_models.clone())
+            .is_empty(),
+        "内置卡应以目录模型清单预填"
+    );
+    click_sel(&mut wcx, "builtin-advanced-toggle");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("models-fetch").is_some(),
+        "内置折叠区应含可交互模型块"
+    );
+    // 切 GLM 填 key 应用 → 保存成功:目录基底落盘(URL/方言/计费预设/
+    // 模型清单),仅 key 取输入——base_url 空报错与计费预设丢失的回归锁
+    cx.update(|app| store.update(app, |st, cx| st.pick_builtin_provider("glm", cx)));
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "field-key");
+    wcx.run_until_parked();
+    wcx.simulate_input("sk-glm-test");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "provider-editor-apply");
+    wcx.run_until_parked();
+    let glm = cx
+        .update(|app| {
+            store.read(app).settings.settings_snapshot["providers"]
+                .as_array()
+                .and_then(|ps| ps.iter().find(|p| p["id"].as_str() == Some("glm")).cloned())
+        })
+        .expect("GLM 条目应保存成功");
+    assert_eq!(glm["base_url"], "https://open.bigmodel.cn/api/v1");
+    assert_eq!(glm["dialect"], "glm-responses");
+    assert!(glm["billing"].is_object(), "计费预设应随内置保存生效");
+    assert!(!glm["models"].as_array().unwrap_or(&vec![]).is_empty());
+    wcx.run_until_parked();
+    // 行内「编辑」deepseek(目录内厂商)→ 内置模式锁定
+    click_sel(&mut wcx, "provider-edit-deepseek");
+    wcx.run_until_parked();
+    assert!(
+        cx.update(|app| {
+            let st = store.read(app);
+            st.settings.builtin_mode && st.settings.builtin_picked == "deepseek"
+        }),
+        "目录内厂商编辑应走内置卡"
+    );
+    click_sel(&mut wcx, "provider-editor-cancel");
+    wcx.run_until_parked();
+    // 「添加自定义提供方」→ 自定义卡(名称 / Base URL / API 格式三选)
+    click_sel(&mut wcx, "provider-add-custom");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    assert!(cx.update(|app| {
+        let st = store.read(app);
+        st.settings.adding_provider && !st.settings.builtin_mode
+    }));
     assert!(wcx.debug_bounds("provider-add-card").is_some());
     click_sel(&mut wcx, "provider-editor-cancel");
     wcx.run_until_parked();
@@ -5462,6 +5674,66 @@ fn composer_menu_floats_above_trigger(cx: &mut TestAppContext) {
         "菜单体应盖过输入卡顶缘(源式锚定),menu.bottom={:?} input.top={:?}",
         card.bottom(),
         input.origin.y
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 首运行 onboarding 模态:无凭据弹出 → 空 key 保存内联报错 → 输入
+/// key 保存写入 deepseek 并完成(模态关闭 + credentialReady 翻转)
+#[gpui_kit::test]
+fn onboarding_modal_save_flow(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness_onboarding(cx, "onboard");
+    assert!(
+        wcx.debug_bounds("onboarding-card").is_some(),
+        "无凭据应弹模态"
+    );
+    // 空 key 保存 → 内联错误
+    click_sel(&mut wcx, "onboarding-save");
+    wcx.run_until_parked();
+    assert!(wcx.debug_bounds("onboarding-error").is_some());
+    // 输入 key → 保存 → 凭据写入 + 引导完成
+    click_sel(&mut wcx, "onboarding-key");
+    wcx.run_until_parked();
+    wcx.simulate_input("sk-onboard-test");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "onboarding-save");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("onboarding-card").is_none(),
+        "保存后模态关闭"
+    );
+    assert!(
+        cx.update(|app| {
+            store.read(app).settings.settings_snapshot["providers"]
+                .as_array()
+                .is_some_and(|ps| {
+                    ps.iter()
+                        .any(|p| p["id"] == "deepseek" && p["credentialReady"] == true)
+                })
+        }),
+        "deepseek 凭据应就绪"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 「稍后配置」= 完成引导(源 complete 语义):模态关闭且不再弹
+#[gpui_kit::test]
+fn onboarding_modal_later_completes(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness_onboarding(cx, "onboard-later");
+    assert!(wcx.debug_bounds("onboarding-card").is_some());
+    click_sel(&mut wcx, "onboarding-later");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("onboarding-card").is_none(),
+        "稍后配置后关闭"
+    );
+    assert!(
+        !cx.update(|app| store.read(app).settings.needs_onboarding),
+        "引导完成不再弹"
     );
     let _ = std::fs::remove_dir_all(root);
 }

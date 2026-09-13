@@ -89,6 +89,12 @@ impl<E: AnthropicExt> ProviderAdapter for GenericAnthropicAdapter<E> {
     fn mapper(&self) -> Box<dyn FrameMapper> {
         Box::new(AnthropicMapper::new())
     }
+
+    fn body_error(&self, _body: &str) -> Option<dsh_agent_loop::TransportError> {
+        // Anthropic 以真实状态码报错(4xx/5xx),200+JSON 错误体不在其
+        // 契约内——无归类知识
+        None
+    }
 }
 
 /// 内部消息方言 → Anthropic wire 方言:

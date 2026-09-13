@@ -80,6 +80,10 @@ impl<E: ChatExt> ProviderAdapter for GenericChatAdapter<E> {
     fn mapper(&self) -> Box<dyn FrameMapper> {
         Box::new(OpenAiChatMapper::new())
     }
+
+    fn body_error(&self, body: &str) -> Option<dsh_agent_loop::TransportError> {
+        self.ext.body_error(body)
+    }
 }
 
 /// 内部消息方言 → OpenAI Chat wire 方言:

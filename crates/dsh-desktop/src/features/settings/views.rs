@@ -1109,11 +1109,8 @@ fn provider_row_card(
         .gap(px(10.))
         .rounded(px(12.))
         .border_1()
-        .border_color(if is_default {
-            theme::BRAND()
-        } else {
-            theme::BORDER()
-        })
+        // 恒中性边框:默认态由「默认」chip 表达,常驻蓝框 = 误读为选中态
+        .border_color(theme::BORDER())
         .p(px(12.))
         .pr(px(14.))
         // 主行:avatar + 名称/URL 两行 + 右侧状态区 + 编辑/移除
@@ -1277,36 +1274,99 @@ fn billing_value_line(cache: &serde_json::Value) -> Option<impl IntoElement> {
             )
         }
         Some("usage") => {
-            let row = row.when_some(cache["pct_5h"].as_u64(), |el, v| {
-                el.child("5小时:").child(
+            // 每窗一行:标签 + 进度条 + 百分比;尾部重置倒计时
+            let resets = cache["resets"].as_str().and_then(resets_countdown);
+            let mut col = div().v_flex().items_end().gap(px(4.));
+            let mut any = false;
+            for (label, pct) in [
+                ("5 小时", cache["pct_5h"].as_u64()),
+                ("7 天", cache["pct_7d"].as_u64()),
+            ] {
+                let Some(v) = pct else { continue };
+                any = true;
+                col = col.child(
                     div()
-                        .text_color(theme::SUCCESS())
-                        .font_weight(gpui_kit::FontWeight::MEDIUM)
-                        .child(format!("{v}%")),
-                )
-            });
-            let row = row.when_some(cache["pct_7d"].as_u64(), |el, v| {
-                el.child("7天:").child(
-                    div()
-                        .text_color(theme::SUCCESS())
-                        .font_weight(gpui_kit::FontWeight::MEDIUM)
-                        .child(format!("{v}%")),
-                )
-            });
-            let row = row.when_some(cache["resets"].as_str(), |el, v| {
-                el.child(
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(theme::CAPTION())
+                                .child(label),
+                        )
+                        .child(usage_bar(v, 56.))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                .text_color(theme::LABEL())
+                                .child(format!("{v}%")),
+                        ),
+                );
+            }
+            if let Some(cd) = resets {
+                any = true;
+                col = col.child(
                     div()
                         .flex()
                         .items_center()
                         .gap(px(2.))
-                        .text_color(theme::LABEL_3())
+                        .text_size(px(11.))
+                        .text_color(theme::CAPTION())
                         .child(fixed(DshIcon::Clock, 11.))
-                        .child(v.to_string()),
-                )
-            });
-            Some(row.into_any_element())
+                        .child(format!("{cd}后重置")),
+                );
+            }
+            any.then(|| col.into_any_element())
         }
         _ => None,
+    }
+}
+
+/// 用量迷你进度条(width px、4px 高;填充 <70% 正常绿,≥70% 接近限额红)
+pub(crate) fn usage_bar(pct: u64, width: f32) -> gpui_kit::AnyElement {
+    let pct = pct.min(100);
+    div()
+        .w(px(width))
+        .h(px(4.))
+        .rounded(px(2.))
+        .bg(theme::BORDER_2())
+        .overflow_hidden()
+        .child(
+            div()
+                .w(px(width * pct as f32 / 100.))
+                .h_full()
+                .rounded(px(2.))
+                .bg(if pct >= 70 {
+                    theme::DANGER()
+                } else {
+                    theme::SUCCESS()
+                }),
+        )
+        .into_any_element()
+}
+
+/// 重置倒计时:毫秒戳 → 剩余「4天22时 / 3时12分 / 45分」;缺席/非时间戳/已过 = None
+pub(crate) fn resets_countdown(resets: &str) -> Option<String> {
+    let ts = resets.parse::<u64>().ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    let mins = ts.saturating_sub(now) / 60_000;
+    if mins >= 60 * 24 {
+        Some(format!(
+            "{}天{}时",
+            mins / (60 * 24),
+            (mins % (60 * 24)) / 60
+        ))
+    } else if mins >= 60 {
+        Some(format!("{}时{}分", mins / 60, mins % 60))
+    } else if mins > 0 {
+        Some(format!("{mins}分"))
+    } else {
+        None
     }
 }
 
@@ -1413,8 +1473,9 @@ fn setup_card(store: &Entity<AppStore>, cx: &App, id: &str) -> impl IntoElement 
         .child(provider_editor(store, cx, id, true))
 }
 
-/// 添加块(源 .addBlock):开态 = 填充模块卡(id 输入 + 编辑器);
-/// 闭态 = dashed 添加钮(源 44h r12,「空位」语义)
+/// 添加块(源 .addBlock + 两入口):目录选择卡 / 自定义表单卡 /
+/// 闭态 = 两个 dashed 添加钮(「添加提供方」= 目录流;「添加自定义
+/// 提供方」= 自由表单)
 fn add_block(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
     let st = store.read(cx);
     if st.settings.adding_provider {
@@ -1442,34 +1503,65 @@ fn add_block(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
             .child(provider_editor(store, cx, "", false))
             .into_any_element();
     }
-    let s = store.clone();
+    let (s_catalog, s_custom) = (store.clone(), store.clone());
     div()
-        .id("provider-add")
-        .debug_selector(|| "provider-add".to_string())
         .flex()
-        .h(px(44.))
-        .items_center()
-        .justify_center()
-        .gap(px(6.))
-        .rounded(px(12.))
-        .border_1()
-        .border_color(theme::BORDER_2())
-        .border_dashed()
-        .cursor_pointer()
-        .text_size(px(14.))
-        .text_color(theme::LABEL_3())
-        .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL_2()))
-        .child(fixed(IconName::Plus, 14.))
-        .child("添加 Provider")
-        .on_click(move |_, window, cx| {
-            s.update(cx, |st, cx| st.open_provider_add(window, cx));
-        })
+        .gap(px(10.))
+        .child(
+            div()
+                .id("provider-add")
+                .debug_selector(|| "provider-add".to_string())
+                .flex_1()
+                .h(px(44.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(theme::BORDER_2())
+                .border_dashed()
+                .cursor_pointer()
+                .text_size(px(14.))
+                .text_color(theme::LABEL_3())
+                .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL_2()))
+                .child(fixed(IconName::Plus, 14.))
+                .child("添加提供方")
+                .on_click(move |_, window, cx| {
+                    s_catalog.update(cx, |st, cx| st.open_provider_add_builtin(window, cx));
+                }),
+        )
+        .child(
+            div()
+                .id("provider-add-custom")
+                .debug_selector(|| "provider-add-custom".to_string())
+                .flex_1()
+                .h(px(44.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(theme::BORDER_2())
+                .border_dashed()
+                .cursor_pointer()
+                .text_size(px(14.))
+                .text_color(theme::LABEL_3())
+                .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL_2()))
+                .child(fixed(IconName::Plus, 14.))
+                .child("添加自定义提供方")
+                .on_click(move |_, window, cx| {
+                    s_custom.update(cx, |st, cx| st.open_provider_add(window, cx));
+                }),
+        )
         .into_any_element()
 }
 
-/// 编辑卡(参考图2 形态):名称 / Base URL / API Key / API 格式 /
-/// 模型列表(端点拉取多选 + 手动添加)/ 计费端点(开关 + 类型 + URL
-/// + JSON 路径);页脚右对齐 取消/应用。setup/添加卡共用(无标题行)
+/// 编辑卡:内置模式(提供方下拉 + API 密钥 + 「自定义设置」折叠;
+/// 适配器与目录绑定)/ 自定义模式(名称 / Base URL / API Key / API 格式
+/// 三选 / 模型列表 / 计费端点,图3 字段序)。页脚右对齐 取消/应用。
+/// setup/添加卡共用(无标题行)
 fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) -> impl IntoElement {
     let st = store.read(cx);
     let (s_cancel, s_apply, s_add_model, s_fetch, s_billing, s_kind) = (
@@ -1507,7 +1599,21 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
                 }))
                 .into_any_element()
         };
-    div()
+    let builtin = st.settings.builtin_mode;
+    let picked_id = st.settings.builtin_picked.clone();
+    let picked = dsh_core::settings::provider_catalog()
+        .into_iter()
+        .find(|e| e.id == picked_id);
+    // 高级段(模型列表 + 计费端点):自定义模式平铺;内置模式收进
+    // 「自定义设置」折叠
+    let advanced = || -> Vec<gpui_kit::AnyElement> {
+        vec![
+            editor_models_block(store, cx, fetch_pid.clone()).into_any_element(),
+            editor_billing_block(store, cx, id.to_string(), setup, billing_pid.clone())
+                .into_any_element(),
+        ]
+    };
+    let mut card = div()
         .id(editor_id)
         .debug_selector(move || editor_sel.clone())
         .v_flex()
@@ -1516,7 +1622,6 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
         .when(!setup && !id.is_empty(), |el| {
             el.bg(theme::SIDEBAR()).p(px(14.)).pr(px(16.))
         })
-        // 标题行(行内编辑态;setup/添加卡无)
         .when(!setup && !id.is_empty(), |el| {
             el.child(
                 div()
@@ -1537,318 +1642,427 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
                     ),
             )
         })
-        // 图2 字段序:名称 / Base URL / API Key / API 格式
-        .child(input_row(
-            "名称",
-            &st.settings.set_form_name,
-            "field-name".into(),
-        ))
-        .child(input_row(
-            "Base URL",
-            &st.settings.set_form_url,
-            "field-url".into(),
-        ))
+        // 内置模式:提供方下拉(编辑态锁定为该厂商;切换仅在添加态)
+        .when(builtin, |el| {
+            el.child(
+                div()
+                    .v_flex()
+                    .gap(px(6.))
+                    .child(field_label("提供方"))
+                    .children(st.settings.builtin_select.as_ref().map(|s| {
+                        div()
+                            .w(px(260.))
+                            .h(px(36.))
+                            .line_height(gpui_kit::relative(1.4))
+                            .child(Select::new(s))
+                    })),
+            )
+        })
+        .when(!builtin, |el| {
+            el.child(input_row(
+                "名称",
+                &st.settings.set_form_name,
+                "field-name".into(),
+            ))
+            .child(input_row(
+                "Base URL",
+                &st.settings.set_form_url,
+                "field-url".into(),
+            ))
+        })
         .child(
             div()
                 .v_flex()
                 .gap(px(6.))
-                .child(field_label(if setup {
+                .child(field_label(if builtin {
+                    "API 密钥"
+                } else if setup {
                     "API Key(必填)"
                 } else {
                     "API Key"
                 }))
+                .children(st.settings.key_input.as_ref().map(|e| {
+                    div()
+                        .h(px(34.))
+                        .debug_selector(|| "field-key".to_string())
+                        .child(Input::new(e).small())
+                })),
+        )
+        .when(builtin, |el| {
+            // 「自定义设置」折叠(源 ProviderEditor disclosure):目录
+            // 契约字段只读展示——适配器与目录绑定,改写走自定义流
+            el.child(
+                div()
+                    .id("builtin-advanced-toggle")
+                    .debug_selector(|| "builtin-advanced-toggle".to_string())
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .cursor_pointer()
+                    .text_size(px(13.))
+                    .text_color(theme::LABEL_2())
+                    .hover(|s| s.text_color(theme::LABEL()))
+                    .child(if st.settings.builtin_advanced_open {
+                        fixed(IconName::ArrowDown, 13.)
+                    } else {
+                        fixed(IconName::ChevronRight, 13.)
+                    })
+                    .child("自定义设置")
+                    .on_mouse_down(gpui_kit::MouseButton::Left, {
+                        let s = store.clone();
+                        move |_, _, cx| {
+                            s.update(cx, |st, cx| {
+                                st.settings.builtin_advanced_open =
+                                    !st.settings.builtin_advanced_open;
+                                cx.notify();
+                            });
+                        }
+                    }),
+            )
+            .when(st.settings.builtin_advanced_open, |el| {
+                if let Some(entry) = &picked {
+                    el.child(info_line("Base URL", entry.base_url.clone()))
+                        .child(info_line("适配器", entry.dialect.clone()))
+                        // 模型清单可编辑草稿(目录预填打底,端点拉取更新,
+                        // 随「应用」落盘——模型列表会更新,不锁目录契约)
+                        .child(editor_models_block(store, cx, fetch_pid.clone()).into_any_element())
+                        .child(info_line(
+                            "计费预设",
+                            if entry.billing.is_some() {
+                                "已内置".to_string()
+                            } else {
+                                "无(可手填计费端点)".to_string()
+                            },
+                        ))
+                } else {
+                    el.child(caption_line("目录条目缺失"))
+                }
+            })
+        })
+        .when(!builtin, |el| {
+            el.child(
+                div()
+                    .v_flex()
+                    .gap(px(6.))
+                    .child(field_label("API 格式"))
+                    .children(st.settings.dialect_select.as_ref().map(|s| {
+                        div()
+                            .w(px(260.))
+                            .h(px(36.))
+                            .line_height(gpui_kit::relative(1.4))
+                            .child(Select::new(s))
+                    })),
+            )
+            .children(advanced())
+        });
+    let _ = (&s_add_model, &s_fetch, &s_billing, &s_kind);
+    // 页脚:右对齐 取消/应用(源 .editorActions 胶囊钮)
+    card = card.child(
+        div()
+            .flex()
+            .justify_end()
+            .gap(px(8.))
+            .child(
+                div()
+                    .id("provider-editor-cancel")
+                    .debug_selector(|| "provider-editor-cancel".to_string())
+                    .flex()
+                    .h(px(36.))
+                    .items_center()
+                    .px(px(14.))
+                    .rounded(px(18.))
+                    .border_1()
+                    .border_color(theme::BORDER())
+                    .cursor_pointer()
+                    .text_size(px(14.))
+                    .text_color(theme::LABEL_2())
+                    .hover(|s| s.bg(theme::DOCK()))
+                    .child("取消")
+                    .on_click(move |_, _, cx| {
+                        let id = close_id.clone();
+                        s_cancel.update(cx, |st, cx| st.close_provider_editor(&id, cx));
+                    }),
+            )
+            .child(
+                div()
+                    .id("provider-editor-apply")
+                    .debug_selector(|| "provider-editor-apply".to_string())
+                    .flex()
+                    .h(px(36.))
+                    .items_center()
+                    .px(px(14.))
+                    .rounded(px(18.))
+                    .bg(theme::DOCK())
+                    .cursor_pointer()
+                    .text_size(px(14.))
+                    .text_color(theme::LABEL())
+                    .hover(|s| s.bg(theme::BUBBLE()))
+                    .child("应用")
+                    .on_click(move |_, _, cx| {
+                        s_apply.update(cx, |st, cx| st.apply_provider_editor(cx));
+                    }),
+            ),
+    );
+    card.into_any_element()
+}
+
+/// 模型列表块(图2:空态虚线框;行删除;端点拉取 + 手动添加)
+fn editor_models_block(store: &Entity<AppStore>, cx: &App, fetch_pid: String) -> impl IntoElement {
+    let st = store.read(cx);
+    let (s_add_model, s_fetch) = (store.clone(), store.clone());
+    div()
+        .v_flex()
+        .gap(px(8.))
+        .child(field_label("模型列表"))
+        .child(if st.settings.set_form_models.is_empty() {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(theme::BORDER_2())
+                .border_dashed()
+                .px(px(12.))
+                .py(px(14.))
+                .text_size(px(13.))
+                .text_color(theme::CAPTION())
+                .child(fixed(IconName::Info, 14.))
+                .child("当前没有配置模型,添加模型后可在聊天中使用。")
+                .into_any_element()
+        } else {
+            div()
+                .v_flex()
+                .gap(px(4.))
                 .children(
                     st.settings
-                        .key_input
-                        .as_ref()
-                        .map(|e| div().h(px(34.)).child(Input::new(e).small())),
-                ),
-        )
-        .child(
-            div()
-                .v_flex()
-                .gap(px(6.))
-                .child(field_label("API 格式"))
-                .child(dialect_chips(store, &st.settings.set_form_dialect)),
-        )
-        // 模型列表(图2:空态虚线框;行删除;端点拉取 + 手动添加)
-        .child(
-            div()
-                .v_flex()
-                .gap(px(8.))
-                .child(field_label("模型列表"))
-                .child(if st.settings.set_form_models.is_empty() {
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .rounded(px(10.))
-                        .border_1()
-                        .border_color(theme::BORDER_2())
-                        .border_dashed()
-                        .px(px(12.))
-                        .py(px(14.))
-                        .text_size(px(13.))
-                        .text_color(theme::CAPTION())
-                        .child(fixed(IconName::Info, 14.))
-                        .child("当前没有配置模型,添加模型后可在聊天中使用。")
-                        .into_any_element()
-                } else {
-                    div()
-                        .v_flex()
-                        .gap(px(4.))
-                        .children(
-                            st.settings
-                                .set_form_models
-                                .iter()
-                                .enumerate()
-                                .map(|(ix, m)| model_draft_row(store, ix, m)),
-                        )
-                        .into_any_element()
-                })
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .children(st.settings.set_form_model_input.as_ref().map(|e| {
-                            div()
-                                .flex_1()
-                                .h(px(34.))
-                                .child(Input::new(e).small())
-                                .into_any_element()
-                        }))
-                        .child(
-                            div()
-                                .id("model-add")
-                                .debug_selector(|| "model-add".to_string())
-                                .flex()
-                                .h(px(32.))
-                                .flex_shrink_0()
-                                .items_center()
-                                .gap(px(4.))
-                                .px(px(10.))
-                                .rounded(px(8.))
-                                .border_1()
-                                .border_color(theme::BORDER())
-                                .cursor_pointer()
-                                .text_size(px(13.))
-                                .text_color(theme::LABEL_2())
-                                .hover(|s| s.bg(theme::DOCK()))
-                                .child(fixed(IconName::Plus, 13.))
-                                .child("添加模型")
-                                .on_click(move |_, window, cx| {
-                                    s_add_model.update(cx, |st, cx| {
-                                        st.add_model_manual(window, cx);
-                                    });
-                                }),
-                        )
-                        .child(
-                            div()
-                                .id("models-fetch")
-                                .debug_selector(|| "models-fetch".to_string())
-                                .flex()
-                                .h(px(32.))
-                                .items_center()
-                                .gap(px(4.))
-                                .px(px(10.))
-                                .rounded(px(8.))
-                                .cursor_pointer()
-                                .text_size(px(13.))
-                                .text_color(theme::LABEL_2())
-                                .hover(|s| s.bg(theme::DOCK()))
-                                .when(st.settings.model_fetch_loading, |el| {
-                                    el.text_color(theme::ONGOING())
-                                })
-                                .child(fixed(IconName::Globe, 13.))
-                                .child("从端点获取")
-                                .on_click(move |_, _, cx| {
-                                    let pid = fetch_pid.clone();
-                                    s_fetch.update(cx, |st, cx| {
-                                        st.open_fetch_models(&pid, cx);
-                                    });
-                                }),
-                        ),
-                ),
-        )
-        // 计费端点(开关 + 形态 + URL + JSON 路径)
-        .child(
-            div()
-                .v_flex()
-                .gap(px(8.))
-                .child(
-                    div()
-                        .id("billing-toggle")
-                        .debug_selector(|| "billing-toggle".to_string())
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(field_label("计费端点(余额 / 用量展示)"))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .text_size(px(12.))
-                                .text_color(if st.settings.set_form_billing_enabled {
-                                    theme::LABEL_2()
-                                } else {
-                                    theme::CAPTION()
-                                })
-                                .child(if st.settings.set_form_billing_enabled {
-                                    "已启用"
-                                } else {
-                                    "未启用"
-                                })
-                                .child(toggle_switch(st.settings.set_form_billing_enabled))
-                                .on_mouse_down(gpui_kit::MouseButton::Left, {
-                                    let s = s_billing.clone();
-                                    move |_, _, cx| {
-                                        s.update(cx, |st, cx| st.toggle_billing_enabled(cx));
-                                    }
-                                }),
-                        ),
+                        .set_form_models
+                        .iter()
+                        .enumerate()
+                        .map(|(ix, m)| model_draft_row(store, ix, m)),
                 )
-                .when(st.settings.set_form_billing_enabled, |el| {
-                    el.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(billing_kind_chip(
-                                store,
-                                "余额",
-                                "balance",
-                                &st.settings.set_form_billing_kind,
-                            ))
-                            .child(billing_kind_chip(
-                                store,
-                                "用量",
-                                "usage",
-                                &st.settings.set_form_billing_kind,
-                            )),
-                    )
-                    .child(input_row(
-                        "查询 URL(GET)",
-                        &st.settings.set_form_billing_url,
-                        "field-billing-url".into(),
-                    ))
-                    .children(if st.settings.set_form_billing_kind == "usage" {
-                        vec![
-                            input_row(
-                                "5小时用量路径",
-                                &st.settings.set_form_path_5h,
-                                "field-p5h".into(),
-                            ),
-                            input_row(
-                                "7天用量路径",
-                                &st.settings.set_form_path_7d,
-                                "field-p7d".into(),
-                            ),
-                            input_row(
-                                "重置时间路径(可选)",
-                                &st.settings.set_form_path_resets,
-                                "field-presets".into(),
-                            ),
-                        ]
-                    } else {
-                        vec![
-                            input_row(
-                                "余额金额路径",
-                                &st.settings.set_form_path_balance,
-                                "field-pbal".into(),
-                            ),
-                            input_row(
-                                "货币路径(可选)",
-                                &st.settings.set_form_path_currency,
-                                "field-pcur".into(),
-                            ),
-                        ]
-                    })
-                    .when(!setup && !id.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .id("billing-refresh-now")
-                                .flex()
-                                .h(px(30.))
-                                .w(px(88.))
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(8.))
-                                .border_1()
-                                .border_color(theme::BORDER())
-                                .cursor_pointer()
-                                .text_size(px(12.))
-                                .text_color(
-                                    if st.settings.billing_refreshing.as_deref() == Some(id) {
-                                        theme::ONGOING()
-                                    } else {
-                                        theme::LABEL_2()
-                                    },
-                                )
-                                .hover(|s| s.bg(theme::DOCK()))
-                                .child(if st.settings.billing_refreshing.as_deref() == Some(id) {
-                                    "刷新中…"
-                                } else {
-                                    "立即刷新"
-                                })
-                                .on_click(move |_, _, cx| {
-                                    let pid = billing_pid.clone();
-                                    s_kind.update(cx, |st, cx| {
-                                        st.refresh_billing_now(&pid, true, cx);
-                                    });
-                                }),
-                        )
-                    })
-                }),
-        )
-        // 页脚:右对齐 取消/应用(源 .editorActions 胶囊钮)
+                .into_any_element()
+        })
         .child(
             div()
                 .flex()
-                .justify_end()
+                .items_center()
                 .gap(px(8.))
+                .children(st.settings.set_form_model_input.as_ref().map(|e| {
+                    div()
+                        .flex_1()
+                        .h(px(34.))
+                        .child(Input::new(e).small())
+                        .into_any_element()
+                }))
                 .child(
                     div()
-                        .id("provider-editor-cancel")
-                        .debug_selector(|| "provider-editor-cancel".to_string())
+                        .id("model-add")
+                        .debug_selector(|| "model-add".to_string())
                         .flex()
-                        .h(px(36.))
+                        .h(px(32.))
+                        .flex_shrink_0()
                         .items_center()
-                        .px(px(14.))
-                        .rounded(px(18.))
+                        .gap(px(4.))
+                        .px(px(10.))
+                        .rounded(px(8.))
                         .border_1()
                         .border_color(theme::BORDER())
                         .cursor_pointer()
-                        .text_size(px(14.))
+                        .text_size(px(13.))
                         .text_color(theme::LABEL_2())
                         .hover(|s| s.bg(theme::DOCK()))
-                        .child("取消")
-                        .on_click(move |_, _, cx| {
-                            let id = close_id.clone();
-                            s_cancel.update(cx, |st, cx| st.close_provider_editor(&id, cx));
+                        .child(fixed(IconName::Plus, 13.))
+                        .child("添加模型")
+                        .on_click(move |_, window, cx| {
+                            s_add_model.update(cx, |st, cx| {
+                                st.add_model_manual(window, cx);
+                            });
                         }),
                 )
                 .child(
                     div()
-                        .id("provider-editor-apply")
-                        .debug_selector(|| "provider-editor-apply".to_string())
+                        .id("models-fetch")
+                        .debug_selector(|| "models-fetch".to_string())
                         .flex()
-                        .h(px(36.))
+                        .h(px(32.))
                         .items_center()
-                        .px(px(14.))
-                        .rounded(px(18.))
-                        .bg(theme::DOCK())
+                        .gap(px(4.))
+                        .px(px(10.))
+                        .rounded(px(8.))
                         .cursor_pointer()
-                        .text_size(px(14.))
-                        .text_color(theme::LABEL())
-                        .hover(|s| s.bg(theme::BUBBLE()))
-                        .child("应用")
+                        .text_size(px(13.))
+                        .text_color(theme::LABEL_2())
+                        .hover(|s| s.bg(theme::DOCK()))
+                        .when(st.settings.model_fetch_loading, |el| {
+                            el.text_color(theme::ONGOING())
+                        })
+                        .child(fixed(IconName::Globe, 13.))
+                        .child("从端点获取")
                         .on_click(move |_, _, cx| {
-                            s_apply.update(cx, |st, cx| st.apply_provider_editor(cx));
+                            let pid = fetch_pid.clone();
+                            s_fetch.update(cx, |st, cx| {
+                                st.open_fetch_models(&pid, cx);
+                            });
                         }),
                 ),
         )
+}
+
+/// 计费端点块(开关 + 形态 + URL + JSON 路径)
+fn editor_billing_block(
+    store: &Entity<AppStore>,
+    cx: &App,
+    id: String,
+    setup: bool,
+    billing_pid: String,
+) -> impl IntoElement {
+    let st = store.read(cx);
+    let (s_billing, s_kind) = (store.clone(), store.clone());
+    let input_row =
+        |label: &str, slot: &Option<Entity<InputState>>, id_fmt: String| -> gpui_kit::AnyElement {
+            div()
+                .v_flex()
+                .gap(px(6.))
+                .child(field_label(label))
+                .children(slot.as_ref().map(|e| {
+                    div()
+                        .h(px(34.))
+                        .debug_selector(move || id_fmt.clone())
+                        .child(Input::new(e).small())
+                }))
+                .into_any_element()
+        };
+    div()
+        .v_flex()
+        .gap(px(8.))
+        .child(
+            div()
+                .id("billing-toggle")
+                .debug_selector(|| "billing-toggle".to_string())
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(field_label("计费端点(余额 / 用量展示)"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .text_size(px(12.))
+                        .text_color(if st.settings.set_form_billing_enabled {
+                            theme::LABEL_2()
+                        } else {
+                            theme::CAPTION()
+                        })
+                        .child(if st.settings.set_form_billing_enabled {
+                            "已启用"
+                        } else {
+                            "未启用"
+                        })
+                        .child(toggle_switch(st.settings.set_form_billing_enabled))
+                        .on_mouse_down(gpui_kit::MouseButton::Left, {
+                            let s = s_billing.clone();
+                            move |_, _, cx| {
+                                s.update(cx, |st, cx| st.toggle_billing_enabled(cx));
+                            }
+                        }),
+                ),
+        )
+        .when(st.settings.set_form_billing_enabled, |el| {
+            el.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(billing_kind_chip(
+                        store,
+                        "余额",
+                        "balance",
+                        &st.settings.set_form_billing_kind,
+                    ))
+                    .child(billing_kind_chip(
+                        store,
+                        "用量",
+                        "usage",
+                        &st.settings.set_form_billing_kind,
+                    )),
+            )
+            .child(input_row(
+                "查询 URL(GET)",
+                &st.settings.set_form_billing_url,
+                "field-billing-url".into(),
+            ))
+            .children(if st.settings.set_form_billing_kind == "usage" {
+                vec![
+                    input_row(
+                        "5小时用量路径",
+                        &st.settings.set_form_path_5h,
+                        "field-p5h".into(),
+                    ),
+                    input_row(
+                        "7天用量路径",
+                        &st.settings.set_form_path_7d,
+                        "field-p7d".into(),
+                    ),
+                    input_row(
+                        "重置时间路径(可选)",
+                        &st.settings.set_form_path_resets,
+                        "field-presets".into(),
+                    ),
+                ]
+            } else {
+                vec![
+                    input_row(
+                        "余额金额路径",
+                        &st.settings.set_form_path_balance,
+                        "field-pbal".into(),
+                    ),
+                    input_row(
+                        "货币路径(可选)",
+                        &st.settings.set_form_path_currency,
+                        "field-pcur".into(),
+                    ),
+                ]
+            })
+            .when(!setup && !id.is_empty(), |el| {
+                el.child(
+                    div()
+                        .id("billing-refresh-now")
+                        .flex()
+                        .h(px(30.))
+                        .w(px(88.))
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(theme::BORDER())
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(
+                            if st.settings.billing_refreshing.as_deref() == Some(id.as_str()) {
+                                theme::ONGOING()
+                            } else {
+                                theme::LABEL_2()
+                            },
+                        )
+                        .hover(|s| s.bg(theme::DOCK()))
+                        .child(
+                            if st.settings.billing_refreshing.as_deref() == Some(id.as_str()) {
+                                "刷新中…"
+                            } else {
+                                "立即刷新"
+                            },
+                        )
+                        .on_click(move |_, _, cx| {
+                            let pid = billing_pid.clone();
+                            s_kind.update(cx, |st, cx| {
+                                st.refresh_billing_now(&pid, true, cx);
+                            });
+                        }),
+                )
+            })
+        })
 }
 
 /// 草稿模型行(id + 移除 x)
@@ -1948,48 +2162,6 @@ fn field_label(text: &str) -> impl IntoElement {
         .font_weight(gpui_kit::FontWeight::MEDIUM)
         .text_color(theme::LABEL_2())
         .child(text.to_string())
-}
-
-/// 方言三选 chips(点击换选;标签 = 描述性协议名,值 = 方言串)
-fn dialect_chips(store: &Entity<AppStore>, selected: &str) -> impl IntoElement {
-    let choices = [
-        ("openai-chat", "OpenAI Chat Completions"),
-        ("anthropic", "Anthropic Messages (v1/messages)"),
-        ("openai-responses", "OpenAI Responses"),
-    ];
-    let mut row = div().flex().flex_wrap().items_center().gap(px(4.));
-    for (d, label) in choices {
-        let s = store.clone();
-        let active = d == selected;
-        row = row.child(
-            div()
-                .id(sid("dialect-chip", d))
-                .flex()
-                .h(px(28.))
-                .items_center()
-                .px(px(8.))
-                .rounded(px(14.))
-                .cursor_pointer()
-                .text_size(px(12.))
-                .when(active, |el| {
-                    el.bg(theme::DOCK())
-                        .text_color(theme::LABEL())
-                        .font_weight(gpui_kit::FontWeight::MEDIUM)
-                })
-                .when(!active, |el| {
-                    el.text_color(theme::LABEL_3())
-                        .hover(|s| s.bg(theme::DOCK()))
-                })
-                .child(label)
-                .on_click(move |_, _, cx| {
-                    s.update(cx, |st, cx| {
-                        st.settings.set_form_dialect = d.to_string();
-                        cx.notify();
-                    });
-                }),
-        );
-    }
-    row
 }
 
 /// About 区:版本与产品定位
@@ -2435,6 +2607,126 @@ pub fn provider_models_fetch_modal(store: &Entity<AppStore>, cx: &App) -> gpui_k
         .into_any_element()
 }
 
+/// 首运行 onboarding 模态(源 DeepSeekOnboardingDialog):无任何可用
+/// 凭据时弹出,默认 deepseek provider,只填 key。稍后配置 = 完成引导
+/// (不再弹);保存并继续 = key 写入 deepseek 并完成
+pub(crate) fn onboarding_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
+    let st = store.read(cx);
+    let (s_save, s_later) = (store.clone(), store.clone());
+    let mut card = div()
+        .id("onboarding-card")
+        .debug_selector(|| "onboarding-card".to_string())
+        .v_flex()
+        .w(px(460.))
+        .gap(px(14.))
+        .rounded(px(14.))
+        .border_1()
+        .border_color(theme::BORDER())
+        .bg(theme::LAYER())
+        .p(px(24.))
+        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+            cx.stop_propagation()
+        })
+        .child(
+            div()
+                .text_size(px(17.))
+                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .text_color(theme::LABEL())
+                .child("添加一个 API Key 开始使用"),
+        )
+        .child(
+            div()
+                .text_size(px(13.))
+                .text_color(theme::LABEL_2())
+                .child("配置 DeepSeek 官方模型，即可开始使用。"),
+        )
+        .child(
+            div()
+                .v_flex()
+                .gap(px(6.))
+                .child(field_label("API 密钥"))
+                .children(st.settings.onboarding_key_input.as_ref().map(|e| {
+                    div()
+                        .id("onboarding-key")
+                        .debug_selector(|| "onboarding-key".to_string())
+                        .h(px(36.))
+                        .child(Input::new(e).small())
+                })),
+        );
+    if let Some(err) = &st.settings.onboarding_key_error {
+        card = card.child(
+            div()
+                .id("onboarding-error")
+                .debug_selector(|| "onboarding-error".to_string())
+                .text_size(px(12.))
+                .text_color(theme::DANGER())
+                .child(err.clone()),
+        );
+    }
+    card = card.child(
+        div()
+            .flex()
+            .justify_end()
+            .gap(px(10.))
+            .child(
+                div()
+                    .id("onboarding-later")
+                    .debug_selector(|| "onboarding-later".to_string())
+                    .flex()
+                    .h(px(34.))
+                    .items_center()
+                    .px(px(16.))
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(theme::BORDER())
+                    .cursor_pointer()
+                    .text_size(px(13.))
+                    .text_color(theme::LABEL_2())
+                    .hover(|s| s.bg(theme::DOCK()))
+                    .child("稍后配置")
+                    .on_click(move |_, _, cx| {
+                        s_later.update(cx, |st, cx| st.onboarding_later(cx));
+                    }),
+            )
+            .child(
+                div()
+                    .id("onboarding-save")
+                    .debug_selector(|| "onboarding-save".to_string())
+                    .flex()
+                    .h(px(34.))
+                    .items_center()
+                    .px(px(16.))
+                    .rounded(px(10.))
+                    .bg(theme::BRAND())
+                    .cursor_pointer()
+                    .text_size(px(13.))
+                    .text_color(theme::LABEL())
+                    .hover(|s| s.opacity(0.9))
+                    .child("保存并继续")
+                    .on_click(move |_, _, cx| {
+                        s_save.update(cx, |st, cx| st.onboarding_save(cx));
+                    }),
+            ),
+    );
+    div()
+        .id("onboarding-overlay")
+        .debug_selector(|| "onboarding-overlay".to_string())
+        .absolute()
+        .size_full()
+        .top_0()
+        .left_0()
+        .flex()
+        .items_start()
+        .justify_center()
+        .pt(px(140.))
+        .bg(gpui_kit::Rgba {
+            a: 0.6,
+            ..theme::BASE()
+        })
+        .child(card)
+        .into_any_element()
+}
+
 pub fn provider_delete_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
     let Some(id) = store.read(cx).settings.delete_provider_target.clone() else {
         return div().into_any_element();
@@ -2477,7 +2769,9 @@ pub fn provider_delete_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::An
                         .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                         .child(format!("移除 {id}")),
                 )
-                .child(caption_line("移除后工作区引用回落内置默认。"))
+                .child(caption_line(
+                    "移除会移除其配置和存储的 API 密钥;工作区引用回落内置默认。",
+                ))
                 .child(
                     div()
                         .flex()
@@ -3206,4 +3500,32 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .child("保存"),
         );
     col.into_any_element()
+}
+
+/// 重置倒计时格式化:剩余窗按量级取「天/时/分」,已过或非时间戳缺席
+#[cfg(test)]
+mod countdown_tests {
+    use super::resets_countdown;
+
+    #[test]
+    fn formats_remaining_window() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let at = |mins: u64| (now + mins * 60_000).to_string();
+        assert_eq!(
+            resets_countdown(&at(4 * 1440 + 22 * 60)).as_deref(),
+            Some("4天22时")
+        );
+        assert_eq!(
+            resets_countdown(&at(3 * 60 + 12)).as_deref(),
+            Some("3时12分")
+        );
+        assert_eq!(resets_countdown(&at(45)).as_deref(), Some("45分"));
+        // 已过 / 非时间戳 → 缺席(不显示倒计时)
+        let past = (now - 60 * 60_000).to_string();
+        assert_eq!(resets_countdown(&past), None);
+        assert_eq!(resets_countdown("soon"), None);
+    }
 }

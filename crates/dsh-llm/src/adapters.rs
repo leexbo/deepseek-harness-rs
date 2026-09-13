@@ -47,6 +47,10 @@ pub trait ProviderAdapter: Send + Sync {
     ) -> Value;
     /// 新建流映射器(每请求一个;可带跨帧累积状态)
     fn mapper(&self) -> Box<dyn FrameMapper>;
+    /// 200 + 非 SSE 的 JSON 错误体归类(None = 非错误体,交由引擎按
+    /// 空响应处理)。方言差异在 ext(如 bigmodel 顶层 {code,msg}),
+    /// 通用传输层不携带任何 provider 的错误 wire 知识
+    fn body_error(&self, body: &str) -> Option<dsh_agent_loop::TransportError>;
 }
 
 // ============================================================
@@ -64,9 +68,12 @@ pub fn adapter_by_name(name: &str) -> Option<Box<dyn ProviderAdapter>> {
         "openai-responses" => Some(Box::new(crate::responses::GenericResponsesAdapter::new(
             crate::ext::OpenAiResponsesExt,
         ))),
+        "glm-responses" => Some(Box::new(crate::responses::GenericResponsesAdapter::new(
+            crate::ext::GlmResponsesExt,
+        ))),
         "deepseek-chat" => Some(Box::new(GenericChatAdapter::new(DeepSeekChatExt))),
-        "openai-chat" => Some(Box::new(GenericChatAdapter::new(OpenAiChatExt))),
-        "anthropic" => Some(Box::new(crate::anthropic::GenericAnthropicAdapter::new(
+        "openai-completions" => Some(Box::new(GenericChatAdapter::new(OpenAiChatExt))),
+        "anthropic-messages" => Some(Box::new(crate::anthropic::GenericAnthropicAdapter::new(
             crate::ext::StandardAnthropicExt,
         ))),
         _ => None,
