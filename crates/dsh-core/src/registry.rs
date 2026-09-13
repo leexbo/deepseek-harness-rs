@@ -871,6 +871,28 @@ fn broadcast_event(
     }
 }
 
+/// 日志里最后一条 `session/mode` 经全量预热翻译成的控制终态帧
+/// (baseline 用)。回声类帧与直播事件不同,丢段后没有「后续帧自然
+/// 覆盖」——mux baseline 必须携带终态,客户端重同步后才能收敛。
+fn mode_terminal_frame(
+    provider: &ProviderInfo,
+    log: &Mutex<EventLog>,
+    session_id: &str,
+) -> Option<ServerRequest> {
+    let l = log.lock().unwrap_or_else(|p| p.into_inner());
+    let mut tr = Translator::new(provider.clone());
+    let mut target = None;
+    for ev in l.iter() {
+        tr.translate(ev);
+        if ev.r#type == "session/mode" {
+            target = Some(ev.seq);
+        }
+    }
+    let ev = target.and_then(|s| l.get(s))?;
+    let event = tr.translate(ev)?;
+    event_frame(session_id, event)
+}
+
 /// 迁移旧布局会话文件到 `~/.dshrs/sessions/<key>/<id>/session.jsonl`
 /// (幂等:目标已存在跳过):
 /// - 旧布局 A:工作区根 `s-*.jsonl` + 根 `.archive/`
@@ -5110,8 +5132,11 @@ impl AppHost {
         }
     }
 
-    /// mux 流开基线:附着会话 subscribed + 队列快照 + 未决问题重放(同 rpcId)。
-    /// 队列基线紧跟 subscribed(客户端在 subscribed 时清旧代,基线随后替换)
+    /// mux 流开基线:附着会话 subscribed + 队列快照 + 控制终态
+    /// (plan/mode)+ 未决问题重放(同 rpcId)。队列基线紧跟 subscribed
+    /// (客户端在 subscribed 时清旧代,基线随后替换)。控制终态兜住
+    /// 丢段:Lagged 重同步拿不到直播回声帧,终态帧让 mode 收敛
+    /// (锁中毒恢复:缺席基线会让中毒会话从重同步里整体消失)。
     pub fn mux_baseline(&self) -> Vec<ServerRequest> {
         let mut out = Vec::new();
         let mut ids: Vec<(String, u64)> = {
@@ -5120,12 +5145,17 @@ impl AppHost {
                 .iter()
                 .filter_map(|(id, s)| {
                     let inner = s.inner.get()?;
-                    let last_seq = inner.log.lock().ok()?.high_water();
+                    let last_seq = inner
+                        .log
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .high_water();
                     Some((id.clone(), last_seq))
                 })
                 .collect()
         };
         ids.sort();
+        let provider = self.provider_info();
         for (id, last_seq) in ids {
             out.push(frame(
                 "session/subscribed",
@@ -5135,18 +5165,30 @@ impl AppHost {
                 })
                 .unwrap_or(Value::Null),
             ));
-            // 队列基线:非空才发(空队列由 subscribed 清旧代表达)
             let slots = self.sessions.read().expect("sessions 锁中毒");
-            if let Some(inner) = slots.get(&id).and_then(|s| s.inner.get())
-                && !queue_items(inner).is_empty()
-            {
-                out.push(queue_frame(&id, inner));
+            if let Some(inner) = slots.get(&id).and_then(|s| s.inner.get()) {
+                // 队列基线:非空才发(空队列由 subscribed 清旧代表达)
+                if !queue_items(inner).is_empty() {
+                    out.push(queue_frame(&id, inner));
+                }
+                // 控制终态:有 mode 落档才发(无 = 从未切过,客户端
+                // 默认 standard 即正确)
+                if let Some(f) = mode_terminal_frame(&provider, &inner.log, &id) {
+                    out.push(f);
+                }
             }
         }
         for pending in self.pending.lock().expect("pending 锁中毒").values() {
             out.push(pending.frame.clone());
         }
         out
+    }
+
+    /// host 流重同步基线:丢段后可自愈的帧。workspace 清单变更通知幂等
+    /// (客户端重拉一次),补发覆盖 Lagged 窗口;session-status 不补,
+    /// 丢一条运行态由下一次 jobs 帧覆盖。
+    pub fn host_baseline(&self) -> Vec<ServerRequest> {
+        vec![frame("host/workspace-changed", json!({}))]
     }
 
     /// 附着会话数(host.describe)
@@ -6848,6 +6890,81 @@ async fn driver_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回声链锁中毒恢复:log 锁被毒化后 broadcast_event 仍发出 seq
+    /// 定向帧(此前 poison-else 静默吞回声,中毒是持久态,同进程后续
+    /// 全部回声连坐丢失)
+    #[test]
+    fn broadcast_event_recovers_from_poisoned_log_lock() {
+        let log = Mutex::new(EventLog::new());
+        log.lock()
+            .unwrap()
+            .append(EventEnvelope::new(
+                "session/mode",
+                0,
+                serde_json::json!({ "mode": "plan" }),
+            ))
+            .unwrap();
+        let shared = std::sync::Arc::new(log);
+        let poisoner = shared.clone();
+        let _ = std::thread::spawn(move || {
+            let _g = poisoner.lock().unwrap();
+            panic!("毒化日志锁");
+        })
+        .join();
+        assert!(shared.is_poisoned(), "前置:锁已中毒");
+        let (tx, mut rx) = broadcast::channel(8);
+        broadcast_event(
+            &ProviderInfo {
+                provider: "deepseek".into(),
+                model: "test".into(),
+            },
+            &shared,
+            "s1",
+            &tx,
+            Some(1),
+        );
+        let f = rx.try_recv().expect("中毒锁恢复后回声帧仍须发出");
+        assert_eq!(f.method, "session/event");
+        assert_eq!(f.payload["sessionId"], "s1");
+        assert_eq!(f.payload["event"]["type"], "plan/mode");
+        assert_eq!(f.payload["event"]["data"]["active"], true);
+    }
+
+    /// mux baseline 携带控制终态:set_mode 落档后 baseline 含
+    /// plan/mode 帧;从未切换的会话不发终态帧(此前 baseline 只含
+    /// subscribed/队列/未决问题,丢段重同步后 mode 回声永久丢失)
+    #[tokio::test]
+    async fn mux_baseline_carries_mode_terminal_state() {
+        let dir =
+            std::env::temp_dir().join(format!("dsh-core-baseline-{}", Uuid::new_v4().simple()));
+        let sroot =
+            std::env::temp_dir().join(format!("dsh-core-baseline-s-{}", Uuid::new_v4().simple()));
+        let host = Arc::new(AppHost::new_at(dir, true, "", sroot).unwrap());
+        let id = host.create_session(None, None, None);
+        host.set_mode(&id, "plan").await.unwrap();
+        // set_mode 经 Job 队列异步落档(current_thread runtime 须用
+        // tokio 睡眠让出线程,worker 才能处理):轮询 baseline 直到终态出现
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let hit = loop {
+            let hit = host.mux_baseline().iter().any(|f| {
+                f.method == "session/event"
+                    && f.payload["sessionId"].as_str() == Some(id.as_str())
+                    && f.payload["event"]["type"] == "plan/mode"
+                    && f.payload["event"]["data"]["active"] == true
+            });
+            if hit || std::time::Instant::now() > deadline {
+                break hit;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        assert!(hit, "baseline 未携带 plan/mode 终态");
+        let id2 = host.create_session(None, None, None);
+        let leaked = host.mux_baseline().iter().any(|f| {
+            f.method == "session/event" && f.payload["sessionId"].as_str() == Some(id2.as_str())
+        });
+        assert!(!leaked, "无 mode 落档的会话不应出现终态帧");
+    }
 
     /// 冷加载修夏:悬挂 tool/call 补 isError result(success=false、
     /// call=调用 seq、id 取 assistant tool_calls)+ turn/end(cancelled)
