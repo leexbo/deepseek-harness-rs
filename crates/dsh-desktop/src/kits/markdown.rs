@@ -473,6 +473,75 @@ mod selection_tests {
         }
     }
 
+    /// 拖选实时刷新行为锁的宿主:驱动器 + 可选正文同窗
+    struct DrivenView;
+    impl Render for DrivenView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(crate::shell::SelectionRefreshDriver)
+                .child(div().w(px(400.)).child(super::render(
+                    "drivensel",
+                    "起始行的正文内容\n\n下方目标行的正文内容",
+                    super::CHAT_ORDER_BASE,
+                )))
+        }
+    }
+
+    /// 拖选实时刷新行为锁:选择事件链自身不请求刷新帧(上游库无订阅
+    /// 接线),dsh 驱动器负责在「按住拖动且已有选区」的 move 上置脏。
+    /// 无键悬停移动不得触发(否则窗口常置脏空转)
+    #[gpui_kit::test]
+    fn drag_move_drives_refresh_for_live_highlight(cx: &mut gpui_kit::TestAppContext) {
+        use std::sync::atomic::Ordering;
+
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let v = cx.new(|_| DrivenView);
+            gpui_kit::component::Root::new(v, window, cx)
+        });
+        let _ = view;
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let fires = || crate::shell::SELECTION_DRIVEN_REFRESHES.load(Ordering::Relaxed);
+        let base = fires();
+        cx.simulate_mouse_move(
+            gpui_kit::point(px(120.), px(50.)),
+            None,
+            Modifiers::default(),
+        );
+        cx.run_until_parked();
+        assert_eq!(
+            fires(),
+            base,
+            "无键悬停移动不得触发拖选刷新(窗口会常置脏空转)"
+        );
+        cx.simulate_mouse_down(
+            gpui_kit::point(px(10.), px(8.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            gpui_kit::point(px(120.), px(50.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.run_until_parked();
+        assert!(
+            fires() > base,
+            "拖动中的 move 应由驱动器置脏(高亮实时刷新),实际计数 {} → {}",
+            base,
+            fires()
+        );
+        cx.simulate_mouse_up(
+            gpui_kit::point(px(120.), px(50.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| gpui_kit::base::TextSelection::clear(window, cx));
+    }
+
     /// markdown 正文拖选契约:真机窗口由 `component::Root` 提供唯一选择层
     /// (Root 内建 TextSelectionLayer + activate_scope),别再自挂第二层;
     /// 本用例复刻该配置,守 markdown 段落的 SelectableText 装配不回退成裸文本

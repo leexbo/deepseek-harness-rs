@@ -21,8 +21,9 @@ use crate::kits::modals::{
 use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Context, Entity, InteractiveElement, IntoElement, ParentElement, Render, Styled, Window, div,
-    px,
+    App, Bounds, Context, DispatchPhase, Element, ElementId, Entity, GlobalElementId,
+    InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseMoveEvent, ParentElement,
+    Pixels, Render, Style, Styled, Window, div, px,
 };
 
 use crate::features::ask;
@@ -44,6 +45,91 @@ pub fn bind_global_keys(cx: &mut gpui_kit::App) {
         panel::OpenPanelPlan,
         None,
     )]);
+}
+
+/// 拖选实时刷新驱动器。
+///
+/// gpui-base 的选择事件链只更新参与者快照并 emit 事件,不请求刷新
+/// 帧(`SelectionChanged` 全库无订阅者),而渲染循环仅按脏标记出帧
+/// ——拖选过程中窗口不脏,高亮冻结在按下时的画面,松手后的余动
+/// 借其他刷新源(hover 切换等)才补上。本元素在 paint 期挂窗口级
+/// mouse-move 监听:按住鼠标拖动且窗口已有文本选区时逐 move 置
+/// 脏,高亮随拖动实时渲染(见 selection_tests 的行为锁)。
+pub(crate) struct SelectionRefreshDriver;
+
+#[cfg(test)]
+pub(crate) static SELECTION_DRIVEN_REFRESHES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+impl IntoElement for SelectionRefreshDriver {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for SelectionRefreshDriver {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some("selection-refresh-driver".into())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        (window.request_layout(Style::default(), [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        _: &mut Window,
+        _: &mut App,
+    ) -> Self::PrepaintState {
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        _: &mut App,
+    ) {
+        window.on_mouse_event(
+            |event: &MouseMoveEvent, phase: DispatchPhase, window: &mut Window, cx: &mut App| {
+                // bubble 相按绘制序逆序执行,本元素画在选择层之后、先于
+                // 层处理本帧 move(此刻 anchor==cursor,快照尚为 None)——
+                // 状态检查与置脏须 defer 到事件派发完、层更新完之后
+                if phase.bubble() && event.pressed_button.is_some() {
+                    window.defer(cx, |window, cx| {
+                        if gpui_kit::base::TextSelection::has_selection(window, cx) {
+                            #[cfg(test)]
+                            SELECTION_DRIVEN_REFRESHES
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            window.refresh();
+                        }
+                    });
+                }
+            },
+        );
+    }
 }
 
 /// 工作区根视图(状态收口在 AppStore)
@@ -189,6 +275,9 @@ impl Render for WorkspaceView {
             .overflow_hidden()
             .bg(theme::BASE())
             .text_color(theme::LABEL())
+            // 拖选实时刷新驱动器(零尺寸;见其文档)——必须与本列同窗,
+            // 监听挂在窗口级,置脏后渲染循环出帧高亮才实时
+            .child(SelectionRefreshDriver)
             .when(any_menu_open, |el| {
                 el.on_mouse_down(gpui_kit::MouseButton::Left, {
                     let store = self.store.clone();
