@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use dsh_core::proto::ServerRequest;
+use dsh_core::proto::{ServerRequest, SessionSummary};
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::{AppContext, Context, Window};
 
@@ -194,8 +194,8 @@ impl AppStore {
             local_notice_seq: 0,
             temp_root: None,
         };
-        if sessions.is_empty() {
-            // 空仓:自动建会话再刷新(web 同款)
+        if Self::initial_session(&sessions).is_none() {
+            // 空仓(或仅剩子代理会话):自动建会话再刷新(web 同款)
             let ws = store.non_default_workspace();
             store.bridge.host().create_session(None, None, ws);
             sessions = store.bridge.host().list_sessions();
@@ -206,11 +206,23 @@ impl AppStore {
         // onboarding 基线(未引导且凭据缺席 → hero 引导条)
         store.settings.settings_snapshot = store.bridge.host().settings_view();
         store.recalc_onboarding();
-        // 启动即完整打开首个会话(history 折叠 + 统计),不再等点击
-        if let Some(first) = store.state.sessions.first().map(|s| s.session_id.clone()) {
+        // 启动即完整打开首个**主**会话(history 折叠 + 统计),不再等点击
+        if let Some(first) =
+            Self::initial_session(&store.state.sessions).map(|s| s.session_id.clone())
+        {
             store.open_session(&first, cx);
         }
         store
+    }
+
+    /// 启动默认会话:最新更新的**主**会话。子代理会话必须跳过——
+    /// 侧栏隐藏它们(origin=="subagent"),而清单按 mtime 倒序稳定
+    /// 排序,子代理结算回写与父会话同刻并列时读目录序会把子代理
+    /// 排前,不过滤则启动落进侧栏看不见的会话(与侧栏过滤同谓词)
+    fn initial_session(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
+        sessions
+            .iter()
+            .find(|s| s.origin.as_deref() != Some("subagent"))
     }
 
     /// 挂窗态(输入框需要 Window;在 WorkspaceView 构造时调用)
@@ -1035,5 +1047,45 @@ impl AppStore {
             Some(id) => self.is_blank(id) && !self.is_running(id),
             None => true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppStore;
+    use dsh_core::proto::SessionSummary;
+
+    fn summary(id: &str, updated_at: u64, origin: Option<&str>) -> SessionSummary {
+        SessionSummary {
+            session_id: id.into(),
+            updated_at,
+            running: false,
+            blank: false,
+            parent_session_id: None,
+            origin: origin.map(str::to_owned),
+            cwd: None,
+            agent_preset: None,
+            projections: None,
+        }
+    }
+
+    /// 启动选择必须跳过子代理会话:清单按 mtime 倒序稳定排序,子代理
+    /// 结算回写与父会话同刻并列、读目录序排前——first() 会落进侧栏
+    /// 看不见的子代理会话(真机形态:启动即"进入子代理会话")
+    #[test]
+    fn initial_session_skips_subagents_on_tied_mtime() {
+        let sessions = vec![
+            summary("s-sub-a", 100, Some("subagent")),
+            summary("s-main", 100, None),
+            summary("s-old", 50, None),
+        ];
+        assert_eq!(
+            AppStore::initial_session(&sessions).map(|s| s.session_id.as_str()),
+            Some("s-main"),
+            "并列 mtime 子代理排前时必须选主会话"
+        );
+        // 全部为子代理 → 无可开(空仓路径兜底自动建会话)
+        let only_sub = vec![summary("s-sub", 1, Some("subagent"))];
+        assert!(AppStore::initial_session(&only_sub).is_none());
     }
 }
