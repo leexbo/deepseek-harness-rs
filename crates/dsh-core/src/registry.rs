@@ -4378,7 +4378,7 @@ impl AppHost {
             session_id: session_id.into(),
             questions: frame_questions,
         };
-        let frame = ServerRequest {
+        let request_frame = ServerRequest {
             r#type: "server-request".into(),
             rpc_id: rpc_id.clone(),
             method: "question/requested".into(),
@@ -4389,12 +4389,41 @@ impl AppHost {
             rpc_id.clone(),
             PendingInteraction {
                 kind: PendingKind::Ask { tx },
-                frame: frame.clone(),
+                frame: request_frame.clone(),
             },
         );
-        let _ = self.mux.send(frame);
-        rx.await
-            .map_err(|_| "ask_user_question 未被应答".to_string())?
+        let _ = self.mux.send(request_frame);
+        // 取消竞速:会话软取消令牌与应答 oneshot 并行等待。工具执行是引擎
+        // 里的裸 await(无竞速),阻塞在此 rx 时引擎走不到取消检查点——点
+        // 「停止」只置令牌无法唤醒。取消即清 pending、广播 question/resolved
+        // (答卡经此收下,否则「停止」后卡片残留在界面)并返回 cancelled,
+        // 工具返回后引擎下一安全点收尾 turn。应答路径不广播:客户端提交/
+        // 放弃时已本地清卡(既有语义)。
+        match self.session_cancel(session_id) {
+            Some(cancel) => {
+                tokio::select! {
+                    res = rx => {
+                        res.map_err(|_| "ask_user_question 未被应答".to_string())?
+                    }
+                    _ = cancel.cancelled() => {
+                        self.pending.lock().expect("pending 锁中毒").remove(&rpc_id);
+                        let _ = self.mux.send(frame(
+                            "question/resolved",
+                            serde_json::to_value(crate::proto::QuestionResolvedFrame {
+                                session_id: session_id.into(),
+                                question_rpc_id: rpc_id.clone(),
+                                outcome: "cancelled".into(),
+                            })
+                            .unwrap_or(Value::Null),
+                        ));
+                        Err("ask_user_question 已被取消".to_string())
+                    }
+                }
+            }
+            _ => rx
+                .await
+                .map_err(|_| "ask_user_question 未被应答".to_string())?,
+        }
     }
 
     /// 沙箱升级审批(闸门宿主面):审计对 splice 直写(asked → 问询 →
@@ -4505,9 +4534,21 @@ impl AppHost {
             backend: guard_backend,
             disarmed: false,
         };
-        let outcome = match rx.await {
-            Ok(o) => o,
-            Err(_) => ApprovalOutcome::Cancelled,
+        // 取消竞速(同 ask_questions):工具裸 await 使引擎走不到取消
+        // 检查点,审批卡期间点「停止」需在此收口——令牌触发即清 pending
+        // 转 Cancelled,工具返回后引擎安全点收尾 turn。
+        let cancel = self.session_cancel(session_id);
+        let outcome = match cancel {
+            Some(cancel) => {
+                tokio::select! {
+                    res = rx => res.unwrap_or(ApprovalOutcome::Cancelled),
+                    _ = cancel.cancelled() => {
+                        self.pending.lock().expect("pending 锁中毒").remove(&rpc_id);
+                        ApprovalOutcome::Cancelled
+                    }
+                }
+            }
+            None => rx.await.unwrap_or(ApprovalOutcome::Cancelled),
         };
         guard.disarmed = true;
         splice(decided_envelope(&audit_id, outcome_name(outcome)));
@@ -4885,17 +4926,21 @@ impl AppHost {
 
     /// session.cancel:软取消令牌(turn 执行中即刻生效,不经队列)
     pub fn cancel_session(&self, session_id: &str) -> bool {
-        match self.get_slot(session_id) {
-            Some(slot) => {
-                if let Some(inner) = slot.inner.get() {
-                    inner.cancel.cancel();
-                    true
-                } else {
-                    false
-                }
+        match self.session_cancel(session_id) {
+            Some(token) => {
+                token.cancel();
+                true
             }
             None => false,
         }
+    }
+
+    /// 会话软取消令牌拿取(附着态才有;未附着 = None)。
+    /// ask/审批的阻塞等待用它竞速取消:引擎对工具执行是裸 await,
+    /// 走不到取消检查点,取消只能在这些等待点收口(见 ask_questions)。
+    fn session_cancel(&self, session_id: &str) -> Option<CancelToken> {
+        self.get_slot(session_id)
+            .and_then(|slot| slot.inner.get().map(|inner| inner.cancel.clone()))
     }
 
     /// 子代理结算通知入队:投 Job::Notice 到父会话泵通道(泵走
@@ -8987,6 +9032,57 @@ mod tests {
         assert!(text.contains("\"answers\""));
         assert!(text.contains("q1"));
         assert!(text.contains("是"));
+    }
+
+    /// 答题卡期间「停止」能真正中止:ask 阻塞在 rx 时会话软取消令牌触发
+    /// → 清 pending、工具返回 Err、引擎下一安全点收尾 turn。
+    /// 回归锚:工具执行是引擎里的裸 await,取消检查点在其后——不在此处
+    /// 竞速,点停止只置令牌无法唤醒,答题卡期间永远停不了对话。
+    #[tokio::test]
+    async fn cancel_session_interrupts_pending_ask() {
+        let host = temp_host("ask-cancel");
+        let id = host.create_session(None, None, None);
+        // 先跑一个 turn 完成附着(未附着无取消令牌)
+        host.set_fake_script(script(&["hi"]));
+        let mut mux = host.mux_subscribe();
+        run_turn(&host, &mut mux, &id, "hi").await;
+        let questions = vec![dsh_tools::QuestionItem {
+            id: "q1".into(),
+            question: "继续?".into(),
+            header: None,
+            options: vec![],
+            multi_select: false,
+        }];
+        let host2 = host.clone();
+        let sid = id.clone();
+        let ask_task = tokio::spawn(async move { host2.ask_questions(&sid, &questions).await });
+        // 收到问询帧 = ask 已悬挂在 rx 上
+        let f = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("应收到 question/requested");
+        let rpc_id = f.rpc_id.clone();
+        assert!(
+            host.pending.lock().unwrap().contains_key(&rpc_id),
+            "ask 悬挂期 pending 应在场"
+        );
+
+        // 点「停止」:取消令牌触发 → ask 立即返回(不再悬挂)
+        assert!(host.cancel_session(&id), "附着会话取消应成功");
+        let res = tokio::time::timeout(std::time::Duration::from_secs(2), ask_task)
+            .await
+            .expect("取消后 ask 应立即返回,不应悬挂")
+            .unwrap();
+        assert!(res.is_err(), "取消后 ask 应返回 Err(工具结果非成功)");
+        assert!(
+            !host.pending.lock().unwrap().contains_key(&rpc_id),
+            "取消后 pending 应清空,不留悬挂交互"
+        );
+        // 广播 question/resolved:桌面凭此收答题卡(否则「停止」后卡片残留)
+        let resolved = recv_until(&mut mux, |f| f.method == "question/resolved")
+            .await
+            .expect("取消应广播 question/resolved");
+        assert_eq!(resolved.payload["outcome"], "cancelled");
+        assert_eq!(resolved.payload["questionRpcId"], rpc_id);
     }
 
     /// encode_answers 校验(单选≤1/缺 id/非法形状)
