@@ -1593,14 +1593,14 @@ impl AppStore {
         else {
             return;
         };
-        let form_id = Some(cx.new(|cx| InputState::new(window, cx).placeholder("server 名")));
-        let form_command = Some(cx.new(|cx| InputState::new(window, cx)));
-        form_command.as_ref().unwrap().update(cx, |s, cx| {
+        let form_id = cx.new(|cx| InputState::new(window, cx).placeholder("server 名"));
+        let form_command = cx.new(|cx| InputState::new(window, cx));
+        form_command.update(cx, |s, cx| {
             s.set_value(entry.command.clone(), window, cx);
         });
-        let form_cwd = Some(cx.new(|cx| InputState::new(window, cx).placeholder("工作目录(可选)")));
+        let form_cwd = cx.new(|cx| InputState::new(window, cx).placeholder("工作目录(可选)"));
         if let Some(cwd) = &entry.cwd {
-            form_cwd.as_ref().unwrap().update(cx, |s, cx| {
+            form_cwd.update(cx, |s, cx| {
                 s.set_value(cwd.clone(), window, cx);
             });
         }
@@ -1610,9 +1610,9 @@ impl AppStore {
             input.update(cx, |s, cx| s.set_value(a.clone(), window, cx));
             form_args.push(input);
         }
-        let form_timeout = Some(cx.new(|cx| InputState::new(window, cx).placeholder("60000")));
+        let form_timeout = cx.new(|cx| InputState::new(window, cx).placeholder("60000"));
         if let Some(ms) = entry.tool_call_timeout_ms {
-            form_timeout.as_ref().unwrap().update(cx, |s, cx| {
+            form_timeout.update(cx, |s, cx| {
                 s.set_value(ms.to_string(), window, cx);
             });
         }
@@ -1625,10 +1625,9 @@ impl AppStore {
             form_env.push((k_in, v_in));
         }
         let form_http = entry.is_http();
-        let form_url =
-            Some(cx.new(|cx| InputState::new(window, cx).placeholder("https://host/mcp")));
+        let form_url = cx.new(|cx| InputState::new(window, cx).placeholder("https://host/mcp"));
         if let Some(url) = &entry.url {
-            form_url.as_ref().unwrap().update(cx, |s, cx| {
+            form_url.update(cx, |s, cx| {
                 s.set_value(url.clone(), window, cx);
             });
         }
@@ -1655,14 +1654,14 @@ impl AppStore {
             editing: Some(id.to_string()),
             mode: McpDetailMode::Form,
             form_enabled: entry.enabled,
-            form_id,
-            form_command,
-            form_cwd,
+            form_id: Some(form_id),
+            form_command: Some(form_command),
+            form_cwd: Some(form_cwd),
             form_args,
-            form_timeout,
+            form_timeout: Some(form_timeout),
             form_env,
             form_http,
-            form_url,
+            form_url: Some(form_url),
             form_headers,
             json_input: None,
             json_draft,

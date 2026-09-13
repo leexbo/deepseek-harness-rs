@@ -24,7 +24,7 @@ impl<V> MemoCache<V> {
 
     /// 命中校验(同 key 同哈希);miss 返回 None,解析后经 [`Self::put`] 入缓存
     pub(crate) fn get(&self, key: &str, hash: u64) -> Option<Arc<V>> {
-        let guard = self.inner.lock().expect("memo cache 锁中毒");
+        let guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         match guard.get(key) {
             Some((h, v)) if *h == hash => Some(v.clone()),
             _ => None,
@@ -36,7 +36,7 @@ impl<V> MemoCache<V> {
         if len < self.min_len {
             return;
         }
-        let mut guard = self.inner.lock().expect("memo cache 锁中毒");
+        let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         if guard.len() >= self.cap {
             guard.clear();
         }

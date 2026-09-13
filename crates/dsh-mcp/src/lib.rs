@@ -471,13 +471,13 @@ impl PortState {
                 spec,
             });
         }
-        *self.tools.write().expect("tools 锁中毒") = entries;
+        *self.tools.write().unwrap_or_else(|p| p.into_inner()) = entries;
     }
 
     fn specs(&self) -> Vec<Value> {
         self.tools
             .read()
-            .expect("tools 锁中毒")
+            .unwrap_or_else(|p| p.into_inner())
             .iter()
             .map(|e| e.spec.clone())
             .collect()
@@ -560,7 +560,7 @@ impl McpServerPort {
         self.state
             .tools
             .read()
-            .expect("tools 锁中毒")
+            .unwrap_or_else(|p| p.into_inner())
             .iter()
             .any(|e| e.public_name == public_name)
     }
@@ -585,20 +585,23 @@ impl McpPoolPort {
     pub fn upsert(&self, id: impl Into<String>, port: McpServerPort) {
         self.ports
             .write()
-            .expect("ports 锁中毒")
+            .unwrap_or_else(|p| p.into_inner())
             .insert(id.into(), port);
     }
 
     /// 移除端口(返回句柄供调用方 cancel 停机;不存在返回 None)
     pub fn remove(&self, id: &str) -> Option<McpServerPort> {
-        self.ports.write().expect("ports 锁中毒").remove(id)
+        self.ports
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id)
     }
 
     /// 当前已登记的 server id(诊断/测试)
     pub fn server_ids(&self) -> Vec<String> {
         self.ports
             .read()
-            .expect("ports 锁中毒")
+            .unwrap_or_else(|p| p.into_inner())
             .keys()
             .cloned()
             .collect()
@@ -609,7 +612,7 @@ impl ToolPort for McpPoolPort {
     fn specs(&self) -> Vec<Value> {
         self.ports
             .read()
-            .expect("ports 锁中毒")
+            .unwrap_or_else(|p| p.into_inner())
             .values()
             .flat_map(|p| p.specs())
             .collect()
@@ -618,7 +621,7 @@ impl ToolPort for McpPoolPort {
     async fn execute(&mut self, call: &ToolCallRequest) -> ToolOutput {
         // 按公共名找声明者,clone 句柄后即放锁(执行不跨 await 持锁)
         let owner = {
-            let ports = self.ports.read().expect("ports 锁中毒");
+            let ports = self.ports.read().unwrap_or_else(|p| p.into_inner());
             ports.values().find(|p| p.has_tool(&call.name)).cloned()
         };
         match owner {
@@ -928,7 +931,7 @@ impl ToolPort for McpServerPort {
         // 公共名 → raw name:查当前工具代(照源「公共名永不反解」——
         // 身份在注册时确定,字符串拆分对 raw 含 `__` 的工具会错)
         let raw_name = {
-            let tools = self.state.tools.read().expect("tools 锁中毒");
+            let tools = self.state.tools.read().unwrap_or_else(|p| p.into_inner());
             match tools.iter().find(|e| e.public_name == call.name) {
                 Some(e) => e.raw_name.clone(),
                 None => {

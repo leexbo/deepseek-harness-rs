@@ -1122,16 +1122,18 @@ impl LoopEngine {
                         hooks.on_stop(hook_turn_no).await
                     && let Some(buf) = &self.steer_buf
                 {
-                    buf.lock().expect("steer 锁中毒").push_back(SteerInput {
-                        id: uuid::Uuid::now_v7().to_string(),
-                        text: reason,
-                        images: Vec::new(),
-                        source: Some(serde_json::json!({
-                            "kind": "plugin",
-                            "plugin": "hooks",
-                            "form": "stop-hook",
-                        })),
-                    });
+                    buf.lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push_back(SteerInput {
+                            id: uuid::Uuid::now_v7().to_string(),
+                            text: reason,
+                            images: Vec::new(),
+                            source: Some(serde_json::json!({
+                                "kind": "plugin",
+                                "plugin": "hooks",
+                                "form": "stop-hook",
+                            })),
+                        });
                     continue;
                 }
                 final_assistant = message_content;

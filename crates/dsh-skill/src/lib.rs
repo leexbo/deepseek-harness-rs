@@ -89,13 +89,13 @@ impl SkillService {
 
     /// 覆写用户根家目录(仅测试注入;生产恒真实 home)
     pub fn set_user_home(&self, home: Option<PathBuf>) {
-        *self.user_home.write().expect("user_home 锁中毒") = home;
+        *self.user_home.write().unwrap_or_else(|p| p.into_inner()) = home;
     }
 
     fn user_home(&self) -> PathBuf {
         self.user_home
             .read()
-            .expect("user_home 锁中毒")
+            .unwrap_or_else(|p| p.into_inner())
             .clone()
             .unwrap_or_else(|| std::env::home_dir().unwrap_or_else(|| PathBuf::from("/")))
     }

@@ -121,7 +121,7 @@ impl EventBus {
     }
 
     fn next_seq(&self) -> u64 {
-        let mut seq = self.seq.lock().expect("bus seq 锁中毒(宿主 bug)");
+        let mut seq = self.seq.lock().unwrap_or_else(|p| p.into_inner());
         *seq += 1;
         *seq
     }
@@ -131,7 +131,7 @@ impl EventBus {
         let seq = self.next_seq();
         self.listeners
             .lock()
-            .expect("bus listeners 锁中毒(宿主 bug)")
+            .unwrap_or_else(|p| p.into_inner())
             .entry(event.to_string())
             .or_default()
             .push((priority, seq, listener));
@@ -143,7 +143,7 @@ impl EventBus {
         if let Some(v) = self
             .listeners
             .lock()
-            .expect("bus listeners 锁中毒(宿主 bug)")
+            .unwrap_or_else(|p| p.into_inner())
             .get_mut(event)
         {
             v.retain(|(_, seq, _)| *seq != id);
@@ -151,7 +151,7 @@ impl EventBus {
         if let Some(v) = self
             .around
             .lock()
-            .expect("bus around 锁中毒(宿主 bug)")
+            .unwrap_or_else(|p| p.into_inner())
             .get_mut(event)
         {
             v.retain(|e| e.seq != id);
@@ -163,7 +163,7 @@ impl EventBus {
         let seq = self.next_seq();
         self.around
             .lock()
-            .expect("bus around 锁中毒(宿主 bug)")
+            .unwrap_or_else(|p| p.into_inner())
             .entry(event.to_string())
             .or_default()
             .push(PriorityAround {
@@ -176,7 +176,7 @@ impl EventBus {
 
     /// 按序取 listener:(priority 降序, 订阅序升序)
     fn ordered(&self, event: &str) -> Vec<PriorityListener> {
-        let map = self.listeners.lock().expect("bus 锁中毒(宿主 bug)");
+        let map = self.listeners.lock().unwrap_or_else(|p| p.into_inner());
         let mut v: Vec<_> = map.get(event).cloned().unwrap_or_default();
         v.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         v
@@ -229,7 +229,7 @@ impl EventBus {
         let mut listeners: Vec<PriorityAround> = self
             .around
             .lock()
-            .expect("bus around 锁中毒(宿主 bug)")
+            .unwrap_or_else(|p| p.into_inner())
             .get(event)
             .cloned()
             .unwrap_or_default();

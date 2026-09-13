@@ -655,10 +655,7 @@ impl SettingsStore {
     /// (拉取式实时感知:打开设置页/装配点读取即最新)
     pub fn read(&self) -> SettingsFile {
         self.reload_if_changed();
-        self.inner
-            .lock()
-            .expect("settings 锁中毒(宿主 bug)")
-            .clone()
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// 外部编辑吸收:mtime 比上次读入/写出新 → 重读解析替换内存。
@@ -668,7 +665,7 @@ impl SettingsStore {
         let Some(mtime) = file_mtime(&self.path) else {
             return false;
         };
-        let mut loaded = self.loaded_mtime.lock().expect("settings 锁中毒(宿主 bug)");
+        let mut loaded = self.loaded_mtime.lock().unwrap_or_else(|p| p.into_inner());
         if *loaded == Some(mtime) {
             return false;
         }
@@ -681,7 +678,7 @@ impl SettingsStore {
         };
         match serde_norway::from_str::<SettingsFile>(&text) {
             Ok(f) if f.version == SETTINGS_VERSION => {
-                *self.inner.lock().expect("settings 锁中毒(宿主 bug)") = f;
+                *self.inner.lock().unwrap_or_else(|p| p.into_inner()) = f;
                 *loaded = Some(mtime);
                 true
             }
@@ -700,7 +697,7 @@ impl SettingsStore {
     pub fn update<R>(&self, f: impl FnOnce(&mut SettingsFile) -> R) -> anyhow::Result<R> {
         self.reload_if_changed();
         let out = {
-            let mut guard = self.inner.lock().expect("settings 锁中毒(宿主 bug)");
+            let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
             let mut draft = guard.clone();
             let out = f(&mut draft);
             let text = serde_norway::to_string(&draft)?;
@@ -719,7 +716,7 @@ impl SettingsStore {
             *guard = draft;
             out
         };
-        *self.loaded_mtime.lock().expect("settings 锁中毒(宿主 bug)") = file_mtime(&self.path);
+        *self.loaded_mtime.lock().unwrap_or_else(|p| p.into_inner()) = file_mtime(&self.path);
         Ok(out)
     }
 

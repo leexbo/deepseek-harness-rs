@@ -214,7 +214,11 @@ struct RegistryInner {
 impl SubagentRegistry {
     /// 挂状态变化观察回调(覆盖式;装配时由宿主接线)
     pub fn set_on_change(&self, hook: Option<RegistryChangeHook>) {
-        *self.inner.on_change.lock().expect("on_change 锁中毒") = hook;
+        *self
+            .inner
+            .on_change
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = hook;
     }
 
     /// 状态变化通知(guard 释放后调用,防回调重入死锁)
@@ -223,7 +227,7 @@ impl SubagentRegistry {
             .inner
             .on_change
             .lock()
-            .expect("on_change 锁中毒")
+            .unwrap_or_else(|p| p.into_inner())
             .clone();
         if let Some(hook) = hook {
             hook();
@@ -240,7 +244,7 @@ impl SubagentRegistry {
         self.inner
             .records
             .lock()
-            .expect("records 锁中毒")
+            .unwrap_or_else(|p| p.into_inner())
             .iter()
             .filter(|r| r.background)
             .cloned()
@@ -720,7 +724,7 @@ where
         let started_at = now_ms();
         self.registry
             .lock()
-            .expect("records 锁中毒")
+            .unwrap_or_else(|p| p.into_inner())
             .push(SubagentRecord {
                 id,
                 task: prompt.to_string(),
@@ -837,7 +841,7 @@ where
         let steer = Arc::new(Mutex::new(VecDeque::new()));
         self.registry
             .lock()
-            .expect("records 锁中毒")
+            .unwrap_or_else(|p| p.into_inner())
             .push(SubagentRecord {
                 id,
                 task: label.to_string(),
@@ -900,7 +904,7 @@ where
             let id = self.next_id();
             self.registry
                 .lock()
-                .expect("records 锁中毒")
+                .unwrap_or_else(|p| p.into_inner())
                 .push(SubagentRecord {
                     id,
                     task: label.clone(),
@@ -1194,7 +1198,7 @@ where
             // 排干运行中未及消费的插话(parked messages 依次续跑),
             // 再收续话通道;两者皆空 → 回 idle 等待
             {
-                let mut b = steer.lock().expect("steer 锁中毒");
+                let mut b = steer.lock().unwrap_or_else(|p| p.into_inner());
                 while let Some(s) = b.pop_front() {
                     queue.push_back(s.text);
                 }
@@ -1384,7 +1388,7 @@ impl ToolPort for SubagentControlTool {
                 if rec.status == "running"
                     && let Some(buf) = &rec.steer
                 {
-                    let mut b = buf.lock().expect("steer 锁中毒");
+                    let mut b = buf.lock().unwrap_or_else(|p| p.into_inner());
                     b.push_back(SteerInput {
                         id: format!("steer-{}", uuid::Uuid::now_v7()),
                         text: message.to_string(),

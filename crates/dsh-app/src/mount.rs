@@ -79,7 +79,7 @@ impl<'a> MountContext<'a> {
 
     /// jobs↔bash 共享的后台任务注册表(懒构造)
     fn jobs_registry(&self) -> dsh_tools::JobsRegistry {
-        let mut slot = self.shared.jobs.lock().expect("装配共享件锁中毒(宿主 bug)");
+        let mut slot = self.shared.jobs.lock().unwrap_or_else(|p| p.into_inner());
         if slot.is_none() {
             *slot = Some(Arc::new(Mutex::new(Vec::new())));
         }

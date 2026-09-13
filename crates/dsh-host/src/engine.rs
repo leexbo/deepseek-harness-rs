@@ -99,7 +99,7 @@ impl HostEngine {
             .map_err(|e| EngineError::Compile(format!("{name}: {e}")))?;
         self.pre
             .lock()
-            .expect("InstancePre 池锁中毒(宿主 bug)")
+            .unwrap_or_else(|p| p.into_inner())
             .insert(name.to_string(), Arc::new(pre));
         Ok(())
     }
@@ -111,7 +111,7 @@ impl HostEngine {
     ) -> Result<Arc<wasmtime::component::InstancePre<HostState>>, EngineError> {
         self.pre
             .lock()
-            .expect("InstancePre 池锁中毒(宿主 bug)")
+            .unwrap_or_else(|p| p.into_inner())
             .get(name)
             .cloned()
             .ok_or_else(|| EngineError::NotRegistered(name.to_string()))
