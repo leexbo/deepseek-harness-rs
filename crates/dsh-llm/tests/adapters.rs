@@ -485,3 +485,135 @@ fn deepseek_responses_stream_reasoning_and_usage() {
     );
     assert!(mapper.finish().is_empty(), "已终结,finish 无残余");
 }
+
+/// Responses 方言用户图片:默认(OpenAI/GLM)→ input_image data-URL
+/// parts;纯文本方言(deepseek-responses)→ 占位文本降级——修
+/// 「图片超出本轮上限被省略」误报(此前所有 Responses 方言一律降级)
+#[test]
+fn responses_user_image_wire_shape() {
+    use dsh_llm::attachments::{AttachmentSource, OFFLOADED_IMAGE_TEXT};
+    use dsh_llm::ext::GlmResponsesExt;
+    struct Fixed;
+    impl AttachmentSource for Fixed {
+        fn image_bytes(&self, _id: &str) -> Option<Vec<u8>> {
+            Some(vec![1, 2, 3])
+        }
+    }
+    let messages = json!([
+        { "role": "user", "content": [
+            { "type": "text", "text": "如图" },
+            { "type": "image", "mediaType": "image/png", "data": "",
+              "attachment": { "attachmentId": "sha256:abc",
+                  "mediaType": "image/png", "bytes": 3 } },
+        ]},
+    ]);
+    let image_block = |body: &Value| {
+        body["input"][0]["content"]
+            .as_array()
+            .and_then(|parts| parts.iter().find(|p| p["type"] == "input_image"))
+            .cloned()
+    };
+
+    // openai/glm(默认支持)→ input_image data-URL;文本保留 input_text
+    for (name, body) in [
+        (
+            "openai-responses",
+            GenericResponsesAdapter::new(OpenAiResponsesExt).build_request(
+                &header("s", vec![]),
+                &messages,
+                &Fixed,
+            ),
+        ),
+        (
+            "glm-responses",
+            GenericResponsesAdapter::new(GlmResponsesExt).build_request(
+                &header("s", vec![]),
+                &messages,
+                &Fixed,
+            ),
+        ),
+    ] {
+        assert_eq!(
+            body["input"][0]["content"][0]["type"], "input_text",
+            "{name}"
+        );
+        let img = image_block(&body).unwrap_or_else(|| panic!("{name} 应含 input_image"));
+        assert_eq!(img["image_url"], "data:image/png;base64,AQID", "{name}");
+    }
+
+    // deepseek(纯文本)→ 占位文本降级,无 input_image
+    let adapter = GenericResponsesAdapter::new(DeepSeekResponsesExt);
+    let body = adapter.build_request(&header("s", vec![]), &messages, &Fixed);
+    assert!(image_block(&body).is_none());
+    let text = body["input"][0]["content"].as_str().unwrap();
+    assert!(text.contains(OFFLOADED_IMAGE_TEXT));
+}
+
+/// #5 端到端:真实 `HttpTransport`(glm-responses)对含图 user 消息,
+/// 出网请求体必须含 `input_image` data-URL,而非 offload 占位文本——
+/// 修「图片没有传过来(超出本轮图片上限被省略了)」真机误报。字节来源
+/// 经 `with_attachments` 注入(与宿主装配同路)。
+#[tokio::test]
+async fn glm_responses_http_request_carries_input_image() {
+    use dsh_llm::attachments::AttachmentSource;
+    struct Fixed;
+    impl AttachmentSource for Fixed {
+        fn image_bytes(&self, _id: &str) -> Option<Vec<u8>> {
+            Some(vec![1, 2, 3])
+        }
+    }
+    let body = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n\
+                data: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n";
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let captured: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let cap = Arc::clone(&captured);
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 16384];
+        let n = socket.read(&mut buf).await.unwrap();
+        cap.lock().unwrap().extend_from_slice(&buf[..n]);
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+        );
+        socket.write_all(reply.as_bytes()).await.unwrap();
+        socket.shutdown().await.unwrap();
+    });
+
+    let mut transport = HttpTransport::with_adapter(
+        ProviderConfig {
+            base_url: format!("http://{addr}"),
+            api_key: "glm-test".into(),
+            stream_mode: StreamMode::Sse,
+        },
+        dsh_llm::adapter_by_name("glm-responses").unwrap(),
+    )
+    .unwrap()
+    .with_attachments(Arc::new(Fixed));
+
+    use dsh_agent_loop::LlmTransport;
+    let messages = json!([
+        { "role": "user", "content": [
+            { "type": "image", "attachment": {
+                "attachmentId": "sha256:abc", "mediaType": "image/png",
+                "bytes": 3, "width": 1, "height": 1 } },
+            { "type": "text", "text": "如图" },
+        ]},
+    ]);
+    transport
+        .stream(&header("", vec![]), &messages)
+        .await
+        .expect("stream");
+
+    let raw = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+    // 请求体在最后一个空行之后(可能是分块传输,但小体量单包)
+    let json_body = raw.split("\r\n\r\n").nth(1).unwrap_or("");
+    assert!(
+        json_body.contains("input_image"),
+        "出网请求体应含 input_image;实际 {json_body}"
+    );
+    assert!(
+        !json_body.contains(dsh_llm::attachments::OFFLOADED_IMAGE_TEXT),
+        "出网请求体不应含 offload 占位文本;实际 {json_body}"
+    );
+}

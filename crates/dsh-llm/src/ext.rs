@@ -83,6 +83,13 @@ pub trait ResponsesExt: Send + Sync {
     fn body_error(&self, body: &str) -> Option<dsh_agent_loop::TransportError> {
         openai_style_body_error(body)
     }
+
+    /// 方言是否接受 `input_image` 输入(用户消息图片 → data-URL part)。
+    /// 默认 true(OpenAI Responses 规范);纯文本模型覆盖为 false →
+    /// 图片回落占位文本降级
+    fn supports_images(&self) -> bool {
+        true
+    }
 }
 
 /// DeepSeek Responses 方言(未配置 dialect 时的默认;事件流无 `[DONE]`,usage 挂
@@ -92,6 +99,11 @@ pub struct DeepSeekResponsesExt;
 
 impl ResponsesExt for DeepSeekResponsesExt {
     const NAME: &'static str = "deepseek-responses";
+
+    /// DeepSeek 系为纯文本模型(官方无图片输入面)——图片降级占位文本
+    fn supports_images(&self) -> bool {
+        false
+    }
 }
 
 /// OpenAI Responses 方言。

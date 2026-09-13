@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use dsh_agent_loop::RequestHeader;
 
 use crate::adapters::ProviderAdapter;
-use crate::attachments::{AttachmentSource, strip_images_for_summary};
+use crate::attachments::{AttachmentSource, image_data_url, strip_images_for_summary};
 use crate::ext::ResponsesExt;
 use crate::streaming::{FrameMapper, StreamEvent};
 
@@ -48,12 +48,15 @@ impl<E: ResponsesExt> ProviderAdapter for GenericResponsesAdapter<E> {
         &self,
         header: &RequestHeader,
         messages: &Value,
-        _images: &dyn AttachmentSource,
+        images: &dyn AttachmentSource,
     ) -> Value {
         // system → instructions;消息 → input items;
         // assistant 工具调用 → function_call item;tool 消息 → function_call_output item。
-        // user 块数组先经图片降级(Responses 方言无多模态翻译,图 → 占位文本)
-        let degraded = strip_images_for_summary(messages);
+        // user 块数组:方言接受图片时 image → input_image(data-URL,OpenAI
+        // Responses 输入规范),否则先经占位文本降级
+        let supports_images = self.ext.supports_images();
+        let degraded = (!supports_images).then(|| strip_images_for_summary(messages));
+        let degraded = degraded.as_ref().unwrap_or(messages);
         let mut input: Vec<Value> = Vec::new();
         if let Some(items) = degraded.as_array() {
             for message in items {
@@ -91,15 +94,41 @@ impl<E: ResponsesExt> ProviderAdapter for GenericResponsesAdapter<E> {
                         }));
                     }
                     Some("user") => {
-                        // 降级后的块数组折叠回字符串(Responses 的 user 输入面)
-                        let text = match message["content"] {
-                            Value::Array(ref blocks) => blocks
+                        // 纯文本折叠为字符串(紧凑,缓存友好);含图片块
+                        // 时装配 Responses 输入 parts(text + input_image)
+                        let blocks = message["content"].as_array();
+                        let has_image = supports_images
+                            && blocks.is_some_and(|b| {
+                                b.iter().any(|p| p["type"].as_str() == Some("image"))
+                            });
+                        let content = if !has_image {
+                            let text = match message["content"] {
+                                Value::Array(ref arr) => arr
+                                    .iter()
+                                    .filter_map(|b| b["text"].as_str())
+                                    .collect::<String>(),
+                                _ => message["content"].as_str().unwrap_or_default().to_string(),
+                            };
+                            json!(text)
+                        } else {
+                            let parts: Vec<Value> = blocks
+                                .unwrap_or(&Vec::new())
                                 .iter()
-                                .filter_map(|b| b["text"].as_str())
-                                .collect::<String>(),
-                            _ => message["content"].as_str().unwrap_or_default().to_string(),
+                                .filter_map(|block| match block["type"].as_str() {
+                                    Some("text") => {
+                                        let text = block["text"].as_str().unwrap_or_default();
+                                        (!text.is_empty())
+                                            .then(|| json!({ "type": "input_text", "text": text }))
+                                    }
+                                    Some("image") => image_data_url(block, images).map(
+                                        |url| json!({ "type": "input_image", "image_url": url }),
+                                    ),
+                                    _ => None,
+                                })
+                                .collect();
+                            json!(parts)
                         };
-                        input.push(json!({ "role": "user", "content": text }));
+                        input.push(json!({ "role": "user", "content": content }));
                     }
                     _ => input.push(message.clone()),
                 }
