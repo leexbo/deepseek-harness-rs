@@ -42,6 +42,8 @@ objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-core-graphics.workspace = true
 objc2-foundation.workspace = true
+# 窗口毛玻璃取证探针(winprobe.rs,DSH_WINPROBE=1)
+raw-window-handle.workspace = true
 
 [dev-dependencies]
 # test-support 经 gpui-kit 透传到 gpui(features 树内 union)

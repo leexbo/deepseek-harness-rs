@@ -88,9 +88,8 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         .h_full()
         .w(px(col_w))
         .v_flex()
-        // 面板与聊天区同底(BASE,双模式一致)——分隔只靠左侧发丝线;
-        // 深色下取 SIDEBAR 亮一档会显「灰底」
-        .bg(theme::BASE())
+        // 面板与聊天区同底(透 Root 毛玻璃涂层,双模式一致)——分隔
+        // 只靠左侧发丝线;深色下取 SIDEBAR 亮一档会显「灰底」
         .border_l_1()
         .border_color(theme::BORDER())
         // 右栏域尾哨兵(栈底,盖整个面板列):右栏拖选落空时终点钳在

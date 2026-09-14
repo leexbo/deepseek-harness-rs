@@ -216,7 +216,8 @@ pub fn render(
                         theme::BRAND()
                     })
                     .bg(if custom.is_empty() {
-                        theme::BASE()
+                        // 卡上内嵌输入面:CODE(比 CARD 深一阶的内嵌语义)
+                        theme::CODE()
                     } else {
                         theme::DOCK()
                     })

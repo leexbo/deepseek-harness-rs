@@ -159,17 +159,50 @@ fn main() {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::centered(size(px(1440.), px(900.)), cx)),
                 window_min_size: Some(size(px(960.), px(640.))),
+                // 深盘毛玻璃/浅盘实色(apply 已在开窗前定盘;后续切盘
+                // 经 theme::sync_window_background 全窗联动)
+                window_background: crate::kits::theme::window_background_for(
+                    crate::kits::theme::is_dark(),
+                ),
                 ..gpui_kit::component::TitleBar::window_options()
             };
             let view_store = store.clone();
             cx.spawn(async move |cx| {
-                cx.open_window(options, move |window, cx| {
+                let handle = cx.open_window(options, move |window, cx| {
                     view_store.update(cx, |s, cx| s.attach_window_state(window, cx));
                     let view =
                         cx.new(|cx| crate::shell::WorkspaceView::new(view_store.clone(), cx));
                     // 窗口第一层 view 必须是 Root
-                    cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
+                    let root = cx.new(|cx| gpui_kit::component::Root::new(view, window, cx));
+                    // 毛玻璃效果视图装配(gpui Blurred 路径本机不渲染,
+                    // 自建 NSVisualEffectView 承担;见 shell::vibrancy)
+                    #[cfg(target_os = "macos")]
+                    crate::shell::vibrancy::install(window);
+                    // 毛玻璃取证探针(DSH_WINPROBE=1;见 shell::winprobe)
+                    #[cfg(target_os = "macos")]
+                    if std::env::var_os("DSH_WINPROBE").is_some() {
+                        crate::shell::winprobe::dump(window);
+                    }
+                    root
                 })?;
+                // 探针延迟二次取证:模糊机制挂载发生在首帧显示之后,
+                // 开窗瞬间的快照看不到最终图层形态
+                #[cfg(target_os = "macos")]
+                if std::env::var_os("DSH_WINPROBE").is_some() {
+                    cx.spawn(async move |cx| {
+                        eprintln!("[winprobe] delayed dump scheduled");
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(3))
+                            .await;
+                        eprintln!("[winprobe] delayed dump firing");
+                        if let Err(e) =
+                            handle.update(cx, |_, window, _| crate::shell::winprobe::dump(window))
+                        {
+                            eprintln!("[winprobe] delayed dump update failed: {e}");
+                        }
+                    })
+                    .detach();
+                }
                 Ok::<_, anyhow::Error>(())
             })
             .detach();

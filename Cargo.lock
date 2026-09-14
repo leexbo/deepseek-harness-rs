@@ -2302,6 +2302,7 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "pulldown-cmark",
+ "raw-window-handle",
  "resvg 0.48.1",
  "serde_json",
  "smallvec",

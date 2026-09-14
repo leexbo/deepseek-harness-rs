@@ -36,9 +36,10 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         .rounded(px(22.))
         .border_1()
         .border_color(theme::BORDER())
-        .bg(theme::CARD())
-        // 卡片浮起感:深盘底深主要靠色阶,阴影近乎不可见(无害);
-        // 浅盘卡转白后靠阴影与白画布分层
+        // 输入面与画布同底(BASE;参考终端输入区平铺画布,不凸起),
+        // 卡片感只靠描边;勿用 CARD——画布转海军蓝后卡片灰阶脱节
+        .bg(theme::BASE())
+        // 阴影:与画布同底后仅剩描边分层,阴影保留无害
         .shadow(vec![
             gpui_kit::BoxShadow::new(
                 gpui_kit::px(0.),

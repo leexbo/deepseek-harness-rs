@@ -282,7 +282,7 @@ fn group_header(
         .pr(px(4.))
         .gap(px(4.))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::LAYER()))
+        .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
         .text_size(px(12.))
         .font_weight(gpui_kit::FontWeight::SEMIBOLD)
         .text_color(fg)
@@ -296,7 +296,7 @@ fn group_header(
                 .items_center()
                 .justify_center()
                 .rounded(px(4.))
-                .hover(|s| s.bg(theme::DOCK()))
+                .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
                 .text_color(theme::CAPTION())
                 .child(fixed(
                     if collapsed {
@@ -347,7 +347,7 @@ fn group_header(
                 .justify_center()
                 .rounded(px(4.))
                 .opacity(0.)
-                .hover(|s| s.opacity(1.).bg(theme::DOCK()))
+                .hover(|s| s.opacity(1.).bg(theme::SIDEBAR_HOVER()))
                 .text_color(theme::CAPTION())
                 .child(fixed(IconName::Ellipsis, 13.))
                 .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
@@ -378,7 +378,7 @@ fn group_header(
                 .justify_center()
                 .rounded(px(4.))
                 .opacity(0.)
-                .hover(|s| s.opacity(1.).bg(theme::DOCK()))
+                .hover(|s| s.opacity(1.).bg(theme::SIDEBAR_HOVER()))
                 .text_color(theme::CAPTION())
                 .child(fixed(IconName::Plus, 13.))
                 .on_click({
@@ -414,7 +414,7 @@ fn session_row(
         .unwrap_or(0);
     let time = relative_time(now, s.updated_at);
     let (bg, fg) = if active {
-        (theme::LAYER(), theme::LABEL())
+        (theme::SIDEBAR_ACTIVE(), theme::LABEL())
     } else {
         (theme::TRANSPARENT(), theme::LABEL_2())
     };
@@ -437,7 +437,7 @@ fn session_row(
         .pr(px(8.))
         .gap(px(8.))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::LAYER()))
+        .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
         // 会话图标(web 无此位,按需新增;选中态提亮)
         .child(fixed(DshIcon::MessageSquare, 14.).text_color(if active {
             theme::LABEL_2()
@@ -486,7 +486,7 @@ fn row_menu_button(store: &Entity<AppStore>, id: &str, ix: usize, open: bool) ->
         .justify_center()
         .rounded(px(6.))
         .cursor_pointer()
-        .hover(|st| st.bg(theme::DOCK()))
+        .hover(|st| st.bg(theme::SIDEBAR_HOVER()))
         .text_color(theme::CAPTION())
         .child(fixed(IconName::Ellipsis, 14.))
         .when(open, |el| {

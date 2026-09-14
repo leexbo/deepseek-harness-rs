@@ -13,6 +13,10 @@ mod hero;
 mod scroll;
 mod statusbar;
 mod topbar;
+#[cfg(target_os = "macos")]
+pub(crate) mod vibrancy;
+#[cfg(target_os = "macos")]
+pub(crate) mod winprobe;
 
 use crate::kits::modals::{
     attachment_toast_card, delete_confirm_modal, rename_modal, workspace_menu_card,
@@ -379,7 +383,8 @@ impl Render for WorkspaceView {
             .flex()
             .size_full()
             .overflow_hidden()
-            .bg(theme::BASE())
+            // 画布不在此铺底:毛玻璃色调由 Root 层(c.background 半透
+            // base)单涂层承担,这里再铺会叠涂相加吃掉透明度
             .text_color(theme::LABEL())
             // 拖选实时刷新驱动器(零尺寸;见其文档)——必须与本列同窗,
             // 监听挂在窗口级,置脏后渲染循环出帧高亮才实时

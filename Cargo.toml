@@ -87,6 +87,8 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "objc2-core-graphics"] }
 objc2-core-graphics = { version = "0.3", features = ["CGBitmapContext", "CGColor", "CGColorSpace", "CGContext", "CGImage"] }
 objc2-foundation = "0.3"
+# 窗口毛玻璃取证探针(dsh-desktop winprobe;lock 内唯一 0.6 与 gpui 同一实例)
+raw-window-handle = "0.6"
 # macOS 钥匙串凭据(dsh-core credentials seam;非 macOS 平台该级缺席)
 # 图片附件:解码校验/维度(dsh-attachment 附件存储;版本与 gpui 0.2.2 锁同版)
 image = "0.25"

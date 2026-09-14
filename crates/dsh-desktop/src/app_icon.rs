@@ -4,7 +4,7 @@
 //! `assets/logo.svg`(设计定稿,唯一权威):编译期内嵌,提取
 //! path d(仅 M/C/V/Z 单 fill)与 viewBox(四边等距包住整条鲸鱼,
 //! 不转正不裁剪),极简解析为路径操作 → core-graphics 位图上下文
-//! 按 viewBox 等比缩放居中绘制(深色圆角底 = 主题 BASE #151517 +
+//! 按 viewBox 等比缩放居中绘制(深色圆角底 = 主题 BASE #212734 +
 //! 近白鲸鱼,即 dark 模式配色)→ CGImage → NSImage →
 //! `setApplicationIconImage`。dev 构建每启一次重绘,release 源码
 //! 重编才变。
@@ -30,8 +30,9 @@ use objc2::AnyThread as _;
 /// 图标边长(高于 dock 默认 512 渲染;尺寸不足会被上采样变糊)
 const SIZE: f64 = 1024.0;
 
-/// 底 = 主题 BASE #151517;鲸鱼近白(dark 模式 fill #fff 同款)
-const BG_RGB: (f64, f64, f64) = (21.0 / 255.0, 21.0 / 255.0, 23.0 / 255.0);
+/// 底 = 主题 BASE #212734(深盘深海军蓝);鲸鱼近白(dark 模式
+/// fill #fff 同款)
+const BG_RGB: (f64, f64, f64) = (33.0 / 255.0, 39.0 / 255.0, 52.0 / 255.0);
 const WHALE_RGB: (f64, f64, f64) = (242.0 / 255.0, 242.0 / 255.0, 244.0 / 255.0);
 
 /// 图标源 = `assets/logo.svg`(设计定稿:鲸鱼原样姿态,viewBox

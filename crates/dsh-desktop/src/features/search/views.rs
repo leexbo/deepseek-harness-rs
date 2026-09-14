@@ -58,7 +58,7 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
                     .cursor_pointer()
                     .text_size(px(11.))
                     .text_color(theme::LABEL_3())
-                    .hover(|s| s.bg(theme::DOCK()))
+                    .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
                     .child("返回列表")
                     .on_click(move |_, window, cx| {
                         back.update(cx, |st, cx| {
@@ -105,7 +105,7 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
                 .pl(px(8.))
                 .pr(px(8.))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::LAYER()))
+                .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
                 .child(fixed(DshIcon::MessageSquare, 14.).text_color(theme::LABEL_3()))
                 .child(
                     div()

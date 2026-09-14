@@ -43,8 +43,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .items_center()
         .border_t_1()
         .border_color(theme::BORDER())
-        // 与内容画布同底(BASE),仅顶缘发丝线分层
-        .bg(theme::BASE())
+        // 与内容画布同底(透 Root 毛玻璃涂层),仅顶缘发丝线分层
         .px(px(16.))
         .text_size(px(11.))
         .child(

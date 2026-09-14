@@ -185,7 +185,8 @@ pub fn render_note_editor(store: &Entity<AppStore>, cx: &mut App) -> Option<impl
                             .rounded(px(8.))
                             .border_1()
                             .border_color(theme::BORDER())
-                            .bg(theme::BASE())
+                            // 卡上内嵌输入面:CODE(比 CARD 深一阶的内嵌语义)
+                            .bg(theme::CODE())
                             .px(px(10.))
                             .py(px(8.))
                             .child(

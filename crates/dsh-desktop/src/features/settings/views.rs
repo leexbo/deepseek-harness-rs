@@ -40,7 +40,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .id("settings-page")
         .v_flex()
         .size_full()
-        .bg(theme::BASE())
+        // 画布透 Root 毛玻璃涂层(同聊天区,不再自铺 base 叠涂)
         .debug_selector(|| "settings-page".to_string())
         // 顶部拖拽条(交通灯在左列;右列拖拽由此接手,无可见 chrome;
         // 高度与主标题行/右栏面板头 40 同高对齐)
