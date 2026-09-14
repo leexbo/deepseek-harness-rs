@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crate::adapters::ProviderAdapter;
 use crate::attachments::{
     AttachmentSource, MAX_REQUEST_IMAGE_BYTES, NoAttachments, offload_request_images,
-    strip_images_for_summary,
+    project_files_to_text, strip_images_for_summary,
 };
 use crate::chat::GenericChatAdapter;
 use crate::ext::OpenAiChatExt;
@@ -163,6 +163,8 @@ impl HttpTransport {
     /// 出网请求体:请求级 offload(超预算最旧图下车)后交方言翻译
     fn wire_request(&self, header: &RequestHeader, messages: &Value) -> Value {
         let mut msgs = messages.clone();
+        // 文件先投影句柄文本(源 adapter 边界序),再图片 offload
+        project_files_to_text(&mut msgs, self.attachments.as_ref());
         offload_request_images(&mut msgs, MAX_REQUEST_IMAGE_BYTES);
         self.adapter
             .build_request(header, &msgs, self.attachments.as_ref())

@@ -1,16 +1,22 @@
-//! 图片附件对象存储。
+//! 附件对象存储。
 //!
 //! 内容寻址不可变对象:`<root>/objects/<sha256 前2hex>/<sha256>`,
 //! root = `~/.dshrs/attachments/v1`。写入去重 = 目标已存在即跳过
 //! (同 id 必同字节);读取验证 digest。与源的差异:不做逐级 fsync
 //! (桌面进程,O_EXCL/link 链简化为 tmp+rename,崩溃窗口只影响新附件)。
+//!
+//! 文件通道(源 file-store 语义):canonical 对象外另发
+//! `files/<2hex>/<sha256>/<名>` 只读别名(硬链;模型面句柄文本指向
+//! 可读名路径),硬链失败回退 canonical 路径。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use dsh_session::attachments::{
-    ImageAdmissionError, ImageAttachmentLimits, ImageAttachmentRef, ImageMediaType,
+use crate::AttachmentSource;
+use crate::types::{
+    FileAttachmentRef, ImageAdmissionError, ImageAttachmentLimits, ImageAttachmentRef,
+    ImageMediaType,
 };
 
 /// 一张待持久化图片(源 SaveImageAttachment)
@@ -22,6 +28,16 @@ pub struct SaveImage {
     pub media_type: ImageMediaType,
     /// 显示名(调用方已剥离路径;可缺省)
     pub name: Option<String>,
+}
+
+/// 一个待持久化文件(源 SaveFileAttachment 对应物;RS 本地单机直传
+/// 源路径,流式拷贝+哈希,不整读字节进内存)
+#[derive(Debug, Clone)]
+pub struct SaveFile {
+    /// 源文件路径(进程内可读)
+    pub source_path: PathBuf,
+    /// 显示名(调用方剥离路径;别名落盘时净化为单路径分量)
+    pub name: String,
 }
 
 /// 存储层错误:准入类(用户可纠正,wire 带 reason)+ 存储故障类
@@ -214,12 +230,99 @@ impl AttachmentStore {
         }
         Ok(data)
     }
+
+    /// 文件持久化(源 saveFile 语义;无 MIME/大小限制):流式 sha256 →
+    /// canonical 对象(tmp+rename,去重跳过)→ `files/` 别名硬链
+    /// (失败回退 canonical,句柄文本仍可读)。引用带净化后的显示名
+    pub fn save_file(&self, input: &SaveFile) -> Result<FileAttachmentRef, AttachmentStoreError> {
+        let mut src = std::fs::File::open(&input.source_path)
+            .map_err(|e| AttachmentStoreError::Io(e.to_string()))?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0u8; 64 * 1024];
+        let mut bytes: u64 = 0;
+        loop {
+            let n = std::io::Read::read(&mut src, &mut buf)
+                .map_err(|e| AttachmentStoreError::Io(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            bytes += n as u64;
+        }
+        let hex = hex::encode(hasher.finalize());
+        let attachment_id = format!("sha256:{}", hex);
+        let target = self.object_path(&attachment_id)?;
+        if !target.exists() {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| AttachmentStoreError::Io(e.to_string()))?;
+            }
+            let tmp = target.with_extension("tmp");
+            // 流式拷贝:大文件不整读进内存
+            std::fs::copy(&input.source_path, &tmp)
+                .map_err(|e| AttachmentStoreError::Io(e.to_string()))?;
+            std::fs::rename(&tmp, &target).map_err(|e| AttachmentStoreError::Io(e.to_string()))?;
+        }
+        let component = alias_component(&input.name);
+        let alias = self.file_alias_path(&hex, component);
+        if !alias.exists() {
+            if let Some(parent) = alias.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| AttachmentStoreError::Io(e.to_string()))?;
+            }
+            // 硬链失败(跨设备等)不致命:句柄文本回退 canonical 路径
+            let _ = std::fs::hard_link(&target, &alias);
+        }
+        Ok(FileAttachmentRef {
+            attachment_id,
+            name: component.to_string(),
+            bytes,
+        })
+    }
+
+    /// 文件引用的当前可读路径(源 fileHostPath 语义):别名优先、
+    /// canonical 兜底;两者皆缺席 = None(句柄文本走无路径分支)
+    pub fn file_path(&self, id: &str, name: &str) -> Option<PathBuf> {
+        let hex = id.strip_prefix("sha256:")?;
+        let canonical = self.object_path(id).ok()?;
+        let alias = self.file_alias_path(hex, alias_component(name));
+        if alias.exists() {
+            return Some(alias);
+        }
+        canonical.exists().then_some(canonical)
+    }
+
+    /// 文件别名路径:`files/<2hex>/<sha256>/<净化名>`
+    fn file_alias_path(&self, hex: &str, component: &str) -> PathBuf {
+        self.root
+            .join("files")
+            .join(&hex[..2])
+            .join(hex)
+            .join(component)
+    }
 }
 
-/// dsh-llm 请求期图片字节来源(trait 注入;宿主实现)
-impl dsh_llm::AttachmentSource for AttachmentStore {
+/// 别名路径分量净化:取路径末分量,拒绝空/点形态,兜底 "file"
+/// (显示名来自任意来源,不得携带分隔符逃出别名目录)
+fn alias_component(name: &str) -> &str {
+    let base = Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    match base {
+        "" | "." | ".." => "file",
+        other => other,
+    }
+}
+
+/// dsh-llm 请求期字节来源契约:存储直读实现
+impl AttachmentSource for AttachmentStore {
     fn image_bytes(&self, id: &str) -> Option<Vec<u8>> {
         self.read_image(id).ok()
+    }
+
+    fn file_path(&self, attachment_id: &str, name: &str) -> Option<String> {
+        AttachmentStore::file_path(self, attachment_id, name).map(|p| p.to_string_lossy().into())
     }
 }
 
@@ -241,6 +344,17 @@ mod tests {
             media_type: ImageMediaType::Png,
             name: Some("dot.png".into()),
         }
+    }
+
+    /// 已知字节的源文件(文件通道夹具)
+    fn source_file(tag: &str, bytes: &[u8]) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("dsh-attachments-src-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("payload.bin");
+        std::fs::write(&p, bytes).unwrap();
+        p
     }
 
     fn tmp_root(tag: &str) -> PathBuf {
@@ -334,6 +448,81 @@ mod tests {
             store.save_images(&[trunc], 0, 0).unwrap_err().reason(),
             "INVALID_IMAGE"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn save_file_roundtrip_alias_and_content_addressed() {
+        let root = tmp_root("f");
+        let store = AttachmentStore::new(&root);
+        let bytes = b"file payload 0123456789".to_vec();
+        let src = source_file("f", &bytes);
+        let r#ref = store
+            .save_file(&SaveFile {
+                source_path: src.clone(),
+                name: "功能清单.md".into(),
+            })
+            .unwrap();
+        assert_eq!(r#ref.name, "功能清单.md");
+        assert_eq!(r#ref.bytes, bytes.len() as u64);
+        // canonical 对象落位 + 别名硬链落位,读回同字节
+        let hex = r#ref.attachment_id.strip_prefix("sha256:").unwrap();
+        let canonical = root.join("objects").join(&hex[..2]).join(hex);
+        let alias = root
+            .join("files")
+            .join(&hex[..2])
+            .join(hex)
+            .join("功能清单.md");
+        assert!(canonical.exists());
+        assert!(alias.exists());
+        assert_eq!(std::fs::read(&alias).unwrap(), bytes);
+        // file_path 解析:别名优先(可读名路径)
+        assert_eq!(
+            store.file_path(&r#ref.attachment_id, &r#ref.name),
+            Some(alias.clone())
+        );
+        // 同字节不同源路径 → 同 id 去重,无错
+        let src2 = source_file("f2", &bytes);
+        let again = store
+            .save_file(&SaveFile {
+                source_path: src2,
+                name: "别名.md".into(),
+            })
+            .unwrap();
+        assert_eq!(again.attachment_id, r#ref.attachment_id);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(
+            std::env::temp_dir().join(format!("dsh-attachments-src-f-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(
+            std::env::temp_dir().join(format!("dsh-attachments-src-f2-{}", std::process::id())),
+        );
+    }
+
+    #[test]
+    fn file_name_sanitized_to_single_component() {
+        let root = tmp_root("fs");
+        let store = AttachmentStore::new(&root);
+        let bytes = b"x".to_vec();
+        let src = source_file("fs", &bytes);
+        let r#ref = store
+            .save_file(&SaveFile {
+                source_path: src,
+                name: "../escape/../危险/名.txt".into(),
+            })
+            .unwrap();
+        // 显示名净化为末分量(不逃出别名目录);file_path 可解析
+        assert_eq!(r#ref.name, "名.txt");
+        assert!(store.file_path(&r#ref.attachment_id, &r#ref.name).is_some());
+        // 空名兜底
+        let src2 = source_file("fs2", &bytes);
+        let empty = store
+            .save_file(&SaveFile {
+                source_path: src2,
+                name: String::new(),
+            })
+            .unwrap();
+        assert_eq!(empty.name, "file");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

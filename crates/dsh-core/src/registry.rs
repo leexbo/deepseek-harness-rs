@@ -20,8 +20,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub use dsh_agent_loop::LlmEvent;
 use dsh_agent_loop::{CancelToken, LlmTransport, RequestHeader, SteerInput, ToolSet, TurnOutcome};
 use dsh_app::{Resolved, Session};
+use dsh_attachment::ImageMediaType;
 use dsh_llm::{FakeProvider, HttpTransport, InvariantGate};
-use dsh_session::attachments::ImageMediaType;
 use dsh_session::{EventEnvelope, EventLog};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
@@ -54,17 +54,18 @@ impl AnySession {
         &mut self,
         input: &str,
         input_id: Option<&str>,
-        images: &[dsh_session::attachments::ImageAttachmentRef],
+        images: &[dsh_attachment::ImageAttachmentRef],
+        files: &[dsh_attachment::FileAttachmentRef],
         contexts: &[serde_json::Value],
         on_event: &mut (dyn FnMut(&EventEnvelope) + Send),
     ) -> anyhow::Result<TurnOutcome> {
         match self {
             AnySession::Real(s) => {
-                s.turn_with(input, input_id, images, contexts, on_event)
+                s.turn_with(input, input_id, images, files, contexts, on_event)
                     .await
             }
             AnySession::Fake(s) => {
-                s.turn_with(input, input_id, images, contexts, on_event)
+                s.turn_with(input, input_id, images, files, contexts, on_event)
                     .await
             }
         }
@@ -178,11 +179,12 @@ enum QueueAction {
 /// 泵任务输入(worker 拆分后:泵 = 队列/模式调度,驱动 = turn 执行)
 enum Job {
     /// 一条提交消息(队列或 steer;id 为宿主预分配的持久消息 id;
-    /// images = 已准入的持久附件引用)
+    /// images/files = 已准入的持久附件引用)
     Prompt {
         id: String,
         text: String,
-        images: Vec<dsh_session::attachments::ImageAttachmentRef>,
+        images: Vec<dsh_attachment::ImageAttachmentRef>,
+        files: Vec<dsh_attachment::FileAttachmentRef>,
         mode: PromptMode,
         /// 4a 注入上下文(transient,仅本 prompt;不入 durable splice)。
         /// 驱动并入注入数组交引擎,在用户消息**之后**落档为 user/message。
@@ -245,7 +247,9 @@ struct PendingItem {
     /// 文本内容
     text: String,
     /// 图片附件(持久引用;空 = 纯文本条目,可编辑)
-    images: Vec<dsh_session::attachments::ImageAttachmentRef>,
+    images: Vec<dsh_attachment::ImageAttachmentRef>,
+    /// 文件附件(持久引用;非空 = 不可编辑)
+    files: Vec<dsh_attachment::FileAttachmentRef>,
     /// 4a 注入上下文(transient;durable splice 重建时为空)——仅驱动认领后
     /// 在 turn/start 前 commit,不持久化。
     contexts: Vec<serde_json::Value>,
@@ -564,7 +568,7 @@ pub struct AppHost {
     feedback: MessageFeedbackStore,
     /// 图片附件对象存储(~/.dshrs/attachments/v1;prompt 准入 /
     /// 历史图读取 / 请求期字节来源 / 导出 ZIP 同一权威)
-    attachments: dsh_host::AttachmentStore,
+    attachments: dsh_attachment::AttachmentStore,
 }
 
 /// fake 演示用的模型清单(演示数据;真实模式不落此分支)
@@ -606,17 +610,17 @@ fn mcp_config_of(entry: &crate::settings::McpServerEntry) -> dsh_mcp::McpServerC
 /// dsh-host AttachmentStore → dsh-mcp ImageStorePort 适配(MCP 图片桥
 /// 落存口;准入/原子性由 AttachmentStore.save_images 自带)
 struct McpImageStore {
-    store: dsh_host::AttachmentStore,
+    store: dsh_attachment::AttachmentStore,
 }
 
 impl dsh_mcp::ImageStorePort for McpImageStore {
     fn save(
         &self,
         images: Vec<dsh_mcp::BridgeImageInput>,
-    ) -> Result<Vec<dsh_session::attachments::ImageAttachmentRef>, String> {
+    ) -> Result<Vec<dsh_attachment::ImageAttachmentRef>, String> {
         let inputs = images
             .into_iter()
-            .map(|i| dsh_host::SaveImage {
+            .map(|i| dsh_attachment::SaveImage {
                 data: i.data,
                 media_type: i.media_type,
                 name: i.name,
@@ -1069,7 +1073,8 @@ impl AppHost {
             let _ = settings.update(|s| s.workspace_paths = paths);
         }
         // 附件存储根与会话根同域(内容寻址对象,目录懒建)
-        let attachments = dsh_host::AttachmentStore::new(sessions_root.join("attachments/v1"));
+        let attachments =
+            dsh_attachment::AttachmentStore::new(sessions_root.join("attachments/v1"));
         let feedback = MessageFeedbackStore::new(sessions_root.join("feedback"));
         // MCP 连接任务后台 runtime:构造可能发生在无 tokio 上下文的线程
         // (桌面 GPUI 同步直调),此时自建专用 runtime 保活;已在 runtime
@@ -4283,7 +4288,7 @@ impl AppHost {
 
         // 媒体条目:内容寻址去重,路径 =
         // media/<attachmentId>.<ext>;对象缺席跳过(不阻断文本导出)
-        let mut refs: Vec<dsh_session::attachments::ImageAttachmentRef> = Vec::new();
+        let mut refs: Vec<dsh_attachment::ImageAttachmentRef> = Vec::new();
         for text in &artifacts {
             collect_image_refs(text, &mut refs);
         }
@@ -4306,7 +4311,7 @@ impl AppHost {
     }
 
     /// 图片准入限制(客户端前置检查与错误文案共用)
-    pub fn image_limits(&self) -> &dsh_session::attachments::ImageAttachmentLimits {
+    pub fn image_limits(&self) -> &dsh_attachment::ImageAttachmentLimits {
         self.attachments.limits()
     }
 
@@ -4734,9 +4739,9 @@ impl AppHost {
                 return Err(RpcError::internal("log 锁中毒"));
             };
             log.iter().find_map(|ev| match ev.r#type.as_ref() {
-                "user/message" => dsh_session::attachments::image_blocks(&ev.data["content"])
+                "user/message" => dsh_attachment::image_blocks(&ev.data["content"])
                     .iter()
-                    .filter_map(dsh_session::attachments::ImageAttachmentRef::from_block)
+                    .filter_map(dsh_attachment::ImageAttachmentRef::from_block)
                     .find(|r| r.attachment_id == attachment_id),
                 "agent/inbox/spliced" => ev.data["inserted"]
                     .as_array()
@@ -4745,10 +4750,7 @@ impl AppHost {
                     .filter_map(|m| m["images"].as_array())
                     .flatten()
                     .filter_map(|r| {
-                        serde_json::from_value::<dsh_session::attachments::ImageAttachmentRef>(
-                            r.clone(),
-                        )
-                        .ok()
+                        serde_json::from_value::<dsh_attachment::ImageAttachmentRef>(r.clone()).ok()
                     })
                     .find(|r| r.attachment_id == attachment_id),
                 // MCP 图片桥:tool/result 携带的 images 引用数组(授权 =
@@ -4758,10 +4760,7 @@ impl AppHost {
                     .into_iter()
                     .flatten()
                     .filter_map(|r| {
-                        serde_json::from_value::<dsh_session::attachments::ImageAttachmentRef>(
-                            r.clone(),
-                        )
-                        .ok()
+                        serde_json::from_value::<dsh_attachment::ImageAttachmentRef>(r.clone()).ok()
                     })
                     .find(|r| r.attachment_id == attachment_id),
                 _ => None,
@@ -4838,6 +4837,7 @@ impl AppHost {
         self.ensure_models().await;
         let mut text = String::new();
         let mut images = Vec::new();
+        let mut files = Vec::new();
         for part in content {
             match part["type"].as_str() {
                 Some("text") => text.push_str(part["text"].as_str().unwrap_or_default()),
@@ -4866,10 +4866,32 @@ impl AppHost {
                             details: json!({ "reason": "INVALID_IMAGE_BASE64" }),
                         });
                     };
-                    images.push(dsh_host::SaveImage {
+                    images.push(dsh_attachment::SaveImage {
                         data,
                         media_type,
                         name: part["name"].as_str().map(String::from),
+                    });
+                }
+                // 文件准入(源 saveFile 语义):无 MIME/大小限制,直传源路径
+                // 流式落盘;引用带净化显示名
+                Some("file") => {
+                    let Some(name) = part["name"].as_str().filter(|n| !n.is_empty()) else {
+                        return Err(RpcError {
+                            code: "attachment-error".into(),
+                            message: "文件附件缺少名称".into(),
+                            details: json!({ "reason": "INVALID_FILE_NAME" }),
+                        });
+                    };
+                    let Some(source_path) = part["sourcePath"].as_str() else {
+                        return Err(RpcError {
+                            code: "attachment-error".into(),
+                            message: "文件附件缺少源路径".into(),
+                            details: json!({ "reason": "INVALID_FILE_SOURCE" }),
+                        });
+                    };
+                    files.push(dsh_attachment::SaveFile {
+                        source_path: source_path.into(),
+                        name: name.to_string(),
                     });
                 }
                 _ => {}
@@ -4886,10 +4908,23 @@ impl AppHost {
                     details: json!({ "reason": e.reason() }),
                 })?
         };
+        let file_refs = if files.is_empty() {
+            Vec::new()
+        } else {
+            let mut saved = Vec::with_capacity(files.len());
+            for f in &files {
+                saved.push(self.attachments.save_file(f).map_err(|e| RpcError {
+                    code: "attachment-error".into(),
+                    message: format!("文件附件被拒:{e}"),
+                    details: json!({ "reason": e.reason() }),
+                })?);
+            }
+            saved
+        };
         let trimmed = text.trim();
         // 命令统一短路(command.execute 语义——命令不走模型面)。
-        // 命令名 plan/goal/model/export;图片带命令 → 全批拒
-        // (command.imagesUnsupported)。
+        // 命令名 plan/goal/model/export;附件带命令 → 全批拒
+        // (command.imagesUnsupported;文件同规则)。
         let cmd_name = trimmed
             .split_whitespace()
             .next()
@@ -4901,6 +4936,13 @@ impl AppHost {
                     code: "attachment-error".into(),
                     message: format!("/{} 不接受图片附件,请先移除图片", cmd_name),
                     details: json!({ "reason": "COMMAND_IMAGES_UNSUPPORTED" }),
+                });
+            }
+            if !file_refs.is_empty() {
+                return Err(RpcError {
+                    code: "attachment-error".into(),
+                    message: format!("/{} 不接受文件附件,请先移除文件", cmd_name),
+                    details: json!({ "reason": "COMMAND_FILES_UNSUPPORTED" }),
                 });
             }
             return self.execute_command(session_id, trimmed).await;
@@ -4916,6 +4958,7 @@ impl AppHost {
                 id,
                 text,
                 images: refs,
+                files: file_refs,
                 mode: prompt_mode,
                 contexts,
             })
@@ -5501,6 +5544,7 @@ fn inject_plan_guide_turn(session_id: &str, inner: &SlotInner, host: &Arc<AppHos
         id: gid.clone(),
         text: guide.into(),
         images: vec![],
+        files: vec![],
         contexts: vec![],
     });
     drop(q);
@@ -5512,6 +5556,7 @@ fn inject_plan_guide_turn(session_id: &str, inner: &SlotInner, host: &Arc<AppHos
             id: gid,
             text: guide.into(),
             images: vec![],
+            files: vec![],
             source: None,
         }],
     };
@@ -5525,12 +5570,14 @@ fn inject_plan_guide_turn(session_id: &str, inner: &SlotInner, host: &Arc<AppHos
 fn queue_items(inner: &SlotInner) -> Vec<Value> {
     let qs = inner.qs.lock().unwrap_or_else(|p| p.into_inner());
     let mut items = Vec::new();
-    // 客方 Message 形状恒为块数组(图前文后;纯文本包 text 块)
-    let frame_content = |text: &str, images: &[dsh_session::attachments::ImageAttachmentRef]| {
-        if images.is_empty() {
+    // 客方 Message 形状恒为块数组(附件在前文本在后;纯文本包 text 块)
+    let frame_content = |text: &str,
+                         images: &[dsh_attachment::ImageAttachmentRef],
+                         files: &[dsh_attachment::FileAttachmentRef]| {
+        if images.is_empty() && files.is_empty() {
             json!([ { "type": "text", "text": text } ])
         } else {
-            dsh_session::attachments::message_content(text, images)
+            dsh_attachment::message_content(text, images, files)
         }
     };
     for p in &qs.pending {
@@ -5540,7 +5587,7 @@ fn queue_items(inner: &SlotInner) -> Vec<Value> {
             "message": {
                 "id": p.id,
                 "role": "user",
-                "content": frame_content(&p.text, &p.images),
+                "content": frame_content(&p.text, &p.images, &p.files),
                 "source": { "kind": "user" },
             },
         }));
@@ -5557,7 +5604,7 @@ fn queue_items(inner: &SlotInner) -> Vec<Value> {
             "message": {
                 "id": s.id,
                 "role": "user",
-                "content": frame_content(&s.text, &s.images),
+                "content": frame_content(&s.text, &s.images, &s.files),
                 "source": { "kind": "user" },
             },
         }));
@@ -5581,7 +5628,9 @@ struct SpliceItem {
     /// 文本内容
     text: String,
     /// 图片附件(持久引用)
-    images: Vec<dsh_session::attachments::ImageAttachmentRef>,
+    images: Vec<dsh_attachment::ImageAttachmentRef>,
+    /// 文件附件(持久引用)
+    files: Vec<dsh_attachment::FileAttachmentRef>,
     /// 来源染色(None = 用户输入。结算通知等宿主注入经 splice 持久化,
     /// 冷重放须恢复,否则重开后的通知失去染色)
     source: Option<Value>,
@@ -5612,10 +5661,11 @@ impl SpliceRecord {
                 .inserted
                 .iter()
                 .map(|i| {
-                    dsh_session::attachments::splice_item(
+                    dsh_attachment::splice_item(
                         i.id.clone(),
                         i.text.clone(),
                         &i.images,
+                        &i.files,
                         i.source.as_ref(),
                     )
                 })
@@ -5788,6 +5838,7 @@ fn replay_inbox(log: &EventLog) -> (VecDeque<PendingItem>, VecDeque<SteerInput>)
                 id: i.id,
                 text: i.text,
                 images: i.images,
+                files: i.files,
                 contexts: Vec::new(),
             })
             .collect(),
@@ -5797,6 +5848,7 @@ fn replay_inbox(log: &EventLog) -> (VecDeque<PendingItem>, VecDeque<SteerInput>)
                 id: i.id,
                 text: i.text,
                 images: i.images,
+                files: i.files,
                 source: i.source,
             })
             .collect(),
@@ -5805,14 +5857,13 @@ fn replay_inbox(log: &EventLog) -> (VecDeque<PendingItem>, VecDeque<SteerInput>)
 
 /// 从一段会话日志文本收集图片引用(user/message 块数组 + splice
 /// inserted.images;按 attachment_id 去重——导出 media 条目共用)
-fn collect_image_refs(text: &str, out: &mut Vec<dsh_session::attachments::ImageAttachmentRef>) {
+fn collect_image_refs(text: &str, out: &mut Vec<dsh_attachment::ImageAttachmentRef>) {
     let mut seen_ids: Vec<String> = out.iter().map(|r| r.attachment_id.clone()).collect();
     for line in text.lines() {
         let Ok(ev) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        let mut candidates: Vec<Value> =
-            dsh_session::attachments::image_blocks(&ev["data"]["content"]);
+        let mut candidates: Vec<Value> = dsh_attachment::image_blocks(&ev["data"]["content"]);
         if let Some(inserted) = ev["data"]["inserted"].as_array() {
             for m in inserted {
                 if let Some(images) = m["images"].as_array() {
@@ -5827,7 +5878,7 @@ fn collect_image_refs(text: &str, out: &mut Vec<dsh_session::attachments::ImageA
             } else {
                 json!({ "type": "image", "attachment": c })
             };
-            if let Some(r) = dsh_session::attachments::ImageAttachmentRef::from_block(&block)
+            if let Some(r) = dsh_attachment::ImageAttachmentRef::from_block(&block)
                 && !seen_ids.contains(&r.attachment_id)
             {
                 seen_ids.push(r.attachment_id.clone());
@@ -5837,13 +5888,21 @@ fn collect_image_refs(text: &str, out: &mut Vec<dsh_session::attachments::ImageA
     }
 }
 
-/// splice inserted 条目解析({id, content[, images]};旧日志无 images 键 =
-/// 纯文本条目,形状不判错)
+/// splice inserted 条目解析({id, content[, images][, files]};旧日志无
+/// 附件键 = 纯文本条目,形状不判错)
 fn splice_item_from_event(m: &Value) -> SpliceItem {
     SpliceItem {
         id: m["id"].as_str().unwrap_or_default().to_string(),
         text: m["content"].as_str().unwrap_or_default().to_string(),
         images: m["images"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| serde_json::from_value(r.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        files: m["files"]
             .as_array()
             .map(|arr| {
                 arr.iter()
@@ -5895,6 +5954,7 @@ fn apply_queue_action(
                         id: item_id.to_string(),
                         text,
                         images: Vec::new(),
+                        files: Vec::new(),
                         source: None,
                     }],
                 }],
@@ -5935,6 +5995,7 @@ fn apply_queue_action(
                     id: item.id.clone(),
                     text: item.text.clone(),
                     images: item.images.clone(),
+                    files: item.files.clone(),
                     source: None,
                 });
                 at
@@ -5958,6 +6019,7 @@ fn apply_queue_action(
                             id: item.id,
                             text: item.text,
                             images: item.images,
+                            files: item.files,
                             source: None,
                         }],
                     },
@@ -6324,6 +6386,7 @@ async fn pump_loop(
                 id,
                 text,
                 images,
+                files,
                 mode,
                 contexts,
             } => {
@@ -6336,6 +6399,7 @@ async fn pump_loop(
                                 id: id.clone(),
                                 text: text.clone(),
                                 images: images.clone(),
+                                files: files.clone(),
                                 contexts: contexts.clone(),
                             });
                             SpliceRecord {
@@ -6346,6 +6410,7 @@ async fn pump_loop(
                                     id,
                                     text,
                                     images,
+                                    files,
                                     source: None,
                                 }],
                             }
@@ -6357,6 +6422,7 @@ async fn pump_loop(
                                 id: id.clone(),
                                 text: text.clone(),
                                 images: images.clone(),
+                                files: files.clone(),
                                 source: None,
                             });
                             drop(steer);
@@ -6368,6 +6434,7 @@ async fn pump_loop(
                                     id,
                                     text,
                                     images,
+                                    files,
                                     source: None,
                                 }],
                             }
@@ -6403,6 +6470,7 @@ async fn pump_loop(
                         id: id.clone(),
                         text: text.clone(),
                         images: Vec::new(),
+                        files: Vec::new(),
                         source: Some(source.clone()),
                     });
                     SpliceRecord {
@@ -6413,6 +6481,7 @@ async fn pump_loop(
                             id,
                             text,
                             images: Vec::new(),
+                            files: Vec::new(),
                             source: Some(source),
                         }],
                     }
@@ -6699,16 +6768,32 @@ async fn driver_loop(
             let steer = qs.lock().unwrap_or_else(|p| p.into_inner()).steer.clone();
             let mut steer_guard = steer.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(s) = steer_guard.pop_front() {
-                Some((s.id, s.text, s.images, "next-step", Vec::new(), s.source))
+                Some((
+                    s.id,
+                    s.text,
+                    s.images,
+                    s.files,
+                    "next-step",
+                    Vec::new(),
+                    s.source,
+                ))
             } else {
                 drop(steer_guard);
                 let mut q = qs.lock().unwrap_or_else(|p| p.into_inner());
-                q.pending
-                    .pop_front()
-                    .map(|p| (p.id, p.text, p.images, "next-turn", p.contexts, None))
+                q.pending.pop_front().map(|p| {
+                    (
+                        p.id,
+                        p.text,
+                        p.images,
+                        p.files,
+                        "next-turn",
+                        p.contexts,
+                        None,
+                    )
+                })
             }
         };
-        let Some((id, text, images, target, contexts, input_source)) = claimed else {
+        let Some((id, text, images, files, target, contexts, input_source)) = claimed else {
             // 无活干:等待唤醒(提交必 notify;唤醒后重查,覆盖 notify 合流)
             tokio::select! {
                 _ = wake.notified() => {}
@@ -6815,6 +6900,7 @@ async fn driver_loop(
                 &text,
                 Some(&id),
                 &images,
+                &files,
                 &injection,
                 &mut |ev: &EventEnvelope| {
                     if let Some(event) = translator.translate(ev)
@@ -7985,6 +8071,70 @@ mod tests {
         assert_eq!(err.details["reason"], "ATTACHMENT_NOT_REFERENCED");
     }
 
+    /// 文件通道:源路径流式落盘存证 → user/message file 块(文件在前
+    /// 文本在后)→ 命令带文件全批拒(COMMAND_FILES_UNSUPPORTED)→
+    /// 缺源路径拒(INVALID_FILE_SOURCE)
+    #[tokio::test]
+    async fn prompt_file_roundtrip_and_command_rejection() {
+        let host = temp_host("file-rt");
+        host.set_fake_script(script(&["seen"]));
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+        let src = std::env::temp_dir().join(format!("dsh-file-rt-{}.md", std::process::id()));
+        std::fs::write(&src, "# 清单\n\n正文").unwrap();
+        host.prompt(
+            &id,
+            &[
+                json!({ "type": "file", "name": "功能清单.md", "sourcePath": src.to_string_lossy() }),
+                json!({ "type": "text", "text": "读文件" }),
+            ],
+            "queue",
+        )
+        .await
+        .unwrap();
+
+        // user/message:content = 块数组,文件在前文本在后
+        let f = recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "user/message"
+        })
+        .await
+        .expect("user/message 帧");
+        let blocks = f.payload["event"]["data"]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "file");
+        assert_eq!(blocks[0]["attachment"]["name"], "功能清单.md");
+        assert_eq!(blocks[0]["attachment"]["bytes"], 16);
+        assert!(
+            blocks[0]["attachment"]["attachmentId"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
+        assert_eq!(blocks[1]["type"], "text");
+
+        // 命令 + 文件 → 全批拒
+        let err = host
+            .prompt(
+                &id,
+                &[
+                    json!({ "type": "text", "text": "/plan on" }),
+                    json!({ "type": "file", "name": "a.md", "sourcePath": src.to_string_lossy() }),
+                ],
+                "queue",
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.details["reason"], "COMMAND_FILES_UNSUPPORTED");
+        assert_eq!(err.message, "/plan 不接受文件附件,请先移除文件");
+
+        // 缺源路径 → INVALID_FILE_SOURCE
+        let err = host
+            .prompt(&id, &[json!({ "type": "file", "name": "a.md" })], "queue")
+            .await
+            .unwrap_err();
+        assert_eq!(err.details["reason"], "INVALID_FILE_SOURCE");
+        let _ = std::fs::remove_file(&src);
+    }
+
     /// 准入拒绝面(白名单外类型 / 非法 base64)错误码
     #[tokio::test]
     async fn prompt_image_admission_rejections() {
@@ -8352,12 +8502,14 @@ mod tests {
                     id: "p1".into(),
                     text: "one".into(),
                     images: Vec::new(),
+                    files: Vec::new(),
                     contexts: Vec::new(),
                 },
                 PendingItem {
                     id: "p2".into(),
                     text: "two".into(),
                     images: Vec::new(),
+                    files: Vec::new(),
                     contexts: Vec::new(),
                 },
             ]),

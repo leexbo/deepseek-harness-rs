@@ -14,6 +14,7 @@ tokio.workspace = true
 reqwest.workspace = true
 base64.workspace = true
 dsh-agent-loop.workspace = true
+dsh-attachment.workspace = true
 dsh-session.workspace = true
 
 [package.metadata.notes]

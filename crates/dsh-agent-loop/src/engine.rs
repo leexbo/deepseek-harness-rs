@@ -93,7 +93,9 @@ pub struct SteerInput {
     /// 文本内容
     pub text: String,
     /// 图片附件(准入在宿主 prompt 侧完成,此处只携带持久引用)
-    pub images: Vec<dsh_session::attachments::ImageAttachmentRef>,
+    pub images: Vec<dsh_attachment::ImageAttachmentRef>,
+    /// 文件附件(持久引用;与图片同形穿线,准入在宿主 prompt 侧)
+    pub files: Vec<dsh_attachment::FileAttachmentRef>,
     /// 来源染色(None = 真实用户 steer)。subagent 结算通知等宿主
     /// 内部注入携带 `source.kind`(如 "subagent-settled"),随 user/message
     /// 落档,客户端凭此分流渲染(以此字段为唯一分类权威)。
@@ -304,10 +306,11 @@ impl LoopEngine {
                     "inserted": entries
                         .iter()
                         .map(|e| {
-                            dsh_session::attachments::splice_item(
+                            dsh_attachment::splice_item(
                                 e.id.clone(),
                                 e.text.clone(),
                                 &e.images,
+                                &e.files,
                                 e.source.as_ref(),
                             )
                         })
@@ -336,7 +339,7 @@ impl LoopEngine {
                 &self.log,
                 EventEnvelope::new("user/message", clock(), {
                     let mut payload = serde_json::json!({
-                        "content": dsh_session::attachments::message_content(&e.text, &e.images),
+                        "content": dsh_attachment::message_content(&e.text, &e.images, &e.files),
                         "id": e.id,
                     });
                     // 来源染色:结算通知等宿主注入 steer 时随消息落档
@@ -604,7 +607,8 @@ impl LoopEngine {
         &mut self,
         input: &str,
         input_id: Option<&str>,
-        images: &[dsh_session::attachments::ImageAttachmentRef],
+        images: &[dsh_attachment::ImageAttachmentRef],
+        files: &[dsh_attachment::FileAttachmentRef],
         contexts: &[serde_json::Value],
         transport: &mut T,
         tools: &mut TOOLS,
@@ -620,7 +624,7 @@ impl LoopEngine {
         }
         match self
             .run_turn_inner(
-                input, input_id, images, contexts, transport, tools, clock, sink,
+                input, input_id, images, files, contexts, transport, tools, clock, sink,
             )
             .await
         {
@@ -660,7 +664,8 @@ impl LoopEngine {
         &mut self,
         input: &str,
         input_id: Option<&str>,
-        images: &[dsh_session::attachments::ImageAttachmentRef],
+        images: &[dsh_attachment::ImageAttachmentRef],
+        files: &[dsh_attachment::FileAttachmentRef],
         contexts: &[serde_json::Value],
         transport: &mut T,
         tools: &mut TOOLS,
@@ -767,7 +772,7 @@ impl LoopEngine {
                     .map(|k| k == "user")
                     .unwrap_or(true);
                 let mut user_payload = serde_json::json!({
-                    "content": dsh_session::attachments::message_content(input, images),
+                    "content": dsh_attachment::message_content(input, images, files),
                     "id": input_id,
                 });
                 if let Some(src) = tinted {
@@ -1128,6 +1133,7 @@ impl LoopEngine {
                             id: uuid::Uuid::now_v7().to_string(),
                             text: reason,
                             images: Vec::new(),
+                            files: Vec::new(),
                             source: Some(serde_json::json!({
                                 "kind": "plugin",
                                 "plugin": "hooks",
@@ -1586,6 +1592,7 @@ mod tests {
                 None,
                 &[],
                 &[],
+                &[],
                 &mut transport,
                 &mut tools,
                 &clock,
@@ -1610,6 +1617,7 @@ mod tests {
             .run_turn(
                 "again",
                 None,
+                &[],
                 &[],
                 &[],
                 &mut ok_transport,
@@ -1639,6 +1647,7 @@ mod tests {
                 None,
                 &[],
                 &[],
+                &[],
                 &mut transport,
                 &mut tools,
                 &clock,
@@ -1650,6 +1659,7 @@ mod tests {
             .run_turn(
                 "two",
                 None,
+                &[],
                 &[],
                 &[],
                 &mut transport,
@@ -1694,6 +1704,7 @@ mod tests {
             .run_turn(
                 "three",
                 None,
+                &[],
                 &[],
                 &[],
                 &mut transport,
@@ -1867,6 +1878,7 @@ mod streaming_tests {
                     None,
                     &[],
                     &[],
+                    &[],
                     &mut transport,
                     &mut NoTools,
                     &clock,
@@ -1916,6 +1928,7 @@ mod streaming_tests {
                 .run_turn(
                     "q",
                     None,
+                    &[],
                     &[],
                     &[],
                     &mut transport,
@@ -2026,6 +2039,7 @@ mod streaming_tests {
                 None,
                 &[],
                 &[],
+                &[],
                 &mut transport,
                 &mut DiffTool,
                 &clock,
@@ -2037,6 +2051,7 @@ mod streaming_tests {
             .run_turn(
                 "plain",
                 None,
+                &[],
                 &[],
                 &[],
                 &mut plain_transport,
@@ -2088,6 +2103,7 @@ mod streaming_tests {
                 None,
                 &[],
                 &[],
+                &[],
                 &mut transport,
                 &mut tools,
                 &clock,
@@ -2135,6 +2151,7 @@ mod streaming_tests {
             .run_turn(
                 "q",
                 None,
+                &[],
                 &[],
                 &[],
                 &mut transport,
@@ -2287,6 +2304,7 @@ mod streaming_tests {
                 None,
                 &[],
                 &[],
+                &[],
                 &mut transport,
                 &mut tools,
                 &clock,
@@ -2322,6 +2340,7 @@ mod streaming_tests {
             .run_turn(
                 "hi",
                 None,
+                &[],
                 &[],
                 &[],
                 &mut transport,
@@ -2375,6 +2394,7 @@ mod streaming_tests {
                 None,
                 &[],
                 &[],
+                &[],
                 &mut transport,
                 &mut tools,
                 &clock,
@@ -2418,6 +2438,7 @@ mod streaming_tests {
                 None,
                 &[],
                 &[],
+                &[],
                 &mut transport,
                 &mut tools,
                 &clock,
@@ -2459,6 +2480,7 @@ mod streaming_tests {
             .run_turn(
                 "hi",
                 None,
+                &[],
                 &[],
                 &[],
                 &mut transport,

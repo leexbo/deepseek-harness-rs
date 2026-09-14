@@ -494,7 +494,8 @@ where
         &mut self,
         input: &str,
         input_id: Option<&str>,
-        images: &[dsh_session::attachments::ImageAttachmentRef],
+        images: &[dsh_attachment::ImageAttachmentRef],
+        files: &[dsh_attachment::FileAttachmentRef],
         contexts: &[serde_json::Value],
         on_event: &mut (dyn FnMut(&EventEnvelope) + Send),
     ) -> Result<TurnOutcome> {
@@ -516,7 +517,7 @@ where
         let clock = wall_clock;
         let outcome = engine
             .run_turn(
-                input, input_id, images, contexts, gate, tools, &clock, &mut sink,
+                input, input_id, images, files, contexts, gate, tools, &clock, &mut sink,
             )
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -525,7 +526,8 @@ where
 
     /// 驱动一个 turn(无渲染回调;无附件;无注入上下文)
     pub async fn turn(&mut self, input: &str) -> Result<TurnOutcome> {
-        self.turn_with(input, None, &[], &[], &mut |_| {}).await
+        self.turn_with(input, None, &[], &[], &[], &mut |_| {})
+            .await
     }
 }
 

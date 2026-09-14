@@ -10,6 +10,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 base64.workspace = true
+dsh-attachment.workspace = true
 dsh-agent-loop.workspace = true
 dsh-session.workspace = true
 reqwest.workspace = true

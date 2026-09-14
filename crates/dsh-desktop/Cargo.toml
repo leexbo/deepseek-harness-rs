@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 image.workspace = true
 base64.workspace = true
+dsh-attachment.workspace = true
 dsh-core.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
@@ -22,6 +23,7 @@ futures.workspace = true
 # 子模块;platform features 由其自带依赖携带
 # MCP JSON 粘贴区语法高亮:Editor + tree-sitter-json(经 gpui-kit 透传
 # 到 gpui-component 的 tree-sitter feature;json 随基础 feature 内置)
+smallvec.workspace = true
 gpui-kit = { workspace = true, features = ["tree-sitter"] }
 pulldown-cmark.workspace = true
 # Mermaid 图渲染(markdown```mermaid 围栏 → SVG → gpui 光栅;kits/mermaid.rs)

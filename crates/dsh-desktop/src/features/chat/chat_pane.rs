@@ -985,8 +985,12 @@ fn render_node(
 ) -> impl IntoElement {
     match node {
         ChatNode::User {
-            key, text, images, ..
-        } => user_bubble(store, cx, ix, key, text, images, col_w).into_any_element(),
+            key,
+            text,
+            images,
+            files,
+            ..
+        } => user_bubble(store, cx, ix, key, text, images, files, col_w).into_any_element(),
         ChatNode::Context {
             key,
             content,
@@ -1202,6 +1206,8 @@ fn plan_archive_card(
 
 /// 用户气泡:绝对宽 = 列宽 70%(原 525/748;同内容列,防测量塌陷),
 /// 圆角 22,底色 #2b2b2c,整体靠右(气泡 + 动作行随右缘,动作行在文档流内)
+#[allow(clippy::too_many_arguments)]
+/// 圆角 22,底色 #2b2b2c,整体靠右(气泡 + 动作行随右缘,动作行在文档流内)
 fn user_bubble(
     store: &Entity<AppStore>,
     cx: &App,
@@ -1209,6 +1215,7 @@ fn user_bubble(
     key: &str,
     text: &str,
     images: &[serde_json::Value],
+    files: &[serde_json::Value],
     col_w: gpui_kit::Pixels,
 ) -> impl IntoElement {
     let bw = crate::shell::metrics::bubble_w(col_w);
@@ -1240,13 +1247,16 @@ fn user_bubble(
                 .cursor_text()
                 // 布局测试钩子:气泡自身 bounds(短消息贴合内容/长消息封顶 wrap)
                 .debug_selector(move || format!("user-bubble-{ix}"))
-                // 图消息先渲染缩略(单图 single/多图 tile),后接文本。
-                // 仅当真有图时才挂图块——否则空 div + gap(8) 会凭空把内容
-                // 挤出气泡垂直中心,造成「内容不居中」错位。
+                // 附件消息先渲染缩略/文件卡,后接文本。仅当真有附件时才
+                // 挂卡——否则空 div + gap(8) 会凭空把内容挤出气泡垂直
+                // 中心,造成「内容不居中」错位。
                 .when(!images.is_empty(), |el| {
                     el.child(crate::features::attachments::message_images(
                         store, images, cx,
                     ))
+                })
+                .when(!files.is_empty(), |el| {
+                    el.child(crate::features::attachments::message_files(files))
                 })
                 .when(!text.is_empty(), |el| el.child(bubble_rich_text(ix, text))),
         )

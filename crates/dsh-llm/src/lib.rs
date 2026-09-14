@@ -36,7 +36,7 @@ pub use adapters::{ProviderAdapter, adapter_by_name};
 pub use anthropic::{AnthropicMapper, GenericAnthropicAdapter};
 pub use attachments::{
     AttachmentSource, MAX_REQUEST_IMAGE_BYTES, NoAttachments, OFFLOADED_IMAGE_TEXT,
-    offload_request_images, strip_images_for_summary,
+    file_handle_text, offload_request_images, project_files_to_text, strip_images_for_summary,
 };
 pub use chat::GenericChatAdapter;
 pub use ext::{

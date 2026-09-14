@@ -710,6 +710,11 @@ impl Render for WorkspaceView {
             .when(self.store.read(cx).attachments.lightbox.is_some(), |el| {
                 el.child(attachments::lightbox(&self.store, cx))
             })
+            // 拖拽邀请蒙层(根级;gpui-pre 将 OS 文件拖放翻译为内部
+            // active_drag,拖动期间全屏重绘,蒙层即落点)
+            .when(cx.has_active_drag(), |el| {
+                el.child(attachments::drop_overlay(&self.store))
+            })
             // Mermaid 查看器(根级;与 lightbox 同构。置于 toast 前——
             // 下载完成通知须浮于查看器遮罩之上)
             .when(self.store.read(cx).chat.mermaid_viewer.is_some(), |el| {

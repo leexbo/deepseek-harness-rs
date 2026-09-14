@@ -59,6 +59,7 @@ async fn tool_round_trip_through_sandbox() {
             None,
             &[],
             &[],
+            &[],
             &mut gate,
             &mut bash,
             &clock,
@@ -173,6 +174,7 @@ async fn sandboxed_tool_denies_out_of_root_write() {
             None,
             &[],
             &[],
+            &[],
             &mut gate,
             &mut bash,
             &clock,
@@ -245,6 +247,7 @@ async fn cancel_token_aborts_running_tool_and_turn() {
             None,
             &[],
             &[],
+            &[],
             &mut gate,
             &mut bash,
             &|| 0_i64,
@@ -305,6 +308,7 @@ async fn pty_tool_runs_and_reports_tty() {
         .run_turn(
             "go",
             None,
+            &[],
             &[],
             &[],
             &mut gate,
@@ -379,6 +383,7 @@ async fn file_tools_round_trip_through_toolset() {
         .run_turn(
             "edit then verify",
             None,
+            &[],
             &[],
             &[],
             &mut gate,
@@ -463,6 +468,7 @@ async fn todo_write_events_flow_through_engine_and_restore() {
         .run_turn(
             "track my work",
             None,
+            &[],
             &[],
             &[],
             &mut gate,
@@ -561,6 +567,7 @@ async fn plan_mode_submit_and_approval_flow() {
             None,
             &[],
             &[],
+            &[],
             &mut gate,
             &mut tools,
             &clock,
@@ -595,6 +602,7 @@ async fn plan_mode_submit_and_approval_flow() {
         .run_turn(
             "plan it",
             None,
+            &[],
             &[],
             &[],
             &mut gate,
@@ -650,6 +658,7 @@ async fn plan_mode_submit_and_approval_flow() {
         .run_turn(
             "implement",
             None,
+            &[],
             &[],
             &[],
             &mut gate,

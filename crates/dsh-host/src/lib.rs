@@ -11,7 +11,6 @@
 #![deny(missing_docs)]
 
 pub mod arena;
-pub mod attachments;
 pub mod bus;
 pub mod config;
 pub mod engine;
@@ -27,7 +26,6 @@ pub mod tool_component;
 pub mod transport;
 
 pub use arena::{Arena, ArenaError, HostState};
-pub use attachments::{AttachmentStore, AttachmentStoreError, SaveImage};
 pub use bus::{EventBus, ListenerResult, Next, Stop};
 pub use config::{ConfigError, DshConfig, validate_config};
 pub use dsh_agent_loop::CancelToken;

@@ -6,13 +6,14 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+dsh-attachment.workspace = true
 dsh-agent-loop.workspace = true
 dsh-llm.workspace = true
 dsh-wit.workspace = true
 futures.workspace = true
 hex.workspace = true
 dsh-session.workspace = true
-image.workspace = true
+
 serde.workspace = true
 serde_json.workspace = true
 serde_norway.workspace = true

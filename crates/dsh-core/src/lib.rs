@@ -14,7 +14,6 @@ pub use dsh_agent_loop::LlmEvent;
 /// 见 [`dsh_app`](https://docs.rs/dsh-app) 的 `Resolved`)。
 pub use dsh_app::Resolved;
 
-pub mod attachments;
 pub mod context;
 pub mod credentials;
 pub mod permission;

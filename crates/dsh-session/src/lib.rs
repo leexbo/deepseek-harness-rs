@@ -10,7 +10,6 @@
 //! 双产物:rlib(宿主侧测试/复用)+ wasm32-wasip2 组件([`guest`] 实现 WIT 导出)。
 //! 组件内禁止直接读时钟/随机——经显式 WASI import(重放确定性前提)。
 
-pub mod attachments;
 pub mod audit;
 pub mod envelope;
 pub mod events;
@@ -21,10 +20,6 @@ pub mod bindings;
 #[cfg_attr(not(target_family = "wasm"), allow(missing_docs))]
 pub mod guest;
 
-pub use attachments::{
-    ImageAdmissionError, ImageAttachmentLimits, ImageAttachmentRef, ImageMediaType, content_text,
-    image_blocks, message_content, splice_item,
-};
 pub use audit::{Attribution, AuditRecord, attribution_chain, audit_call_event, audit_records};
 pub use envelope::{EnvelopeError, EventEnvelope, SESSION_FORMAT_VERSION, decode_envelope};
 pub use events::{

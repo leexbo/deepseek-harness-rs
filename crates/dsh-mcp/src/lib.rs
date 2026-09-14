@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use dsh_agent_loop::CancelToken;
 use dsh_agent_loop::tools::{ToolCallRequest, ToolOutput, ToolPort};
-use dsh_session::attachments::{ImageAttachmentRef, ImageMediaType};
+use dsh_attachment::{ImageAttachmentRef, ImageMediaType};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientInfo, ContentBlock, Implementation,
 };

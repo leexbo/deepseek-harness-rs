@@ -53,6 +53,7 @@ async fn turn_e2e_record_first_and_replayable() {
             None,
             &[],
             &[],
+            &[],
             &mut gate,
             &mut dsh_agent_loop::NoTools,
             &clock,
@@ -182,6 +183,7 @@ async fn multi_turn_accumulates_history() {
             None,
             &[],
             &[],
+            &[],
             &mut gate,
             &mut dsh_agent_loop::NoTools,
             &clock,
@@ -193,6 +195,7 @@ async fn multi_turn_accumulates_history() {
         .run_turn(
             "two",
             None,
+            &[],
             &[],
             &[],
             &mut gate,

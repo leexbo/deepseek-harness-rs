@@ -94,6 +94,7 @@ fn run_engine(
                 None,
                 &[],
                 &[],
+                &[],
                 &mut transport,
                 &mut NoTools,
                 &clock,
@@ -127,6 +128,7 @@ async fn steer_during_stream_continues_turn() {
         id: "s-1".into(),
         text: "steer-now".into(),
         images: Vec::new(),
+        files: Vec::new(),
         source: None,
     });
     release_tx.send(()).unwrap();
@@ -206,6 +208,7 @@ async fn steer_queued_before_turn_drained_at_first_step() {
         id: "s-0".into(),
         text: "early".into(),
         images: Vec::new(),
+        files: Vec::new(),
         source: None,
     });
     let seen = Arc::clone(&gate.seen);

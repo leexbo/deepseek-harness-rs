@@ -1,6 +1,6 @@
 //! 输入卡(web `Composer.tsx`):统一列宽(由调用方列容器给定),
 //! 圆角 22,bg-card。多行输入(Enter 发送/Shift+Enter 换行);running
-//! 时发送钮变停止。底排:+ 命令菜单(模式选择)/ Plan chip(计划
+//! 时发送钮变停止。底排:+ 命令菜单 / 图片附件钮 / Plan chip(计划
 //! 模式激活时)/ 权限下拉 / 模型·思考等级下拉。
 
 use gpui_kit::component::Icon;
@@ -259,6 +259,35 @@ fn bottom_row(
             });
         }
     });
+    // 菜单卡仅在确有行时开:附件移出后,命令与技能皆空 = 空浮层
+    let has_menu_rows = !cmds.is_empty() || !st.chat.skill_entries.is_empty();
+    // 附件独立钮(+ 旁,不经命令菜单):文件对话框多选(任意文件),
+    // 按文件头分流图片管线 / 文件通道(与拖拽/粘贴同一 intake)
+    let attach_trigger =
+        round_button("composer-attach", fixed(DshIcon::Paperclip, 14.)).on_click({
+            let s = store.clone();
+            move |_, window, cx| {
+                let rx = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+                    files: true,
+                    directories: false,
+                    multiple: true,
+                    prompt: Some("选择附件".into()),
+                });
+                // Fn 闭包不能 move 出捕获:异步块内用克隆体
+                let s2 = s.clone();
+                window
+                    .spawn(cx, async move |cx| {
+                        let paths = rx.await.ok().and_then(|r| r.ok()).flatten();
+                        if let Some(paths) = paths {
+                            cx.update(move |_, app| {
+                                s2.update(app, |st, _| st.intake_dropped_paths(&paths));
+                            })
+                            .ok();
+                        }
+                    })
+                    .detach();
+            }
+        });
     let perm_trigger = chip(
         "chip-perm",
         permission_label(&cfg.permission),
@@ -293,7 +322,7 @@ fn bottom_row(
         .pb(px(8.))
         .child(menu_slot(
             cmd_trigger,
-            (menu == ComposerMenu::Commands).then(|| {
+            (menu == ComposerMenu::Commands && has_menu_rows).then(|| {
                 commands_card(
                     store,
                     cmds.clone(),
@@ -303,6 +332,7 @@ fn bottom_row(
             }),
             anchor_bottom,
         ))
+        .child(attach_trigger)
         // 「+」与模式 chips 之间的细竖线分组
         .child(
             div()
@@ -534,52 +564,17 @@ fn plan_chip(store: &Entity<AppStore>, hovered: bool) -> impl IntoElement {
 }
 
 /// 命令菜单(「+」触发):斜杠指令列表(从 host 注册表拉取,动态化),
-/// 选中即 host 执行(非发模型)。首节「添加」
-/// = 图片附件入口(附件不占弹窗旁的独立钮),命令节空则略;
-/// 「技能」节 = session_skills(user-invocable,菜单打开时拉取),
-/// 点击落草稿 chip(发送拼 /name args,host 手势注入接管)。
+/// 选中即 host 执行(非发模型);「技能」节 = session_skills
+/// (user-invocable,菜单打开时拉取),点击落草稿 chip(发送拼
+/// /name args,host 手势注入接管)。图片附件是 + 旁的独立圆钮,
+/// 不占菜单行。
 fn commands_card(
     store: &Entity<AppStore>,
     cmds: Vec<dsh_core::registry::CommandDescriptor>,
     skills: &[super::store::SkillEntry],
     composer_w: f32,
 ) -> gpui_kit::AnyElement {
-    let mut rows: Vec<gpui_kit::AnyElement> = vec![section_label("添加").into_any_element()];
-    rows.push(
-        menu_row(
-            "attach-item",
-            fixed(DshIcon::Paperclip, 14.),
-            "图片附件",
-            false,
-            {
-                let s = store.clone();
-                move |_, window, cx| {
-                    // 先收菜单再开文件对话框(菜单不复选)
-                    s.update(cx, |st, cx| st.close_all_menus(cx));
-                    let rx = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
-                        files: true,
-                        directories: false,
-                        multiple: true,
-                        prompt: Some("选择图片".into()),
-                    });
-                    // Fn 闭包不能 move 出捕获:异步块内用克隆体
-                    let s2 = s.clone();
-                    window
-                        .spawn(cx, async move |cx| {
-                            let paths = rx.await.ok().and_then(|r| r.ok()).flatten();
-                            if let Some(paths) = paths {
-                                cx.update(move |_, app| {
-                                    s2.update(app, |st, _| st.intake_dropped_paths(&paths));
-                                })
-                                .ok();
-                            }
-                        })
-                        .detach();
-                }
-            },
-        )
-        .into_any_element(),
-    );
+    let mut rows: Vec<gpui_kit::AnyElement> = vec![];
     if !cmds.is_empty() {
         rows.push(section_label("命令").into_any_element());
         for cmd in cmds {
@@ -1184,7 +1179,7 @@ fn send_or_stop(store: &Entity<AppStore>, running: bool) -> impl IntoElement {
                         .as_ref()
                         .map(|e| e.read(cx).value().trim().to_string())
                         .unwrap_or_default();
-                    if !text.is_empty() || !st.attachments.draft_images.is_empty() {
+                    if !text.is_empty() || !st.attachments.drafts.is_empty() {
                         st.send(&text, cx);
                         st.chat.pending_composer_clear = true;
                     }
@@ -1193,8 +1188,8 @@ fn send_or_stop(store: &Entity<AppStore>, running: bool) -> impl IntoElement {
         })
 }
 
-/// 34px 圆钮(+ 命令菜单触发)。素底,hover 才显灰底(按钮
-/// 语言:常驻底色=选中态,触发钮默认透明)
+/// 34px 圆钮(+ 命令菜单 / 图片附件触发)。素底,hover 才显灰底
+/// (按钮语言:常驻底色=选中态,触发钮默认透明)
 fn round_button(id: &'static str, icon: Icon) -> gpui_kit::Stateful<gpui_kit::Div> {
     let sel = id;
     div()

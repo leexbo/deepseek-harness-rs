@@ -295,6 +295,7 @@ async fn bus_transport_end_to_end_with_retry_plugin() {
             None,
             &[],
             &[],
+            &[],
             &mut gate,
             &mut dsh_agent_loop::NoTools,
             &clock,

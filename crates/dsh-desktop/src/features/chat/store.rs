@@ -980,38 +980,54 @@ impl AppStore {
             self.chat.pinned = true;
         }
         let host = self.bridge.host().clone();
-        // 图片在前文本在后(源 serializeImages 序:content = [...images, ...text])
+        // 附件在前文本在后(源 serializeImages 序):content 按草稿插入序
+        // 组装——图片块内联 base64,文件块直传源路径(host 流式落盘,
+        // 原件不上 wire)
+        use crate::features::attachments::DraftAttachment as Draft;
         use base64::Engine as _;
         let mut content: Vec<serde_json::Value> = self
             .attachments
-            .draft_images
+            .drafts
             .iter()
-            .map(|d| {
-                serde_json::json!({
+            .map(|d| match d {
+                Draft::Image(d) => serde_json::json!({
                     "type": "image",
                     "mediaType": d.media_type,
                     "data": base64::engine::general_purpose::STANDARD.encode(&d.bytes),
                     "name": d.name,
-                })
+                }),
+                Draft::File(f) => serde_json::json!({
+                    "type": "file",
+                    "name": f.name,
+                    "sourcePath": f.path.to_string_lossy(),
+                }),
             })
             .collect();
         if !text.is_empty() {
             content.push(serde_json::json!({ "type": "text", "text": text }));
         }
-        // 命令 claim 拒绝图片:源 command.imagesUnsupported(整批拒绝,草稿与文本保留)
+        // 命令 claim 拒绝附件:源 command.imagesUnsupported(整批拒绝,
+        // 草稿与文本保留)
         let is_cmd = is_command;
-        let drafts = std::mem::take(&mut self.attachments.draft_images);
+        let drafts = std::mem::take(&mut self.attachments.drafts);
         if is_cmd && !drafts.is_empty() {
+            let has_file = drafts.iter().any(|d| matches!(d, Draft::File(_)));
             self.attachments.attachment_toast = Some(AttachmentToast {
                 text: format!(
-                    "/{} 不接受图片附件,请先移除图片",
+                    "/{} 不接受{},请先移除{}",
                     text.split_whitespace()
                         .next()
                         .unwrap_or_default()
-                        .trim_start_matches('/')
+                        .trim_start_matches('/'),
+                    if has_file {
+                        "文件附件"
+                    } else {
+                        "图片附件"
+                    },
+                    if has_file { "文件" } else { "图片" },
                 ),
             });
-            self.attachments.draft_images = drafts;
+            self.attachments.drafts = drafts;
             cx.notify();
             return;
         }
@@ -1090,21 +1106,21 @@ impl AppStore {
                 eprintln!("[dsh-desktop] prompt 被拒: {} ({})", e.message, e.code);
             }
             match rpc {
-                // 成功:草稿图片已提交,清空(失败保留——源 sendFailed 语义)
+                // 成功:草稿附件已提交,清空(失败保留——源 sendFailed 语义)
                 Ok(Ok(_)) => {
                     store.update(cx, |s, cx| {
-                        s.attachments.draft_images.clear();
+                        s.attachments.drafts.clear();
                         cx.notify();
                     });
                 }
                 Ok(Err(e)) => {
                     // 附件准入被拒(attachment-error):源 image.sendFailed ——
                     // 展示 reason 中文映射,清空失败草稿 + 复位 running
-                    // (图片未进 turn,无 turn/end;不复位发送钮会永卡红色停止态)
+                    // (附件未进 turn,无 turn/end;不复位发送钮会永卡红色停止态)
                     if e.code == "attachment-error" {
                         let reason = e.details["reason"].as_str().unwrap_or_default();
                         store.update(cx, |s, cx| {
-                            s.attachments.draft_images.clear();
+                            s.attachments.drafts.clear();
                             if !is_command {
                                 s.state.running_by_id.insert(sid.clone(), false);
                             }

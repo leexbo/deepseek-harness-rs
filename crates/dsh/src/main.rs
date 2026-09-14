@@ -247,7 +247,7 @@ where
     };
     let mut sink_events = 0usize;
     let outcome = session
-        .turn_with(input, None, &[], &[], &mut |ev: &EventEnvelope| {
+        .turn_with(input, None, &[], &[], &[], &mut |ev: &EventEnvelope| {
             sink_events += 1;
             reporter.on_event(ev);
         })

@@ -1,14 +1,16 @@
-//! 图片附件功能的状态与行为切片:草稿态/吸入/lightbox/拒收 toast。
+//! 附件功能的状态与行为切片:草稿态/吸入/lightbox/拒收 toast。
 //!
 //! 承载 [`AttachmentsStore`](AppStore 的 `attachments` 字段)与该域的
-//! `impl AppStore` 扩展块;类型 [`DraftImage`]/[`AttachmentToast`] 与
-//! 图片辅助函数随功能归此。跨功能调用面仅 [`AttachmentToast`] 与
-//! [`attachment_error_text`](shell 发送路径的拒收文案单源)。
+//! `impl AppStore` 扩展块;类型 [`DraftImage`]/[`DraftFile`]/
+//! [`AttachmentToast`] 与图片辅助函数随功能归此。跨功能调用面仅
+//! [`AttachmentToast`] 与 [`attachment_error_text`](shell 发送路径的
+//! 拒收文案单源)。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use dsh_core::attachments::{ImageAttachmentLimits, ImageMediaType};
+use dsh_attachment::{ImageAttachmentLimits, ImageMediaType};
 use gpui_kit::Context;
 
 use crate::shell::store::AppStore;
@@ -26,6 +28,31 @@ pub struct DraftImage {
     pub media_type: String,
     /// 显示名(可空)
     pub name: Option<String>,
+}
+
+/// 一条待发送草稿文件(源 ComposerFileAttachment 对应物;直传源路径,
+/// 发送时宿主流式落盘,不读字节进内存)
+#[derive(Clone)]
+pub struct DraftFile {
+    /// 草稿态临时 id(移除定位)
+    pub id: String,
+    /// 源路径(进程内直传宿主)
+    pub path: PathBuf,
+    /// 显示名(末分量)
+    pub name: String,
+    /// 字节数(卡 meta 行显示)
+    pub size: u64,
+}
+
+/// 草稿态临时 id(nanos 十六进制;图片/文件通道共用形状)
+fn new_draft_id() -> String {
+    format!(
+        "draft-{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    )
 }
 
 /// 附件拒收 toast(源 image-labels 文案)
@@ -58,12 +85,14 @@ pub(crate) fn image_reject_text(reason: &str, limits: &ImageAttachmentLimits) ->
             "图片编码无效".to_string()
         }
         "MODEL_DOES_NOT_SUPPORT_IMAGES" => "当前模型不支持图片,请切换支持图片的模型".to_string(),
+        "COMMAND_FILES_UNSUPPORTED" => "命令不接受文件附件,请先移除文件".to_string(),
+        "INVALID_FILE_NAME" | "INVALID_FILE_SOURCE" => "文件附件无效,请重新添加后再试".to_string(),
         _ => "图片发送失败,请重新添加图片后再试".to_string(),
     }
 }
 
 /// 附件大小文本(源 imageSizeText:字节 → 10MB / 2.5MB)
-fn image_size_text(bytes: u64) -> String {
+pub(crate) fn image_size_text(bytes: u64) -> String {
     const MB: u64 = 1024 * 1024;
     const KB: u64 = 1024;
     if bytes >= MB {
@@ -106,18 +135,58 @@ fn encode_jpeg_quality(img: &image::DynamicImage, quality: u8) -> image::ImageRe
     Ok(buf.into_inner())
 }
 
-/// 图片附件功能切片状态(草稿轨/解码缓存/lightbox/拒收 toast)。
+/// 一条待发送草稿附件(单一有序列表,照源 ComposerAttachments:渲染序
+/// 与发送序 = 插入序;图片/文件不分校)
+#[derive(Clone)]
+pub(crate) enum DraftAttachment {
+    /// 图片(字节管线,发送前不落盘)
+    Image(DraftImage),
+    /// 文件(源路径直传,发送时宿主落盘)
+    File(DraftFile),
+}
+
+/// 附件功能切片状态(草稿轨/解码缓存/lightbox/拒收 toast)。
 /// 作为 [`AppStore::attachments`] 单字段组合入根;默认空。
 #[derive(Default)]
 pub(crate) struct AttachmentsStore {
-    /// 待发送草稿图片(发送前不落盘,失败保留)
-    pub draft_images: Vec<DraftImage>,
+    /// 待发送草稿附件(插入序;发送前不落盘,失败保留)
+    pub drafts: Vec<DraftAttachment>,
     /// 会话日志已引用附件 → 解码图缓存(历史消息渲染)
     pub image_cache: HashMap<String, Arc<gpui_kit::Image>>,
     /// Lightbox 打开的图(attachmentId/草稿 id)_Arc<Image>;根级渲染
     pub lightbox: Option<(String, Arc<gpui_kit::Image>)>,
     /// 附件通告(拒收 toast;Some = 展示)
     pub attachment_toast: Option<AttachmentToast>,
+    /// 草稿轨滚动句柄(store 持有 = 滚动位置跨帧保留;箭头翻页用)
+    pub scroll_handle: gpui_kit::ScrollHandle,
+    /// 轨道视口宽(px;canvas paint 期捕获,点击翻页步长的分子)
+    pub rail_viewport_w: std::cell::Cell<f32>,
+    /// 两端箭头当前可见性。canvas paint 期由最新滚动几何推导(照源
+    /// AttachmentRail updateEdges:1px 容差),变化才 notify;构造期读
+    /// 此值有至多一帧滞后,由该 notify 驱动收敛帧
+    pub rail_edges: std::cell::Cell<(bool, bool)>,
+    /// 上帧草稿张数;None = 轨道未挂载(照源 countRef:首挂载不跳尾,
+    /// 只有「已有轨上新增」才滚到末尾露出)
+    pub rail_mount_count: std::cell::Cell<Option<usize>>,
+    /// 滚动偏移的弹簧目标(offset 空间:0=轨头,负=已右滚)。弹簧元素
+    /// 每帧把它写进滚动句柄,是轨道滚动位置的**唯一写主**;点击翻页/
+    /// 滚轮/新增露尾都只改这里
+    pub rail_scroll_target: std::cell::Cell<f32>,
+    /// 弹簧元素换代序号:新增露尾时 +1,弹簧元素 id 随之更换 ⇒ 状态
+    /// 重建、新弹簧**从目标起步**(源版露尾即瞬时赋值;若复用旧弹簧
+    /// 则需依赖后续动画帧,而泵没有任何保证——绘制期状态变更不触发
+    /// 下一帧,滚动条时代的老坑)
+    pub rail_seq: std::cell::Cell<usize>,
+}
+
+impl AttachmentsStore {
+    /// 弹簧目标重定位:变换后 clamp 到 [-max_offset, 0](offset 空间;
+    /// max_offset 取上一帧绘制值,越界残差由 paint 期 clamp 兜底)
+    pub(crate) fn retarget(&self, f: impl FnOnce(f32) -> f32) {
+        let max = self.scroll_handle.max_offset().x.as_f32();
+        self.rail_scroll_target
+            .set(f(self.rail_scroll_target.get()).clamp(-max, 0.));
+    }
 }
 
 impl AppStore {
@@ -143,12 +212,215 @@ impl AppStore {
     }
 
     /// 草稿图片总数(超限检查)
-    fn draft_count(&self) -> usize {
-        self.attachments.draft_images.len()
+    fn draft_image_count(&self) -> usize {
+        self.attachments
+            .drafts
+            .iter()
+            .filter(|d| matches!(d, DraftAttachment::Image(_)))
+            .count()
+    }
+
+    /// 草稿图片总字节(超限检查)
+    fn draft_image_bytes(&self) -> u64 {
+        self.attachments
+            .drafts
+            .iter()
+            .filter_map(|d| match d {
+                DraftAttachment::Image(im) => Some(im.bytes.len() as u64),
+                DraftAttachment::File(_) => None,
+            })
+            .sum()
+    }
+
+    /// 图片字节批量准入(源 intakeImages 序:格式 → 数量 → 单张压缩 →
+    /// 总量;任一失败整批拒,返回 toast 文案)。合格产物按原序返回,
+    /// **不落草稿**——由调用方按各自插入序组装。
+    fn admit_image_bytes(
+        &self,
+        files: &[Vec<u8>],
+    ) -> Result<Vec<(Vec<u8>, ImageMediaType)>, String> {
+        let limits = self.bridge.host().image_limits();
+        // 全批先解码(格式/类型检查):任一非白名单 → 拒
+        let mut parsed: Vec<(Vec<u8>, ImageMediaType)> = Vec::new();
+        for bytes in files {
+            // 用 image crate 猜格式(与宿主准入同白名单)
+            let mime = image::guess_format(bytes).ok().and_then(|f| match f {
+                image::ImageFormat::Png => Some(ImageMediaType::Png),
+                image::ImageFormat::Jpeg => Some(ImageMediaType::Jpeg),
+                image::ImageFormat::WebP => Some(ImageMediaType::Webp),
+                image::ImageFormat::Gif => Some(ImageMediaType::Gif),
+                _ => None,
+            });
+            let Some(mime) = mime else {
+                return Err(self.attachment_error_text("UNSUPPORTED_IMAGE_TYPE"));
+            };
+            parsed.push((bytes.clone(), mime));
+        }
+        // 数量
+        if self.draft_image_count() + parsed.len() > limits.max_images_per_message {
+            return Err(self.attachment_error_text("TOO_MANY_IMAGES"));
+        }
+        // 单张压到合规(超单边/字节 → 压缩;GIF 动图/压失败且仍超 → 拒)
+        let mut compressed: Vec<(Vec<u8>, ImageMediaType)> = Vec::new();
+        for (bytes, media_type) in parsed {
+            let needs = bytes.len() as u64 > limits.max_image_bytes;
+            if needs || media_type != ImageMediaType::Gif {
+                // 尝试压缩(GIF 不动图;已合规的非 GIF 也过一遍——单边可能超)
+                if let Some((cb, cm)) = Self::compress_to_limits(&bytes, media_type, limits) {
+                    compressed.push((cb, cm));
+                    continue;
+                }
+            }
+            // 压缩失败/未压:看是否超单张字节(超则拒)
+            if bytes.len() as u64 > limits.max_image_bytes {
+                return Err(self.attachment_error_text("IMAGE_TOO_LARGE"));
+            }
+            compressed.push((bytes.clone(), media_type));
+        }
+        // 总字节
+        let total =
+            self.draft_image_bytes() + compressed.iter().map(|(b, _)| b.len() as u64).sum::<u64>();
+        if total > limits.max_message_image_bytes {
+            return Err(self.attachment_error_text("IMAGES_TOO_LARGE"));
+        }
+        Ok(compressed)
+    }
+
+    /// 粘贴图片 intake(剪贴板路径):整批准入后追加到草稿列表末尾
+    /// (插入序 = 粘贴序)。返回 false 表示整批被拒(已设 toast)。
+    pub fn intake_images(&mut self, files: &[Vec<u8>]) -> bool {
+        let compressed = match self.admit_image_bytes(files) {
+            Ok(v) => v,
+            Err(text) => {
+                self.attachments.attachment_toast = Some(AttachmentToast { text });
+                return false;
+            }
+        };
+        for (bytes, media_type) in compressed {
+            let Some(image) = Self::decode_image(&bytes, media_type) else {
+                continue;
+            };
+            self.attachments
+                .drafts
+                .push(DraftAttachment::Image(DraftImage {
+                    id: new_draft_id(),
+                    bytes,
+                    image,
+                    media_type: media_type.as_str().to_string(),
+                    name: None,
+                }));
+        }
+        true
+    }
+
+    /// 路径 intake(文件对话框 / 拖拽共用):按文件头嗅探分流,组装保持
+    /// 路径序(照源单一有序列表)。图片子集整批准入——任一超限整批
+    /// 不入轨(文件也不入,源 intakeFiles 同语义);文件直传源路径,
+    /// 不读字节进内存,尺寸取元数据。
+    pub fn intake_dropped_paths(&mut self, paths: &[std::path::PathBuf]) {
+        enum Plan {
+            Image(Vec<u8>),
+            File(DraftFile),
+        }
+        let mut plan: Vec<Plan> = Vec::new();
+        for p in paths {
+            // 嗅探只读头部 32 字节(PNG/JPEG/WebP/GIF 魔数足够判定);
+            // 嗅探为图但后续读取/解码失败 → 图片管线内拒收 toast
+            let is_image = std::fs::File::open(p).ok().and_then(|mut f| {
+                use std::io::Read as _;
+                let mut head = [0u8; 32];
+                let n = f.read(&mut head).ok()?;
+                image::guess_format(&head[..n]).ok().map(|_| ())
+            });
+            match is_image {
+                Some(()) => {
+                    if let Ok(bytes) = std::fs::read(p) {
+                        plan.push(Plan::Image(bytes));
+                    }
+                }
+                None => {
+                    let Ok(meta) = std::fs::metadata(p) else {
+                        continue;
+                    };
+                    let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
+                    plan.push(Plan::File(DraftFile {
+                        id: new_draft_id(),
+                        path: p.clone(),
+                        name: name.to_string(),
+                        size: meta.len(),
+                    }));
+                }
+            }
+        }
+        let image_bytes: Vec<Vec<u8>> = plan
+            .iter()
+            .filter_map(|p| match p {
+                Plan::Image(bytes) => Some(bytes.clone()),
+                Plan::File(_) => None,
+            })
+            .collect();
+        let admitted = match self.admit_image_bytes(&image_bytes) {
+            Ok(v) => v,
+            Err(text) => {
+                self.attachments.attachment_toast = Some(AttachmentToast { text });
+                return;
+            }
+        };
+        // 按计划序组装:图片按准入结果序回填(序与 plan 中图片出现序一致)
+        let mut next_image = 0usize;
+        for p in plan {
+            match p {
+                Plan::Image(_) => {
+                    let (bytes, media_type) = &admitted[next_image];
+                    next_image += 1;
+                    let Some(image) = Self::decode_image(bytes, *media_type) else {
+                        continue;
+                    };
+                    self.attachments
+                        .drafts
+                        .push(DraftAttachment::Image(DraftImage {
+                            id: new_draft_id(),
+                            bytes: bytes.clone(),
+                            image,
+                            media_type: media_type.as_str().to_string(),
+                            name: None,
+                        }));
+                }
+                Plan::File(f) => self.attachments.drafts.push(DraftAttachment::File(f)),
+            }
+        }
+    }
+
+    /// 移除一条草稿附件(id 定位;图片/文件同槽)
+    pub fn remove_draft(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.attachments.drafts.retain(|d| match d {
+            DraftAttachment::Image(im) => im.id != id,
+            DraftAttachment::File(f) => f.id != id,
+        });
+        cx.notify();
+    }
+
+    /// 打开 Lightbox(草稿 id 或 attachmentId;key 双映射)
+    pub fn open_lightbox(&mut self, key: &str, cx: &mut Context<Self>) {
+        if let Some(img) = self
+            .attachments
+            .drafts
+            .iter()
+            .find_map(|d| match d {
+                DraftAttachment::Image(im) if im.id == key => Some(im.image.clone()),
+                _ => None,
+            })
+            .or_else(|| self.attachments.image_cache.get(key).cloned())
+        {
+            self.attachments.lightbox = Some((key.to_string(), img));
+            cx.notify();
+        }
     }
 
     /// 把图片压到合规(准入拒绝外的增强路径):
-    /// ①单边 >4096px → thumbnail 缩到 4096(保持比例);
+    /// ①单边超限 → thumbnail 缩到上限(保持比例);
     /// ②编码后仍 >单张字节上限 → JPEG 质量阶梯降级。
     /// GIF 动图不压(压动图丢动画,保持现状——要么合规要么拒)。
     /// 返回压后的 bytes + media_type;无法压(编码失败/仍超限)返回 None(调用方回退拒收)。
@@ -202,130 +474,6 @@ impl AppStore {
         None
     }
 
-    /// 草稿图片总字节(超限检查)
-    fn draft_bytes(&self) -> u64 {
-        self.attachments
-            .draft_images
-            .iter()
-            .map(|d| d.bytes.len() as u64)
-            .sum()
-    }
-
-    /// intake 前置检查(源 intakeImages 序:格式 → 数量 → 单张 → 总量;
-    /// 整批原子拒绝,进 toast 文案,零落盘)。
-    /// 返回 false 表示整批被拒(已设 attachment_toast)。
-    pub fn intake_images(&mut self, files: &[Vec<u8>]) -> bool {
-        let limits = self.bridge.host().image_limits();
-        // 全批先解码(格式/类型检查):任一非白名单 → 拒
-        let mut parsed: Vec<(Vec<u8>, ImageMediaType)> = Vec::new();
-        for bytes in files {
-            // 用 image crate 猜格式(与宿主准入同白名单)
-            let mime = image::guess_format(bytes).ok().and_then(|f| match f {
-                image::ImageFormat::Png => Some(ImageMediaType::Png),
-                image::ImageFormat::Jpeg => Some(ImageMediaType::Jpeg),
-                image::ImageFormat::WebP => Some(ImageMediaType::Webp),
-                image::ImageFormat::Gif => Some(ImageMediaType::Gif),
-                _ => None,
-            });
-            let Some(mime) = mime else {
-                self.attachments.attachment_toast = Some(AttachmentToast {
-                    text: self.attachment_error_text("UNSUPPORTED_IMAGE_TYPE"),
-                });
-                return false;
-            };
-            parsed.push((bytes.clone(), mime));
-        }
-        // 数量
-        if self.draft_count() + parsed.len() > limits.max_images_per_message {
-            self.attachments.attachment_toast = Some(AttachmentToast {
-                text: self.attachment_error_text("TOO_MANY_IMAGES"),
-            });
-            return false;
-        }
-        // 单张压到合规(超单边/字节 → 压缩;GIF 动图/压失败且仍超 → 拒)
-        let mut compressed: Vec<(Vec<u8>, ImageMediaType)> = Vec::new();
-        for (bytes, media_type) in parsed {
-            let needs = bytes.len() as u64 > limits.max_image_bytes;
-            if needs || media_type != ImageMediaType::Gif {
-                // 尝试压缩(GIF 不动图;已合规的非 GIF 也过一遍——单边可能超)
-                if let Some((cb, cm)) = Self::compress_to_limits(&bytes, media_type, limits) {
-                    compressed.push((cb, cm));
-                    continue;
-                }
-            }
-            // 压缩失败/未压:看是否超单张字节(超则拒)
-            if bytes.len() as u64 > limits.max_image_bytes {
-                self.attachments.attachment_toast = Some(AttachmentToast {
-                    text: self.attachment_error_text("IMAGE_TOO_LARGE"),
-                });
-                return false;
-            }
-            compressed.push((bytes.clone(), media_type));
-        }
-        // 总字节
-        let total =
-            self.draft_bytes() + compressed.iter().map(|(b, _)| b.len() as u64).sum::<u64>();
-        if total > limits.max_message_image_bytes {
-            self.attachments.attachment_toast = Some(AttachmentToast {
-                text: self.attachment_error_text("IMAGES_TOO_LARGE"),
-            });
-            return false;
-        }
-        for (bytes, media_type) in compressed {
-            let Some(image) = Self::decode_image(&bytes, media_type) else {
-                continue;
-            };
-            self.attachments.draft_images.push(DraftImage {
-                id: format!(
-                    "draft-{:x}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_nanos())
-                        .unwrap_or(0)
-                ),
-                bytes,
-                image,
-                media_type: media_type.as_str().to_string(),
-                name: None,
-            });
-        }
-        true
-    }
-
-    /// 拖拽文件路径 intake(路径读字节;拒绝整批)
-    pub fn intake_dropped_paths(&mut self, paths: &[std::path::PathBuf]) {
-        let mut files = Vec::new();
-        for p in paths {
-            if let Ok(bytes) = std::fs::read(p) {
-                files.push(bytes);
-            }
-        }
-        if !files.is_empty() {
-            self.intake_images(&files);
-        }
-    }
-
-    /// 移除一张草稿图(id 定位)
-    pub fn remove_draft_image(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.attachments.draft_images.retain(|d| d.id != id);
-        cx.notify();
-    }
-
-    /// 打开 Lightbox(草稿 id 或 attachmentId;key 双映射)
-    pub fn open_lightbox(&mut self, key: &str, cx: &mut Context<Self>) {
-        if let Some(img) = self
-            .attachments
-            .draft_images
-            .iter()
-            .find(|d| d.id == key)
-            .map(|d| d.image.clone())
-            .or_else(|| self.attachments.image_cache.get(key).cloned())
-        {
-            self.attachments.lightbox = Some((key.to_string(), img));
-            cx.notify();
-        }
-    }
-
     pub fn close_lightbox(&mut self, cx: &mut Context<Self>) {
         self.attachments.lightbox = None;
         cx.notify();
@@ -374,7 +522,7 @@ mod tests {
         let limits = ImageAttachmentLimits::default();
         assert_eq!(
             image_reject_text("IMAGE_DIMENSION_TOO_LARGE", &limits),
-            "图片宽高不能超过 4096px,请缩小后重试"
+            "图片宽高不能超过 8192px,请缩小后重试"
         );
         assert_eq!(
             image_reject_text("IMAGE_TOO_MANY_PIXELS", &limits),
@@ -382,7 +530,7 @@ mod tests {
         );
         assert_eq!(
             image_reject_text("IMAGE_TOO_LARGE", &limits),
-            "单张图片不能超过 3.5MB"
+            "单张图片不能超过 20MB"
         );
         assert_eq!(
             image_reject_text("TOO_MANY_IMAGES", &limits),

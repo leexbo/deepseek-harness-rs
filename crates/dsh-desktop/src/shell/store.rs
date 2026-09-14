@@ -277,7 +277,7 @@ impl AppStore {
                             return;
                         }
                         cx.stop_propagation();
-                        store.update(cx, |st, _cx| {
+                        store.update(cx, |st, _| {
                             st.intake_images(&images);
                         });
                     }
@@ -314,7 +314,7 @@ impl AppStore {
                         let raw = input.read(cx).value().to_string();
                         let text = raw.trim_end_matches('\n').trim().to_string();
                         // 纯图片(空文本)可发——内容组装在 send 内
-                        if !text.is_empty() || !this.attachments.draft_images.is_empty() {
+                        if !text.is_empty() || !this.attachments.drafts.is_empty() {
                             this.send(&text, cx);
                             this.chat.pending_composer_clear = true;
                         }

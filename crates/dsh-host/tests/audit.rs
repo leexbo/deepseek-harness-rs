@@ -81,6 +81,7 @@ async fn audit_attributable_and_replayable() {
             None,
             &[],
             &[],
+            &[],
             &mut gate,
             &mut bash,
             &clock,

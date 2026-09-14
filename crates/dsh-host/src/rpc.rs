@@ -328,6 +328,7 @@ impl<T: LlmTransport + Summarizer + Send, TOOLS: ToolPort + Send> Gateway<T, TOO
                 None,
                 &[],
                 &[],
+                &[],
                 &mut self.transport,
                 &mut self.tools,
                 &clock,

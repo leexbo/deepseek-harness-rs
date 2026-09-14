@@ -9,5 +9,5 @@
 pub(crate) mod store;
 mod views;
 
-pub(crate) use store::{AttachmentToast, AttachmentsStore};
-pub(crate) use views::{draft_rail, lightbox, message_images};
+pub(crate) use store::{AttachmentToast, AttachmentsStore, DraftAttachment};
+pub(crate) use views::{draft_rail, drop_overlay, lightbox, message_files, message_images};

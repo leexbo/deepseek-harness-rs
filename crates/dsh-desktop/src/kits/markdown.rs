@@ -546,7 +546,7 @@ mod selection_tests {
             MouseButton::Left,
             Modifiers::default(),
         );
-        cx.update(|window, cx| gpui_kit::base::TextSelection::clear(window, cx));
+        cx.update(gpui_kit::base::TextSelection::clear);
     }
 
     /// markdown 正文拖选契约:真机窗口由 `component::Root` 提供唯一选择层

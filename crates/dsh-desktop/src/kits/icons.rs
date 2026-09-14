@@ -67,7 +67,7 @@ pub enum DshIcon {
     RefreshCw,
     /// 助手消息工具调用行(lucide wrench;统一扳手形)
     Wrench,
-    /// 附件入口(命令菜单「图片附件」行)
+    /// 附件入口(输入卡底排独立钮)
     Paperclip,
 }
 

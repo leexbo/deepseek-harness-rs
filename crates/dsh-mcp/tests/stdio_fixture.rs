@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use dsh_agent_loop::CancelToken;
 use dsh_agent_loop::tools::{ToolCallRequest, ToolPort};
+use dsh_attachment::ImageAttachmentRef as Ref;
 use dsh_mcp::{BridgeImageInput, ImageStorePort, McpServerConfig, McpServerPort, McpTransport};
-use dsh_session::attachments::ImageAttachmentRef as Ref;
 use serde_json::json;
 
 const FIXTURE: &str = r#"
@@ -78,7 +78,7 @@ impl ImageStorePort for RecordingStore {
         self.saved.lock().unwrap().extend(images);
         Ok(vec![Ref {
             attachment_id: format!("sha256:{}", "a".repeat(64)),
-            media_type: dsh_session::attachments::ImageMediaType::Png,
+            media_type: dsh_attachment::ImageMediaType::Png,
             bytes: 9,
             width: 1,
             height: 1,

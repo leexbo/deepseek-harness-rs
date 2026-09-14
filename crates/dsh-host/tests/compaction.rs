@@ -68,6 +68,7 @@ async fn fold_triggers_records_and_replays_without_recall() {
             None,
             &[],
             &[],
+            &[],
             &mut gate,
             &mut NoTools,
             &|| 0_i64,
@@ -120,6 +121,7 @@ async fn fold_triggers_records_and_replays_without_recall() {
         .run_turn(
             "again",
             None,
+            &[],
             &[],
             &[],
             &mut gate2,
@@ -175,6 +177,7 @@ async fn oversized_tool_output_pruned_in_request_kept_in_log() {
         .run_turn(
             "next",
             None,
+            &[],
             &[],
             &[],
             &mut gate,

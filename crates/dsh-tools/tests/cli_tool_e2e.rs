@@ -98,6 +98,7 @@ async fn http_tool_round_trip_through_sandbox() {
             None,
             &[],
             &[],
+            &[],
             &mut gate,
             &mut bash,
             &clock,
@@ -174,6 +175,7 @@ async fn fake_provider_still_works_with_tools_specs() {
         .run_turn(
             "hi",
             None,
+            &[],
             &[],
             &[],
             &mut gate,

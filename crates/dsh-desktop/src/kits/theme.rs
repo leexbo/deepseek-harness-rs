@@ -13,7 +13,7 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use gpui_kit::component::{Theme, ThemeMode};
-use gpui_kit::{App, Rgba, Window, WindowAppearance};
+use gpui_kit::{App, Rgba, Window, WindowAppearance, rgba};
 
 // ── 外观档位(与 registry settings.yaml appearance 字段同词汇)──
 
@@ -246,6 +246,24 @@ pub fn CODE() -> Rgba {
 /// 同色,随 BRAND 走 systemBlue)
 pub fn ONGOING() -> Rgba {
     cur().ongoing
+}
+
+/// 文件类型徽章底色(照源 FileTypeIcon 分类配色:word 蓝 / excel 绿 /
+/// ppt 橙 / pdf 红;其余灰阶系。双盘同值——徽章恒为白字彩色方块,
+/// 深浅盘上均成立;属图标语义色,非界面分层色)
+pub fn FILE_KIND_BADGE(kind: dsh_attachment::FileKind) -> Rgba {
+    use dsh_attachment::FileKind as K;
+    match kind {
+        K::Word => rgba(0x2B579AFF),
+        K::Excel => rgba(0x217346FF),
+        K::Ppt => rgba(0xC43E1CFF),
+        K::Pdf => rgba(0xC74440FF),
+        K::Image => rgba(0x0A7EA4FF),
+        K::Video => rgba(0x8A50C4FF),
+        K::Markdown => rgba(0x4A5A66FF),
+        K::Html | K::Code => rgba(0x556875FF),
+        K::Other => rgba(0x6E6E73FF),
+    }
 }
 /// 玻璃态填充(激活 tab pill;无 backdrop blur 以半透明近似磨砂)
 pub fn GLASS_BG() -> Rgba {

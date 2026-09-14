@@ -1,4 +1,5 @@
 use super::*;
+use crate::features::attachments::DraftAttachment;
 use crate::features::chat::projection::{ChatNode, ChatState, ToolState};
 use crate::shell::host::HostBridge;
 use crate::shell::store::AppStore;
@@ -47,6 +48,7 @@ fn workspace_chat_nodes_do_not_overlap(cx: &mut TestAppContext) {
                     key: format!("user:{i}"),
                     text: long_para(i),
                     images: Vec::new(),
+                    files: Vec::new(),
                 });
             } else {
                 chat.nodes.push(ChatNode::Assistant {
@@ -196,11 +198,13 @@ fn user_bubble_width_adapts_to_content(cx: &mut TestAppContext) {
             key: "user:short".into(),
             text: "@file:justfile".into(),
             images: Vec::new(),
+            files: Vec::new(),
         });
         chat.nodes.push(ChatNode::User {
             key: "user:long".into(),
             text: long_para(4),
             images: Vec::new(),
+            files: Vec::new(),
         });
         store.update(cx, |s, _| {
             s.state.chats.insert(id, chat);
@@ -1685,8 +1689,413 @@ fn paste_clipboard_image_lands_in_draft(cx: &mut TestAppContext) {
     wcx.simulate_keystrokes("cmd-v");
     cx.run_until_parked();
 
-    let n = cx.update(|app| store.read(app).attachments.draft_images.len());
+    let n = cx.update(|app| {
+        store
+            .read(app)
+            .attachments
+            .drafts
+            .iter()
+            .filter(|d| matches!(d, DraftAttachment::Image(_)))
+            .count()
+    });
     assert_eq!(n, 1, "cmd-v 粘贴图片应入草稿轨,实际 {n} 张");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 附件分流与文件卡:intake 按文件头嗅探——图片入字节管线(草稿图),
+/// 文档直传源路径入草稿文件(此前非图片整批拒收);草稿文件卡渲染
+/// (240×64 徽章+名称+meta),历史消息 file 块渲染同族文件卡
+#[gpui_kit::test]
+fn file_attachments_intake_and_cards_render(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "file-att");
+    // 夹具:一张真 PNG + 一个 md 文档
+    let dir = root.join("att");
+    std::fs::create_dir_all(&dir).expect("mkdir att");
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        2,
+        2,
+        image::Rgba([1, 2, 3, 255]),
+    ))
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .expect("编码 PNG 失败");
+    let img_path = dir.join("shot.png");
+    std::fs::write(&img_path, &png).expect("write png");
+    let doc_path = dir.join("功能清单.md");
+    std::fs::write(&doc_path, "# 清单\n\n正文").expect("write md");
+
+    // 先文档后图片(锁定插入序:此前双数组实现图片恒在前,顺序丢失)
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            st.intake_dropped_paths(&[doc_path.clone(), img_path.clone()]);
+        });
+    });
+    cx.run_until_parked();
+    let (img_ids, files) = cx.update(|app| {
+        let st = store.read(app);
+        (
+            st.attachments
+                .drafts
+                .iter()
+                .filter_map(|d| match d {
+                    DraftAttachment::Image(im) => Some(im.id.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            st.attachments
+                .drafts
+                .iter()
+                .filter_map(|d| match d {
+                    DraftAttachment::File(f) => Some(f.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+        )
+    });
+    assert_eq!(img_ids.len(), 1, "图片应入草稿图轨");
+    assert_eq!(files.len(), 1, "文档应入草稿文件轨(而非拒收)");
+    assert_eq!(files[0].name, "功能清单.md");
+
+    // 插入序锁:单一列表中文件在前图片在后(照源单一有序列表)
+    let order_ok = cx.update(|app| {
+        let drafts = &store.read(app).attachments.drafts;
+        let file_pos = drafts
+            .iter()
+            .position(|d| matches!(d, DraftAttachment::File(_)));
+        let img_pos = drafts
+            .iter()
+            .position(|d| matches!(d, DraftAttachment::Image(_)));
+        matches!((file_pos, img_pos), (Some(f), Some(i)) if f < i)
+    });
+    assert!(order_ok, "草稿序应为插入序(文件先图片后)");
+
+    // 渲染序锁:轨道 x 序与列表序一致(文件卡在图左)
+    wcx.refresh().expect("刷新失败");
+    let sel: &'static str = Box::leak(format!("draft-file-{}", files[0].id).into_boxed_str());
+    let file_bounds = wcx.debug_bounds(sel).expect("草稿文件卡未渲染");
+    assert_eq!(
+        file_bounds.size.height,
+        px(64.),
+        "文件卡高度塌陷(包裹层尺寸传导断裂)"
+    );
+    let img_sel: &'static str = Box::leak(format!("draft-img-{}", img_ids[0]).into_boxed_str());
+    let img_bounds = wcx.debug_bounds(img_sel).expect("草稿图卡未渲染");
+    assert_eq!(img_bounds.size.height, px(64.), "图卡高度塌陷");
+    assert!(
+        file_bounds.origin.x < img_bounds.origin.x,
+        "轨道渲染序应与插入序一致(文件卡应在图左)"
+    );
+
+    // 历史 file 块 → 同族文件卡(先注入投影节点:空会话 hero 态不渲染聊天栈)
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.entry(id.clone()).or_default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:f".into(),
+                text: "带文件的消息".into(),
+                images: vec![],
+                files: vec![serde_json::json!({
+                    "type": "file",
+                    "attachment": {
+                        "attachmentId": format!("sha256:{}", "c".repeat(64)),
+                        "name": "报告.pdf",
+                        "bytes": 18_874_368u64,
+                    }
+                })],
+            });
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("message-files").is_some(),
+        "历史文件卡未渲染"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 草稿轨端箭头照源 AttachmentRail:溢出 → 右箭头浮现;点击翻页到
+/// 轨尾 → 左现右隐;再点左回到轨头 → 左隐右现;轨头新增附件 → 弹簧
+/// 滚尾露出(左现右隐)。轨高恒 76(10+64+2,无预留条带)。可见性
+/// 断言双通道:debug_bounds 验「画过」,store 的 rail_edges Cell 验
+/// 「当前应在」(debug_bounds 只增不清,隐没态只能靠状态)。
+/// 回归锁:①可见性由 canvas paint 期从最新滚动几何推导 + 变化才
+/// notify;②翻页走弹簧(rail_scroll_target 为唯一写主,句柄每帧被
+/// 弹簧覆写)——offset 收敛到目标才算到位
+/// 等轨道收敛:advance_clock 驱动弹簧帧 + refresh 轮询(canvas 推导
+/// 的 notify 收敛帧不保证被 run_until_parked 驱动),判据 = 偏移贴住
+/// 目标且 edges 两轮不变
+macro_rules! rail_settle {
+    ($wcx:expr, $cx:expr, $store:expr) => {
+        for _ in 0..12 {
+            let a = $cx.update(|app| {
+                let st = $store.read(app);
+                (
+                    st.attachments.rail_scroll_target.get(),
+                    st.attachments.rail_edges.get(),
+                    st.attachments.scroll_handle.offset().x.as_f32(),
+                )
+            });
+            // 弹簧步进用 Instant::now() 真实时钟(executor 假时钟管不
+            // 着),必须喂真实时间;预算须远大于弹簧收敛(~0.6s)
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            $wcx.refresh().expect("刷新失败");
+            $cx.run_until_parked();
+            $wcx.refresh().expect("刷新失败");
+            let b = $cx.update(|app| {
+                let st = $store.read(app);
+                (
+                    st.attachments.rail_scroll_target.get(),
+                    st.attachments.rail_edges.get(),
+                    st.attachments.scroll_handle.offset().x.as_f32(),
+                )
+            });
+            if (a.2 - a.0).abs() < 1. && (b.2 - b.0).abs() < 1. && a.1 == b.1 {
+                break;
+            }
+        }
+    };
+}
+
+#[gpui_kit::test]
+fn draft_rail_edge_arrows_page_overflow(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "rail-arrows");
+    let dir = root.join("arrows");
+    std::fs::create_dir_all(&dir).expect("mkdir arrows");
+    // 8 份文档(8×240 + 7×gap ≈ 1990px,必溢出测试窗宽)
+    let mut paths = Vec::new();
+    for i in 0..8 {
+        let p = dir.join(format!("文档{i}.pdf"));
+        std::fs::write(&p, b"pdf").expect("write pdf");
+        paths.push(p);
+    }
+    cx.update(|app| {
+        store.update(app, |st, _| st.intake_dropped_paths(&paths));
+    });
+    cx.run_until_parked();
+    // 首帧几何观察哨把 (false, true) 写进 store 并 notify,收敛帧画
+    // 出右箭头(左箭头不画:轨头无已滚过内容)
+    rail_settle!(wcx, cx, store);
+    assert_eq!(
+        cx.update(|app| store.read(app).attachments.rail_edges.get()),
+        (false, true),
+        "溢出时右箭头应可见、左箭头应隐藏"
+    );
+    assert!(
+        wcx.debug_bounds("draft-rail-arrow-right").is_some(),
+        "右箭头未绘制"
+    );
+    let rail_h = wcx
+        .debug_bounds("draft-rail")
+        .expect("rail bounds")
+        .size
+        .height;
+    assert_eq!(
+        rail_h,
+        gpui_kit::px(76.),
+        "轨高应为 10+64+2,实际 {rail_h:?}"
+    );
+
+    // 点右箭头逐步翻页(一步 = max(视口-64, 200),窗宽不足时需多
+    // 步)直到轨尾(左现右隐);再点左箭头逐页回轨头(左隐右现)
+    let edges = |store: &Entity<AppStore>, cx: &mut TestAppContext| {
+        cx.update(|app| store.read(app).attachments.rail_edges.get())
+    };
+    for _ in 0..5 {
+        if edges(&store, cx) == (true, false) {
+            break;
+        }
+        let at = wcx
+            .debug_bounds("draft-rail-arrow-right")
+            .expect("右箭头 bounds")
+            .center();
+        wcx.simulate_click(at, gpui_kit::Modifiers::default());
+        rail_settle!(wcx, cx, store);
+    }
+    assert_eq!(
+        edges(&store, cx),
+        (true, false),
+        "反复翻页后应到轨尾(左现右隐)"
+    );
+    assert!(
+        wcx.debug_bounds("draft-rail-arrow-left").is_some(),
+        "左箭头未绘制"
+    );
+    let at_end = cx.update(|app| store.read(app).attachments.scroll_handle.offset().x);
+    assert!(
+        at_end < gpui_kit::px(-1.),
+        "翻页后应已离开轨头,实际 {at_end:?}"
+    );
+
+    for _ in 0..5 {
+        if edges(&store, cx) == (false, true) {
+            break;
+        }
+        let at = wcx
+            .debug_bounds("draft-rail-arrow-left")
+            .expect("左箭头 bounds")
+            .center();
+        wcx.simulate_click(at, gpui_kit::Modifiers::default());
+        rail_settle!(wcx, cx, store);
+    }
+    assert_eq!(
+        edges(&store, cx),
+        (false, true),
+        "逐页回退后应到轨头(左隐右现)"
+    );
+    let back_home = cx.update(|app| store.read(app).attachments.scroll_handle.offset().x);
+    assert_eq!(back_home, gpui_kit::px(0.), "应精确回到轨头");
+
+    // 轨头新增附件 → 照源滚到轨尾露出:右箭头随位置到尾而隐
+    let p9 = dir.join("文档8.pdf");
+    std::fs::write(&p9, b"pdf").expect("write pdf");
+    cx.update(|app| {
+        store.update(app, |st, _| st.intake_dropped_paths(&[p9]));
+    });
+    rail_settle!(wcx, cx, store);
+    assert_eq!(
+        cx.update(|app| store.read(app).attachments.rail_edges.get()),
+        (true, false),
+        "新增附件应自动滚到轨尾露出(左现右隐)"
+    );
+    let _ = std::fs::remove_dir_all(root);
+
+    // 不溢出:单份文档 → 两端箭头都不画,轨高同 76(独立窗口:
+    // debug_bounds 只增不清,同窗无法二次观测)
+    let (store, mut wcx, root) = menu_harness(cx, "rail-arrows-1");
+    let dir = root.join("arrows");
+    std::fs::create_dir_all(&dir).expect("mkdir arrows");
+    let p = dir.join("文档0.pdf");
+    std::fs::write(&p, b"pdf").expect("write pdf");
+    cx.update(|app| {
+        store.update(app, |st, _| st.intake_dropped_paths(&[p]));
+    });
+    rail_settle!(wcx, cx, store);
+    assert_eq!(
+        cx.update(|app| store.read(app).attachments.rail_edges.get()),
+        (false, false),
+        "不溢出时两端箭头都应隐藏"
+    );
+    assert!(
+        wcx.debug_bounds("draft-rail-arrow-left").is_none()
+            && wcx.debug_bounds("draft-rail-arrow-right").is_none(),
+        "不溢出时不应绘制任何箭头"
+    );
+    let rail_h = wcx
+        .debug_bounds("draft-rail")
+        .expect("rail bounds")
+        .size
+        .height;
+    assert_eq!(
+        rail_h,
+        gpui_kit::px(76.),
+        "轨高应为 10+64+2,实际 {rail_h:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 外部文件拖放全链路:OS 拖放经 gpui-pre 翻译为内部 active_drag
+/// (Entered 携带真实路径)→ 拖入期间邀请蒙层在场 → 松手(Submit
+/// 翻译为 MouseUp)蒙层即落点,路径 intake 入草稿文件轨 → Ended 清理。
+/// 回归:真拖放入窗此前不可达(仅对话框+粘贴两入口)
+#[gpui_kit::test]
+fn file_drop_overlay_invites_and_intakes(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "file-drop");
+    let doc_path = root.join("拖入清单.md");
+    std::fs::write(&doc_path, "# 拖入\n\n内容").expect("write md");
+
+    // Entered:蒙层出现(active_drag 置位 → 全屏重绘)
+    wcx.simulate_event(gpui_kit::FileDropEvent::Entered {
+        position: gpui_kit::point(px(200.), px(200.)),
+        paths: gpui_kit::ExternalPaths(smallvec::smallvec![doc_path.clone()]),
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("drop-overlay").is_some(),
+        "拖入时邀请蒙层未出现"
+    );
+
+    // Submit:松手 → 蒙层即落点,intake 分流入草稿文件轨
+    wcx.simulate_event(gpui_kit::FileDropEvent::Submit {
+        position: gpui_kit::point(px(200.), px(200.)),
+    });
+    cx.run_until_parked();
+    let files = cx.update(|app| {
+        store
+            .read(app)
+            .attachments
+            .drafts
+            .iter()
+            .filter_map(|d| match d {
+                DraftAttachment::File(f) => Some(f.name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(files.len(), 1, "松手应入草稿文件轨");
+    assert_eq!(files[0], "拖入清单.md");
+
+    // Ended:拖放会话结束,active_drag 清理
+    wcx.simulate_event(gpui_kit::FileDropEvent::Ended);
+    cx.run_until_parked();
+    let dragging = cx.update(|app| app.has_active_drag());
+    assert!(!dragging, "Ended 后 active_drag 应清理");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 历史图点击开 Lightbox:消息图块(attachmentId 定位)接 on_click →
+/// 打开根级 Lightbox。回归:此前仅草稿卡可点,历史图块无预览入口
+#[gpui_kit::test]
+fn history_image_click_opens_lightbox(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "hist-img");
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        2,
+        2,
+        image::Rgba([9, 9, 9, 255]),
+    ))
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .expect("编码 PNG 失败");
+    let aid = format!("sha256:{}", "d".repeat(64));
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            st.attachments.image_cache.insert(
+                aid.clone(),
+                std::sync::Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, png)),
+            );
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.entry(id).or_default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:i".into(),
+                text: "看图".into(),
+                images: vec![serde_json::json!({
+                    "type": "image",
+                    "attachment": {
+                        "attachmentId": aid,
+                        "mediaType": "image/png",
+                        "bytes": 100u64,
+                        "width": 2,
+                        "height": 2,
+                    }
+                })],
+                files: vec![],
+            });
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let sel: &'static str = Box::leak(format!("msg-img-{aid}").into_boxed_str());
+    assert!(wcx.debug_bounds(sel).is_some(), "历史图块未渲染");
+    click_sel(&mut wcx, sel);
+    cx.run_until_parked();
+    let lb = cx.update(|app| store.read(app).attachments.lightbox.clone());
+    assert!(lb.is_some(), "点击历史图应打开 Lightbox");
+    assert_eq!(lb.unwrap().0, aid, "Lightbox 应以 attachmentId 打开");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1802,6 +2211,7 @@ fn user_bubble_text_is_drag_selectable(cx: &mut TestAppContext) {
                 key: "user:0".into(),
                 text: "用户发送的这段文字应当可以拖选复制。".into(),
                 images: vec![],
+                files: Vec::new(),
             });
         });
     });
@@ -2531,6 +2941,7 @@ fn plan_review_compact_card_two_options(cx: &mut TestAppContext) {
                     key: format!("user:seed-{}", chat.nodes.len()),
                     text: "先聊着".into(),
                     images: vec![],
+                    files: Vec::new(),
                 });
             });
         });
@@ -2810,6 +3221,7 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
                     key: format!("user:{ix}"),
                     text: big_md(&format!("窄窗布局 {ix}")),
                     images: vec![],
+                    files: Vec::new(),
                 });
             }
             st.state.chats.insert(id, chat);
@@ -2931,6 +3343,7 @@ fn narrow_window_gutters_keep_anchors_and_scrollbar_out_of_text(cx: &mut TestApp
                     key: format!("user:{ix}"),
                     text: big_md(&format!("边槽 {ix}")),
                     images: vec![],
+                    files: Vec::new(),
                 });
             }
             st.state.chats.insert(id, chat);
@@ -2984,6 +3397,7 @@ fn full_track_scrollbar_reaches_true_bottom(cx: &mut TestAppContext) {
                     key: format!("user:{ix}"),
                     text: big_md(&format!("全轨 {ix}")),
                     images: vec![],
+                    files: Vec::new(),
                 });
             }
             st.state.chats.insert(id, chat);
@@ -3340,6 +3754,7 @@ fn ask_user_question_card_pops_via_pump(cx: &mut TestAppContext) {
                 key: "user:seed".into(),
                 text: "先聊着".into(),
                 images: vec![],
+                files: Vec::new(),
             });
         });
     });
@@ -3396,6 +3811,7 @@ fn ask_custom_input_not_rewritten_each_frame(cx: &mut TestAppContext) {
                 key: "user:seed".into(),
                 text: "先聊着".into(),
                 images: vec![],
+                files: Vec::new(),
             });
         });
     });
@@ -3470,6 +3886,7 @@ fn ask_option_long_ascii_description_stays_in_card(cx: &mut TestAppContext) {
                 key: "user:seed".into(),
                 text: "先聊着".into(),
                 images: vec![],
+                files: Vec::new(),
             });
         });
     });
@@ -3529,6 +3946,7 @@ fn approval_card_renders_and_answers(cx: &mut TestAppContext) {
                 key: "user:seed".into(),
                 text: "先聊着".into(),
                 images: vec![],
+                files: Vec::new(),
             });
             st.state.pending_approval = Some(crate::shell::reducer::PendingApproval {
                 rpc_id: "rpc-approval".into(),
@@ -3985,6 +4403,35 @@ fn skill_menu_section_sets_pending_chip(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 附件入口形态锁:图片附件 = 底排独立圆钮(位于 + 与权限 chip 之间),
+/// 不在命令菜单内(菜单开态无「图片附件」行;卡照常开)
+#[gpui_kit::test]
+fn attach_entry_is_standalone_button_not_menu_row(cx: &mut TestAppContext) {
+    let (_store, mut wcx, root) = menu_harness(cx, "attach-entry");
+    let cmd = wcx.debug_bounds("composer-cmd").expect("+ 钮 bounds");
+    let attach = wcx.debug_bounds("composer-attach").expect("附件钮 bounds");
+    let perm = wcx.debug_bounds("chip-perm").expect("权限 chip bounds");
+    assert!(
+        cmd.origin.x < attach.origin.x && attach.origin.x < perm.origin.x,
+        "附件钮应位于 + 与权限 chip 之间(参考形态)"
+    );
+    // 命令菜单开态:卡在场但无「图片附件」行(缺席可断:此前从未
+    // 渲染过,debug_bounds 只增不清)
+    click_sel(&mut wcx, "composer-cmd");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("composer-menu-card").is_some(),
+        "命令菜单卡未开"
+    );
+    assert!(
+        wcx.debug_bounds("图片附件").is_none(),
+        "附件入口不得再以菜单行呈现"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 标题栏工作区下拉:列出全部工作区 → 点选切换 active_workspace
 /// + 菜单关(select_workspace 无会话则在该区新建)
 #[gpui_kit::test]
@@ -4370,6 +4817,7 @@ fn message_copy_to_clipboard(cx: &mut TestAppContext) {
                 key: "user:42".into(),
                 text: "要被复制的消息文本".into(),
                 images: Vec::new(),
+                files: Vec::new(),
             });
         });
     });
@@ -5014,6 +5462,7 @@ fn chat_scroll_survives_window_width_change(cx: &mut TestAppContext) {
                     key: format!("user:{i}"),
                     text: long_para(i),
                     images: Vec::new(),
+                    files: Vec::new(),
                 });
             }
             chat.nodes.push(ChatNode::Assistant {
@@ -5148,6 +5597,7 @@ fn streaming_entrance_gate_and_tool_sweep(cx: &mut TestAppContext) {
                 key: "user:1".into(),
                 text: "hi".into(),
                 images: vec![],
+                files: Vec::new(),
             });
             chat.node_born
                 .insert("user:1".into(), std::time::Instant::now());
@@ -5242,6 +5692,7 @@ fn turn_status_gated_by_running(cx: &mut TestAppContext) {
                 key: "user:1".into(),
                 text: "hi".into(),
                 images: vec![],
+                files: Vec::new(),
             });
             chat.node_born
                 .insert("user:1".into(), std::time::Instant::now());
@@ -5369,6 +5820,7 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
                 key: "user:1".into(),
                 text: "hi".into(),
                 images: vec![],
+                files: Vec::new(),
             });
             chat.nodes.push(ChatNode::Assistant {
                 key: "a:1:1".into(),
@@ -5473,6 +5925,7 @@ fn collapsed_turn_has_no_gap_before_notice(cx: &mut TestAppContext) {
                 key: "user:1".into(),
                 text: "跑一下测试".into(),
                 images: vec![],
+                files: Vec::new(),
             });
             // 30 × (中间叙述 + 工具) + 最终答复 + 错误通告:
             // 列表高远超视口,折叠 reset 后必须钉底可见尾部
@@ -5579,6 +6032,7 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
                     key: format!("user:{t}"),
                     text: format!("第{t}问\n这是第{t}轮的补充说明正文"),
                     images: vec![],
+                    files: Vec::new(),
                 });
                 chat.nodes.push(ChatNode::Assistant {
                     key: format!("a:{t}:1"),
@@ -5786,6 +6240,7 @@ fn subagent_tool_expand_body_stays_in_viewport(cx: &mut TestAppContext) {
                 key: "user:1".into(),
                 text: "后台派一个子代理，统计这个仓库里所有 TODO 注释并汇报".into(),
                 images: vec![],
+                files: Vec::new(),
             });
             chat.nodes.push(ChatNode::Tool {
                 key: "call:9".into(),
@@ -5863,6 +6318,7 @@ fn task_bar_switches_between_main_and_subagent(cx: &mut gpui_kit::TestAppContext
                 key: "user:1".into(),
                 text: "后台派一个子代理".into(),
                 images: vec![],
+                files: Vec::new(),
             });
             st.state.chats.insert(id, chat);
             cx.notify();
@@ -5918,6 +6374,7 @@ fn task_bar_switches_between_main_and_subagent(cx: &mut gpui_kit::TestAppContext
                 key: format!("user:{child}"),
                 text: "请统计仓库 TODO".into(),
                 images: vec![],
+                files: Vec::new(),
             });
             st.state.chats.insert(child.clone(), chat);
             cx.notify();
@@ -6150,7 +6607,7 @@ fn image_only_message_sends(cx: &mut TestAppContext) {
 /// 「返回时缺席」断言即失败
 #[gpui_kit::test]
 fn open_session_stats_arrive_async_off_ui_thread(cx: &mut TestAppContext) {
-    let (store, mut wcx, root) = menu_harness(cx, "stats-async");
+    let (store, _wcx, root) = menu_harness(cx, "stats-async");
     let sid = cx.update(|app| {
         let st = store.read(app);
         st.state

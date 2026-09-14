@@ -520,6 +520,7 @@ where
         None,
         &[],
         &[],
+        &[],
         gate,
         tools,
         &|| {
@@ -1393,6 +1394,7 @@ impl ToolPort for SubagentControlTool {
                         id: format!("steer-{}", uuid::Uuid::now_v7()),
                         text: message.to_string(),
                         images: Vec::new(),
+                        files: Vec::new(),
                         source: None,
                     });
                     drop(b);

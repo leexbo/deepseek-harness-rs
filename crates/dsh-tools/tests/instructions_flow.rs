@@ -120,6 +120,7 @@ impl Harness {
                 None,
                 &[],
                 &[],
+                &[],
                 &mut gate,
                 &mut tool,
                 &clock,

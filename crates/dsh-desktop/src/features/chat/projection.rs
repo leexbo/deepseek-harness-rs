@@ -37,6 +37,8 @@ pub enum ChatNode {
         text: String,
         /// 图片块(attachment 引用数组;空 = 纯文本)
         images: Vec<serde_json::Value>,
+        /// 文件块(attachment 引用数组;空 = 无文件)
+        files: Vec<serde_json::Value>,
     },
     /// 注入上下文(user/message + source.kind ≠ "user";4a 完整溯源模型):
     /// 模型实际收到的非用户来源消息(AGENTS.md / @session 快照),折叠渲染
@@ -330,6 +332,7 @@ impl ChatState {
                         key: format!("user:{}", ev.seq),
                         text: content_text(&ev.data["content"]),
                         images: image_blocks(&ev.data["content"]),
+                        files: file_blocks(&ev.data["content"]),
                     });
                 } else {
                     self.push_node(ChatNode::Context {
@@ -909,6 +912,20 @@ fn image_blocks(content: &Value) -> Vec<Value> {
             blocks
                 .iter()
                 .filter(|b| b["type"].as_str() == Some("image"))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 内容里的 file 块(attachment 引用数组;纯字符串 = 空)
+fn file_blocks(content: &Value) -> Vec<Value> {
+    content
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|b| b["type"].as_str() == Some("file"))
                 .cloned()
                 .collect()
         })
@@ -1804,6 +1821,7 @@ mod tests {
             key: "user:1".into(),
             text: "hi".into(),
             images: vec![],
+            files: Vec::new(),
         }));
     }
 
