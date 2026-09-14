@@ -28,8 +28,39 @@ const BLEND_BEHIND_WINDOW: u64 = 0;
 /// NSVisualEffectState.active
 const STATE_ACTIVE: u64 = 1;
 
+/// 玻璃模式(`DSH_GLASS` 环境变量,缺省 sibling):
+/// - sibling(默认):Liquid Glass 视图垫底、不收编画布——收编式
+///   (host)会把 GPUIView 挂进 AppKit 玻璃通道,GPUI 每帧都触发
+///   玻璃重合成,主线程被饱和成交互秒级冻结(release 同样中招,
+///   实测 A/B);垫底式玻璃层只渲一次缓存合成,流畅
+/// - host:强制收编式(仅取证用,已证实不可用)
+/// - legacy:强制 NSVisualEffectView(Tahoe 上不渲染,仅取证用)
+/// - off:无玻璃(实色窗口;交互卡顿时的逃生门)
+#[derive(Clone, Copy, PartialEq)]
+enum GlassMode {
+    Auto,
+    Host,
+    Sibling,
+    Legacy,
+    Off,
+}
+
+fn glass_mode() -> GlassMode {
+    match std::env::var("DSH_GLASS").as_deref() {
+        Ok("host") => GlassMode::Host,
+        Ok("sibling") => GlassMode::Sibling,
+        Ok("legacy") => GlassMode::Legacy,
+        Ok("off") => GlassMode::Off,
+        _ => GlassMode::Sibling,
+    }
+}
+
 /// 在窗口中装配毛玻璃(幂等;非 macOS 无操作)
 pub fn install(window: &gpui_kit::Window) {
+    let mode = glass_mode();
+    if mode == GlassMode::Off {
+        return;
+    }
     let Ok(handle) = <gpui_kit::Window as HasWindowHandle>::window_handle(window) else {
         return;
     };
@@ -43,14 +74,41 @@ pub fn install(window: &gpui_kit::Window) {
         let root: Option<&AnyObject> = msg_send![content, superview];
         let Some(root) = root else { return };
 
+        if mode == GlassMode::Sibling {
+            install_glass_sibling(root, content);
+            return;
+        }
         // macOS 26+:Liquid Glass——玻璃视图顶替画布原位并收编画布
-        if let Some(glass_cls) = AnyClass::get(c"NSGlassEffectView") {
+        // (性能灾难档,仅 DSH_GLASS=host 显式取证时走)
+        let want_host = mode == GlassMode::Host || mode == GlassMode::Auto;
+        if want_host
+            && let Some(glass_cls) = AnyClass::get(c"NSGlassEffectView")
+        {
             install_glass(root, content, glass_cls);
             return;
         }
         // 旧系统回退:NSVisualEffectView 同级下插(behindWindow)
         install_effect_view(root, content);
     }
+}
+
+/// Liquid Glass 垫底档:玻璃视图只做画布下的背板,不收编画布——
+/// 不动窗口视图树,主线程零玻璃通道开销
+unsafe fn install_glass_sibling(root: &AnyObject, content: &AnyObject) {
+    let Some(glass_cls) = AnyClass::get(c"NSGlassEffectView") else {
+        return;
+    };
+    let frame: NSRect = msg_send![content, bounds];
+    let glass: *mut AnyObject = msg_send![glass_cls, alloc];
+    let glass: *mut AnyObject = msg_send![glass, initWithFrame: frame];
+    if glass.is_null() {
+        return;
+    }
+    let _: () = msg_send![glass, setStyle: GLASS_STYLE_REGULAR];
+    let _: () = msg_send![glass, setCornerRadius: 0f64];
+    let _: () = msg_send![glass, setAutoresizingMask: AUTORESIZING_WH];
+    let _: () = msg_send![glass, setWantsLayer: true];
+    let _: () = msg_send![root, addSubview: glass, positioned: ORDER_BELOW, relativeTo: std::ptr::null_mut::<AnyObject>()];
 }
 
 /// Liquid Glass 路线(macOS 26+):画布装进玻璃内容槽,玻璃顶替原位
