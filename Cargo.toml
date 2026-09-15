@@ -25,6 +25,13 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 
+# 棘轮:生产代码禁 unwrap/expect(测试代码经 clippy.toml 放行)。
+# 允许的例外 = AGENTS.md §1 ①「守卫/构造已保证前提的不变式断言」,
+# 逐点以 #[allow(clippy::expect_used)] + 前提说明显式登记。
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
 [workspace.dependencies]
 anyhow = "1.0.104"
 jsonpath-rust = "1.0"

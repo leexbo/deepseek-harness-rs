@@ -1,0 +1,4 @@
+# 棘轮的测试豁免:unwrap_used/expect_used 只在测试代码(#cfg(test)/#[test])
+# 放行,生产代码由 workspace.lints 一律 deny(见根 Cargo.toml)。
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

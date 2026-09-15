@@ -19,6 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::lock::LockRecover as _;
+
 /// 设置文件 schema 版本(结构性变更时递增;旧版本文件按损坏旁置,
 /// 首个升级迁移需求出现时再写版本间迁移)
 const SETTINGS_VERSION: u32 = 1;
@@ -655,7 +657,7 @@ impl SettingsStore {
     /// (拉取式实时感知:打开设置页/装配点读取即最新)
     pub fn read(&self) -> SettingsFile {
         self.reload_if_changed();
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.inner.lock_recover().clone()
     }
 
     /// 外部编辑吸收:mtime 比上次读入/写出新 → 重读解析替换内存。
@@ -665,7 +667,7 @@ impl SettingsStore {
         let Some(mtime) = file_mtime(&self.path) else {
             return false;
         };
-        let mut loaded = self.loaded_mtime.lock().unwrap_or_else(|p| p.into_inner());
+        let mut loaded = self.loaded_mtime.lock_recover();
         if *loaded == Some(mtime) {
             return false;
         }
@@ -678,7 +680,7 @@ impl SettingsStore {
         };
         match serde_norway::from_str::<SettingsFile>(&text) {
             Ok(f) if f.version == SETTINGS_VERSION => {
-                *self.inner.lock().unwrap_or_else(|p| p.into_inner()) = f;
+                *self.inner.lock_recover() = f;
                 *loaded = Some(mtime);
                 true
             }
@@ -697,7 +699,7 @@ impl SettingsStore {
     pub fn update<R>(&self, f: impl FnOnce(&mut SettingsFile) -> R) -> anyhow::Result<R> {
         self.reload_if_changed();
         let out = {
-            let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            let mut guard = self.inner.lock_recover();
             let mut draft = guard.clone();
             let out = f(&mut draft);
             let text = serde_norway::to_string(&draft)?;
@@ -716,7 +718,7 @@ impl SettingsStore {
             *guard = draft;
             out
         };
-        *self.loaded_mtime.lock().unwrap_or_else(|p| p.into_inner()) = file_mtime(&self.path);
+        *self.loaded_mtime.lock_recover() = file_mtime(&self.path);
         Ok(out)
     }
 

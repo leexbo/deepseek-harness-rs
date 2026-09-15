@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+# 棘轮已点亮:生产代码零 unwrap/expect(见根 Cargo.toml [workspace.lints.clippy]
+# 与 src/lock.rs 的锁中毒策略说明)
+[lints]
+workspace = true
+
 [lib]
 crate-type = ["rlib"]
 

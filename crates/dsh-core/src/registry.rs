@@ -28,6 +28,7 @@ use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::credentials::resolve_credential;
+use crate::lock::{LockRecover as _, RwLockRecover as _};
 use crate::proto::{
     HistoryEntry, HistoryValue, HostSessionAdded, HostSessionStatus, ProjectionFrame, Projections,
     Question, QuestionOption, QuestionRequestedFrame, QuestionResolvedFrame, RespondReceipt,
@@ -276,6 +277,22 @@ struct SessionSlot {
     path: PathBuf,
     inner: std::sync::OnceLock<SlotInner>,
     running: std::sync::atomic::AtomicBool,
+}
+
+impl SessionSlot {
+    /// 已装配的内层(可失败)。
+    ///
+    /// 不变式是「[`AppHost::attach`] 成功返回 ⇒ inner 已设置」,由结构保证
+    /// (attach 只在装配完成后返回);但调用方从槽里取 inner 时并未经过
+    /// attach 的类型签名——槽是共享的,可能被并发的 detach 清空,也可能因
+    /// 装配中途失败而停在未设置态。此处把它降级为可归因错误(而非进程内
+    /// panic):调用方拿到的是「哪个会话没装配上」,比一句 expect 更能定位
+    /// 问题,也让宿主在异常态下仍可响应其它请求。
+    fn inner(&self) -> Result<&SlotInner, RpcError> {
+        self.inner
+            .get()
+            .ok_or_else(|| RpcError::internal(format!("会话 {} 未完成装配(inner 缺失)", self.id)))
+    }
 }
 
 /// 未决交互(plan 审批 / ask 问答 / 沙箱升级审批):kind 决定应答判别与
@@ -867,7 +884,7 @@ fn broadcast_event(
     mux: &broadcast::Sender<ServerRequest>,
     seq: Option<u64>,
 ) {
-    let l = log.lock().unwrap_or_else(|p| p.into_inner());
+    let l = log.lock_recover();
     let mut tr = Translator::new(provider.clone());
     for ev in l.iter() {
         tr.translate(ev);
@@ -892,7 +909,7 @@ fn mode_terminal_frame(
     log: &Mutex<EventLog>,
     session_id: &str,
 ) -> Option<ServerRequest> {
-    let l = log.lock().unwrap_or_else(|p| p.into_inner());
+    let l = log.lock_recover();
     let mut tr = Translator::new(provider.clone());
     let mut target = None;
     for ev in l.iter() {
@@ -1189,7 +1206,7 @@ impl AppHost {
                 )
             })
             .collect();
-        let mut fp = self.provider_fp.lock().unwrap_or_else(|p| p.into_inner());
+        let mut fp = self.provider_fp.lock_recover();
         let changed: Vec<String> = current
             .iter()
             .filter(|(id, v)| fp.get(id.as_str()) != Some(v))
@@ -1209,13 +1226,7 @@ impl AppHost {
     /// 使用指定 provider 的空闲附着会话全部 detach(传输参数变更的
     /// 公共收口;会话 → 工作区 → 生效 provider 逐级解析)
     fn detach_idle_sessions_using(&self, provider_id: &str) {
-        let ids: Vec<String> = self
-            .sessions
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .keys()
-            .cloned()
-            .collect();
+        let ids: Vec<String> = self.sessions.read_recover().keys().cloned().collect();
         for id in ids {
             let (ws, _) = self.resolve_session(&id);
             if self.provider_for(&ws).id == provider_id
@@ -1301,26 +1312,19 @@ impl AppHost {
             return;
         }
         let provider = self.default_provider();
-        if self
-            .models_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .contains_key(&provider.id)
-        {
+        if self.models_cache.lock_recover().contains_key(&provider.id) {
             return;
         }
         if self.fake {
             self.models_cache
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .lock_recover()
                 .insert(provider.id.clone(), demo_models());
             return;
         }
         let fetched = self.fetch_provider_models(&provider).await;
         if !fetched.is_empty() {
             self.models_cache
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .lock_recover()
                 .insert(provider.id.clone(), fetched);
         }
         // 失败:不缓存(下次 describe/手动刷新重试)
@@ -1336,8 +1340,7 @@ impl AppHost {
             self.fetch_provider_models(&provider).await
         };
         self.models_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .lock_recover()
             .insert(provider_id.to_string(), fetched.clone());
         fetched
     }
@@ -1350,8 +1353,7 @@ impl AppHost {
             return configured;
         }
         self.models_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .lock_recover()
             .get(provider_id)
             .cloned()
             .unwrap_or_default()
@@ -1545,8 +1547,7 @@ impl AppHost {
     /// 工作区名 → 路径(默认工作区名 = basename)
     fn workspace_of(&self, name: &str) -> Option<PathBuf> {
         self.workspaces
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_recover()
             .iter()
             .find(|p| {
                 p.file_name()
@@ -1560,8 +1561,7 @@ impl AppHost {
     /// 空表仅引导期出现,回落启动目录)
     pub fn default_workspace(&self) -> PathBuf {
         self.workspaces
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_recover()
             .first()
             .cloned()
             .unwrap_or_else(|| self.workspace.clone())
@@ -1590,8 +1590,7 @@ impl AppHost {
     /// 工作区名列表(默认在前)
     pub fn workspace_names(&self) -> Vec<String> {
         self.workspaces
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_recover()
             .iter()
             .filter_map(|p| {
                 p.file_name()
@@ -1615,10 +1614,7 @@ impl AppHost {
         if self.workspace_of(&name).is_some() {
             return Err(RpcError::bad_request("同名工作区已存在"));
         }
-        self.workspaces
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(p);
+        self.workspaces.write_recover().push(p);
         self.persist_workspaces()?;
         let _ = self.host.send(frame("host/workspace-changed", json!({})));
         Ok(name)
@@ -1628,8 +1624,7 @@ impl AppHost {
     fn persist_workspaces(&self) -> Result<(), RpcError> {
         let paths: Vec<String> = self
             .workspaces
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_recover()
             .iter()
             .map(|p| p.display().to_string())
             .collect();
@@ -1679,22 +1674,18 @@ impl AppHost {
         // 卸载该工作区的附着会话(锁序:sessions → workspaces,与既有写序一致)
         let victims: Vec<String> = self
             .sessions
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_recover()
             .keys()
             .filter(|id| self.resolve_session(id).0 == ws)
             .cloned()
             .collect();
         if !victims.is_empty() {
-            let mut slots = self.sessions.write().unwrap_or_else(|p| p.into_inner());
+            let mut slots = self.sessions.write_recover();
             for id in &victims {
                 slots.remove(id);
             }
         }
-        self.workspaces
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .retain(|p| *p != ws);
+        self.workspaces.write_recover().retain(|p| *p != ws);
         self.persist_workspaces()?;
         self.settings
             .update(|s| {
@@ -1718,7 +1709,7 @@ impl AppHost {
             ),
             None => None,
         };
-        let mut list = self.workspaces.write().unwrap_or_else(|p| p.into_inner());
+        let mut list = self.workspaces.write_recover();
         list.retain(|p| *p != ws);
         let at = match &before_ws {
             Some(b) => list.iter().position(|p| p == b).unwrap_or(list.len()),
@@ -1875,12 +1866,7 @@ impl AppHost {
 
     /// 会话当前模型(会话覆盖 > 工作区 dsh.toml > 设置工作区默认 > 默认模型)
     pub fn session_model(&self, id: &str) -> String {
-        if let Some(m) = self
-            .model_overrides
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(id)
-        {
+        if let Some(m) = self.model_overrides.read_recover().get(id) {
             return m.clone();
         }
         let (ws_root, _) = self.resolve_session(id);
@@ -1918,12 +1904,7 @@ impl AppHost {
 
     /// 会话当前 preset(覆盖 > 工作区 dsh.toml > 设置工作区默认 > standard)
     pub fn session_preset(&self, id: &str) -> String {
-        if let Some(p) = self
-            .preset_overrides
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(id)
-        {
+        if let Some(p) = self.preset_overrides.read_recover().get(id) {
             return p.clone();
         }
         let (ws_root, _) = self.resolve_session(id);
@@ -1954,12 +1935,7 @@ impl AppHost {
     /// 会话当前推理等级(覆盖 > 工作区 dsh.toml > 设置工作区默认 > 装配默认;
     /// 兜底 High:思考输出需 thinking 参数)
     pub fn session_effort(&self, id: &str) -> Option<String> {
-        if let Some(e) = self
-            .effort_overrides
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(id)
-        {
+        if let Some(e) = self.effort_overrides.read_recover().get(id) {
             return Some(e.clone());
         }
         let (ws_root, _) = self.resolve_session(id);
@@ -1983,8 +1959,7 @@ impl AppHost {
         }
         self.detach_if_idle(id)?;
         self.effort_overrides
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
+            .write_recover()
             .insert(id.into(), effort.into());
         self.persist_workspace_default(id, |d| d.effort = Some(effort.into()))
     }
@@ -2096,16 +2071,13 @@ impl AppHost {
 
     /// 空闲时 detach(覆盖类切换的公共前置:下次 prompt 以新参数重装配)
     fn detach_if_idle(&self, id: &str) -> Result<(), RpcError> {
-        let slots = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        let slots = self.sessions.read_recover();
         if let Some(slot) = slots.get(id) {
             if slot.running.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(RpcError::bad_request("会话运行中,请先停止"));
             }
             drop(slots);
-            self.sessions
-                .write()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(id);
+            self.sessions.write_recover().remove(id);
         }
         Ok(())
     }
@@ -2121,8 +2093,7 @@ impl AppHost {
         }
         self.detach_if_idle(id)?;
         self.model_overrides
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
+            .write_recover()
             .insert(id.into(), model.into());
         self.persist_workspace_default(id, |d| d.model = Some(model.into()))
     }
@@ -2139,7 +2110,7 @@ impl AppHost {
             return Err(RpcError::bad_request("未知访问模式"));
         }
         let slot = self.attach(id)?;
-        let inner = slot.inner.get().expect("attach 后必有 inner");
+        let inner = slot.inner()?;
         inner
             .queue_tx
             .send(Job::SetPermission(permission.into()))
@@ -2154,7 +2125,7 @@ impl AppHost {
             return Err(RpcError::bad_request("未知审批策略"));
         }
         let slot = self.attach(id)?;
-        let inner = slot.inner.get().expect("attach 后必有 inner");
+        let inner = slot.inner()?;
         inner
             .queue_tx
             .send(Job::SetApproval(policy.into()))
@@ -2170,8 +2141,7 @@ impl AppHost {
         }
         self.detach_if_idle(id)?;
         self.preset_overrides
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
+            .write_recover()
             .insert(id.into(), preset.into());
         self.persist_workspace_default(id, |d| d.preset = Some(preset.into()))
     }
@@ -2211,8 +2181,7 @@ impl AppHost {
         // 按「当前在用」取数,非默认工作区切换后计费跟切
         let workspace_providers: serde_json::Map<String, Value> = self
             .workspaces
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_recover()
             .iter()
             .map(|p| {
                 let name = p
@@ -2334,7 +2303,7 @@ impl AppHost {
 
     /// MCP server 最近连接状态(设置页/详情页状态行;attach 回调更新)
     pub fn mcp_server_status(&self) -> serde_json::Value {
-        let map = self.mcp_status.lock().unwrap_or_else(|p| p.into_inner());
+        let map = self.mcp_status.lock_recover();
         json!({
             "servers": map
                 .iter()
@@ -2432,7 +2401,7 @@ impl AppHost {
             Box::pin(async move {
                 // 与升级审批同语义的闲时校验(审批必须被 open turn 包住)
                 {
-                    let slots = host.sessions.read().unwrap_or_else(|p| p.into_inner());
+                    let slots = host.sessions.read_recover();
                     let Some(slot) = slots.get(&sid) else {
                         return dsh_hooks::service::ToolApprovalOutcome::Unavailable;
                     };
@@ -2459,14 +2428,16 @@ impl AppHost {
     ) -> dsh_hooks::service::ToolApprovalOutcome {
         use dsh_hooks::service::ToolApprovalOutcome;
         let (log, backend) = {
-            let slots = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+            let slots = self.sessions.read_recover();
             let Some(slot) = slots.get(session_id) else {
                 return ToolApprovalOutcome::Unavailable;
             };
             if !slot.running.load(std::sync::atomic::Ordering::Relaxed) {
                 return ToolApprovalOutcome::Unavailable;
             }
-            let inner = slot.inner.get().expect("running 会话必已附着");
+            let Ok(inner) = slot.inner() else {
+                return ToolApprovalOutcome::Unavailable;
+            };
             (Arc::clone(&inner.log), inner.backend.clone())
         };
         let audit_id = Uuid::now_v7().to_string();
@@ -2655,7 +2626,7 @@ impl AppHost {
     fn broadcast_hook_ports(self: &Arc<Self>) {
         let service = self.build_hook_service();
         let slots: Vec<String> = {
-            let slots = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+            let slots = self.sessions.read_recover();
             slots.keys().cloned().collect()
         };
         for sid in slots {
@@ -2789,8 +2760,7 @@ impl AppHost {
             enabled.iter().map(|e| e.id.as_str()).collect();
         let set_status = |id: &str, status: &str, error: &str| {
             self.mcp_status
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .lock_recover()
                 .insert(id.to_string(), (status.to_string(), error.to_string()));
             let _ = self.mux.send(frame(
                 "mcp/status",
@@ -2799,21 +2769,10 @@ impl AppHost {
         };
         // 停机:池中已不在 enabled 清单的端口(快照先行——for 表达式的
         // 锁 guard 会覆盖整个循环体,循环内再锁即自死锁)
-        let held: Vec<String> = self
-            .mcp_handles
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .keys()
-            .cloned()
-            .collect();
+        let held: Vec<String> = self.mcp_handles.lock_recover().keys().cloned().collect();
         for id in held {
             if !wanted.contains(id.as_str()) {
-                if let Some(h) = self
-                    .mcp_handles
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(&id)
-                {
+                if let Some(h) = self.mcp_handles.lock_recover().remove(&id) {
                     h.cancel.cancel();
                 }
                 if let Some(port) = self.mcp_pool.remove(&id) {
@@ -2825,12 +2784,7 @@ impl AppHost {
         // 启动/重启:新增或配置变更
         for entry in enabled {
             let config = mcp_config_of(&entry);
-            let stale = match self
-                .mcp_handles
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get(&entry.id)
-            {
+            let stale = match self.mcp_handles.lock_recover().get(&entry.id) {
                 Some(h) => h.config != config,
                 None => true,
             };
@@ -2838,12 +2792,7 @@ impl AppHost {
                 continue;
             }
             // 旧端口停机(有则换新)
-            if let Some(h) = self
-                .mcp_handles
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(&entry.id)
-            {
+            if let Some(h) = self.mcp_handles.lock_recover().remove(&entry.id) {
                 h.cancel.cancel();
             }
             if let Some(port) = self.mcp_pool.remove(&entry.id) {
@@ -2870,8 +2819,7 @@ impl AppHost {
                 };
                 cb_host
                     .mcp_status
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
+                    .lock_recover()
                     .insert(cb_id.clone(), (status.into(), error.clone()));
                 let _ = cb_host.mux.send(frame(
                     "mcp/status",
@@ -2893,8 +2841,7 @@ impl AppHost {
             };
             self.mcp_pool.upsert(entry.id.clone(), port);
             self.mcp_handles
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .lock_recover()
                 .insert(entry.id.clone(), McpPortHandle { config, cancel });
         }
     }
@@ -2948,10 +2895,7 @@ impl AppHost {
                 },
             )
             .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
-        self.models_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&entry.id);
+        self.models_cache.lock_recover().remove(&entry.id);
         // 传输面(api_key/base_url/dialect)变更即时生效:受影响空闲
         // 会话 detach,当前对话下次 prompt 即以新配置重装配
         self.sync_provider_transports();
@@ -2964,10 +2908,7 @@ impl AppHost {
         self.settings
             .update(|s| s.providers.retain(|p| p.id != id))
             .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
-        self.models_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(id);
+        self.models_cache.lock_recover().remove(id);
         Ok(())
     }
 
@@ -2991,13 +2932,7 @@ impl AppHost {
             .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
         // 生效 provider 变了:该工作区的空闲附着会话 detach,下次
         // prompt 以新 provider 重装配(与 key 热生效同一收口语义)
-        let ids: Vec<String> = self
-            .sessions
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .keys()
-            .cloned()
-            .collect();
+        let ids: Vec<String> = self.sessions.read_recover().keys().cloned().collect();
         for id in ids {
             if self.resolve_session(&id).0 == ws {
                 let _ = self.detach_if_idle(&id);
@@ -3018,7 +2953,7 @@ impl AppHost {
         if title.is_empty() {
             return Err(RpcError::bad_request("标题不可为空"));
         }
-        let mut titles = self.titles.write().unwrap_or_else(|p| p.into_inner());
+        let mut titles = self.titles.write_recover();
         titles.insert(id.into(), title.clone());
         let text = serde_json::to_string_pretty(&*titles).unwrap_or_default();
         write_titles_file(&self.default_workspace(), &text)
@@ -3028,11 +2963,7 @@ impl AppHost {
 
     /// 会话标题(重命名 > 首条 user 投影)
     pub fn session_title(&self, id: &str) -> Option<String> {
-        self.titles
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(id)
-            .cloned()
+        self.titles.read_recover().get(id).cloned()
     }
 
     /// 4b:LLM 语义标题生成(源 `session-title-first-prompt-llm`)。
@@ -3176,12 +3107,12 @@ impl AppHost {
 
     /// fake 模式注入脚本(每段对应一次 stream 调用;测试用)
     pub fn set_fake_script(&self, script: Vec<Vec<LlmEvent>>) {
-        *self.fake_script.lock().unwrap_or_else(|p| p.into_inner()) = script;
+        *self.fake_script.lock_recover() = script;
     }
 
     /// fake 模式注入 LLM 标题输出(测试/演示用;None 默认 = fake 不生成)
     pub fn set_fake_title(&self, title: Option<String>) {
-        *self.fake_title.lock().unwrap_or_else(|p| p.into_inner()) = title;
+        *self.fake_title.lock_recover() = title;
     }
 
     /// 模型源信息(翻译器 assistant source 块)
@@ -3222,17 +3153,12 @@ impl AppHost {
     }
 
     fn get_slot(&self, id: &str) -> Option<Arc<SessionSlot>> {
-        self.sessions
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(id)
-            .cloned()
+        self.sessions.read_recover().get(id).cloned()
     }
 
     fn register_slot(&self, id: &str, path: PathBuf) -> Arc<SessionSlot> {
         self.sessions
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
+            .write_recover()
             .entry(id.to_string())
             .or_insert_with(|| {
                 Arc::new(SessionSlot {
@@ -3251,11 +3177,7 @@ impl AppHost {
     /// 非默认工作区会话 id = "<ws 名>/<stem>"
     pub fn list_sessions(&self) -> Vec<SessionSummary> {
         let mut items: Vec<SessionSummary> = Vec::new();
-        let workspaces = self
-            .workspaces
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
+        let workspaces = self.workspaces.read_recover().clone();
         let default_name = self.default_workspace_name();
         for ws in &workspaces {
             let ws_name = ws
@@ -3365,8 +3287,7 @@ impl AppHost {
             && self.presets().iter().any(|x| x["id"] == p)
         {
             self.preset_overrides
-                .write()
-                .unwrap_or_else(|p| p.into_inner())
+                .write_recover()
                 .insert(id.clone(), p.to_owned());
         }
         self.register_slot(&id, path);
@@ -3494,10 +3415,7 @@ impl AppHost {
                 self.session_effort(id).unwrap_or_default(),
             ),
         ] {
-            overrides
-                .write()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert(new_id.clone(), cur);
+            overrides.write_recover().insert(new_id.clone(), cur);
         }
         let (ws_root, _) = self.resolve_session(&new_id);
         let _ = self.host.send(frame(
@@ -3517,16 +3435,13 @@ impl AppHost {
 
     /// 归档:移入 .archive/(清单即不可见;恢复 = 移回)
     pub fn archive_session(&self, id: &str) -> Result<(), RpcError> {
-        let slots = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        let slots = self.sessions.read_recover();
         if let Some(slot) = slots.get(id) {
             if slot.running.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(RpcError::bad_request("会话运行中,请先停止"));
             }
             drop(slots);
-            self.sessions
-                .write()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(id);
+            self.sessions.write_recover().remove(id);
         }
         let src = self.slot_path(id);
         if !src.exists() {
@@ -3565,16 +3480,13 @@ impl AppHost {
         for child in &children {
             self.delete_session(child)?;
         }
-        let slots = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        let slots = self.sessions.read_recover();
         if let Some(slot) = slots.get(id) {
             if slot.running.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(RpcError::bad_request("会话运行中,请先停止"));
             }
             drop(slots);
-            self.sessions
-                .write()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(id);
+            self.sessions.write_recover().remove(id);
         }
         let src = self.slot_path(id);
         if !src.exists() {
@@ -3656,12 +3568,7 @@ impl AppHost {
 
         let (mut session, session_log) = if self.fake {
             let mut provider = FakeProvider::new();
-            let drained: Vec<Vec<LlmEvent>> = self
-                .fake_script
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .drain(..)
-                .collect();
+            let drained: Vec<Vec<LlmEvent>> = self.fake_script.lock_recover().drain(..).collect();
             // 测试脚本未注入(fake_script 空)时按会话生成演示回声脚本——
             // 此前演示脚本一次性被首个附着会话整段消费,后续会话拿到空
             // 脚本 → 空响应 → UI 空助手行(实测)
@@ -3678,6 +3585,8 @@ impl AppHost {
             // fake 工具面 = MCP 池(所有会话共享)+ skill 工具(非子代理;
             // 子会话不挂——与真实会话同门控,目录只在工具在场时发布)。
             // 池/技能名空间互异,无重名冲突
+            // 不变式:fake 工具集只含已知内置工具,重名失败不可能发生
+            #[allow(clippy::expect_used)]
             let fake_tools = if subagent_session {
                 dsh_agent_loop::ToolSet::new(vec![Box::new(self_arc.mcp_pool.clone())
                     as Box<dyn dsh_agent_loop::tools::ToolPortObj>])
@@ -3727,12 +3636,7 @@ impl AppHost {
             let mode_log = Arc::clone(&l);
             let mode_source: dsh_tools::ModeSource = Arc::new(move || {
                 crate::permission::sandbox_mode_of_name(crate::permission::sandbox_mode_of(
-                    &mode_log
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .iter()
-                        .cloned()
-                        .collect::<Vec<_>>(),
+                    &mode_log.lock_recover().iter().cloned().collect::<Vec<_>>(),
                 ))
             });
             // MCP servers:宿主级端口池(设置保存即连接,所有会话共享一条
@@ -3757,11 +3661,7 @@ impl AppHost {
                 &cancel,
                 false,
                 crate::permission::sandbox_mode_of(
-                    &l.lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .iter()
-                        .cloned()
-                        .collect::<Vec<_>>(),
+                    &l.lock_recover().iter().cloned().collect::<Vec<_>>(),
                 ),
                 Some(mode_source),
                 Some({
@@ -3855,7 +3755,7 @@ impl AppHost {
             .unwrap_or(Value::Null),
         ));
         // 队列基线(subscribed 之后同一流;空队列不发,客户端 reset 清旧代)
-        let inner0 = slot.inner.get().expect("attach 后必有 inner");
+        let inner0 = slot.inner()?;
         if !queue_items(inner0).is_empty() {
             let _ = self.mux.send(queue_frame(id, inner0));
         }
@@ -3891,6 +3791,8 @@ impl AppHost {
                     .map_err(|e| RpcError::internal(format!("检索索引打开失败:{e}")))?,
             );
         }
+        // 不变式:同一写临界区内刚插入并写出,索引必已就位
+        #[allow(clippy::expect_used)]
         let index = guard.as_ref().expect("刚建");
         // 全量会话增量同步(list_sessions 已按工作区序产出)
         let live: std::collections::HashSet<String> = self
@@ -4177,7 +4079,7 @@ impl AppHost {
         max_messages: usize,
     ) -> Result<HistoryValue, RpcError> {
         let slot = self.attach(session_id)?;
-        let inner = slot.inner.get().expect("attach 后必有 inner");
+        let inner = slot.inner()?;
         let log_snapshot: Vec<EventEnvelope> = {
             let l = inner
                 .log
@@ -4445,16 +4347,13 @@ impl AppHost {
             payload: serde_json::to_value(&request).unwrap_or(Value::Null),
         };
         let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(
-                rpc_id.clone(),
-                PendingInteraction {
-                    kind: PendingKind::Ask { tx },
-                    frame: request_frame.clone(),
-                },
-            );
+        self.pending.lock_recover().insert(
+            rpc_id.clone(),
+            PendingInteraction {
+                kind: PendingKind::Ask { tx },
+                frame: request_frame.clone(),
+            },
+        );
         let _ = self.mux.send(request_frame);
         // 取消竞速:会话软取消令牌与应答 oneshot 并行等待。工具执行是引擎
         // 里的裸 await(无竞速),阻塞在此 rx 时引擎走不到取消检查点——点
@@ -4469,7 +4368,7 @@ impl AppHost {
                         res.map_err(|_| "ask_user_question 未被应答".to_string())?
                     }
                     _ = cancel.cancelled() => {
-                        self.pending.lock().unwrap_or_else(|p| p.into_inner()).remove(&rpc_id);
+                        self.pending.lock_recover().remove(&rpc_id);
                         let _ = self.mux.send(frame(
                             "question/resolved",
                             serde_json::to_value(crate::proto::QuestionResolvedFrame {
@@ -4501,14 +4400,16 @@ impl AppHost {
         use dsh_tools::ApprovalOutcome;
         // open turn 校验:闸门只能由运行中的工具发起(闲时不问不落档)
         let (log, backend) = {
-            let slots = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+            let slots = self.sessions.read_recover();
             let Some(slot) = slots.get(session_id) else {
                 return ApprovalOutcome::Unavailable;
             };
             if !slot.running.load(std::sync::atomic::Ordering::Relaxed) {
                 return ApprovalOutcome::Unavailable;
             }
-            let inner = slot.inner.get().expect("running 会话必已附着");
+            let Ok(inner) = slot.inner() else {
+                return ApprovalOutcome::Unavailable;
+            };
             (Arc::clone(&inner.log), inner.backend.clone())
         };
 
@@ -4577,16 +4478,13 @@ impl AppHost {
             payload: serde_json::to_value(&request).unwrap_or(Value::Null),
         };
         let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(
-                rpc_id.clone(),
-                PendingInteraction {
-                    kind: PendingKind::Approval { tx },
-                    frame: request_frame.clone(),
-                },
-            );
+        self.pending.lock_recover().insert(
+            rpc_id.clone(),
+            PendingInteraction {
+                kind: PendingKind::Approval { tx },
+                frame: request_frame.clone(),
+            },
+        );
         let _ = self.mux.send(request_frame);
 
         // drop 守卫:port future 被丢弃(turn 取消/中断)→ 清 pending +
@@ -4609,7 +4507,7 @@ impl AppHost {
                 tokio::select! {
                     res = rx => res.unwrap_or(ApprovalOutcome::Cancelled),
                     _ = cancel.cancelled() => {
-                        self.pending.lock().unwrap_or_else(|p| p.into_inner()).remove(&rpc_id);
+                        self.pending.lock_recover().remove(&rpc_id);
                         ApprovalOutcome::Cancelled
                     }
                 }
@@ -4742,7 +4640,7 @@ impl AppHost {
         attachment_id: &str,
     ) -> Result<Value, RpcError> {
         let slot = self.attach(session_id)?;
-        let inner = slot.inner.get().expect("attach 后必有 inner");
+        let inner = slot.inner()?;
         let referenced = {
             let Ok(log) = inner.log.lock() else {
                 return Err(RpcError::internal("log 锁中毒"));
@@ -4958,7 +4856,7 @@ impl AppHost {
         }
 
         let slot = self.attach(session_id)?;
-        let inner = slot.inner.get().expect("attach 后必有 inner");
+        let inner = slot.inner()?;
         // 消息 id 宿主预分配(v7):队列帧 / 认领 splice / user/message 共用
         let id = Uuid::now_v7().to_string();
         inner
@@ -5020,7 +4918,7 @@ impl AppHost {
             return Err(RpcError::bad_request("mode 取值必须为 standard 或 plan"));
         }
         let slot = self.attach(session_id)?;
-        let inner = slot.inner.get().expect("attach 后必有 inner");
+        let inner = slot.inner()?;
         inner
             .queue_tx
             .send(Job::SetMode(mode.into()))
@@ -5065,17 +4963,13 @@ impl AppHost {
     /// 认领驻留子代理(防双挂):同 id 只认领一次
     fn claim_child(&self, session_id: &str) -> bool {
         self.live_children
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .lock_recover()
             .insert(session_id.to_string())
     }
 
     /// 释放驻留认领(驻留退出时)
     fn release_child(&self, session_id: &str) {
-        self.live_children
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(session_id);
+        self.live_children.lock_recover().remove(session_id);
     }
 
     /// 接线子代理注册表为某父会话的 jobs 源:登记弱引用并挂观察
@@ -5095,8 +4989,7 @@ impl AppHost {
             }
         })));
         self.jobs_sources
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .lock_recover()
             .insert(parent_id.to_string(), registry.downgrade());
     }
 
@@ -5104,13 +4997,13 @@ impl AppHost {
     /// 同一信号——stop 唤醒 → 当前 turn 令牌取消,LLM 流/bash 即时中断,
     /// 子代理保持可续话)。找到且在跑 = true;已结束/idle = false。
     pub fn interrupt_subagent(&self, child_session_id: &str) -> bool {
-        let sources = self.jobs_sources.lock().unwrap_or_else(|p| p.into_inner());
+        let sources = self.jobs_sources.lock_recover();
         for weak in sources.values() {
             let Some(registry) = weak.upgrade() else {
                 continue;
             };
             let stop = {
-                let records = registry.lock().unwrap_or_else(|p| p.into_inner());
+                let records = registry.lock_recover();
                 records
                     .iter()
                     .find(|rec| rec.session_id == child_session_id && rec.status == "running")
@@ -5130,10 +5023,7 @@ impl AppHost {
     /// 翻译器按子会话缓存(turn/step 计数器跨事件连续)。
     pub fn relay_subagent_event(&self, session_id: &str, ev: &dsh_session::EventEnvelope) {
         let event = {
-            let mut guards = self
-                .subagent_translators
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut guards = self.subagent_translators.lock_recover();
             let translator = guards
                 .entry(session_id.to_string())
                 .or_insert_with(|| crate::translate::Translator::new(self.provider_info()));
@@ -5150,7 +5040,7 @@ impl AppHost {
     /// onJobsChanged 语义)。registry 已释放 = 无任务可报,静默返回。
     pub fn broadcast_jobs(&self, parent_id: &str) {
         let registry = {
-            let mut sources = self.jobs_sources.lock().unwrap_or_else(|p| p.into_inner());
+            let mut sources = self.jobs_sources.lock_recover();
             match sources.get(parent_id).and_then(|w| w.upgrade()) {
                 Some(r) => r,
                 None => {
@@ -5218,16 +5108,12 @@ impl AppHost {
     pub fn mux_baseline(&self) -> Vec<ServerRequest> {
         let mut out = Vec::new();
         let mut ids: Vec<(String, u64)> = {
-            let slots = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+            let slots = self.sessions.read_recover();
             slots
                 .iter()
                 .filter_map(|(id, s)| {
                     let inner = s.inner.get()?;
-                    let last_seq = inner
-                        .log
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .high_water();
+                    let last_seq = inner.log.lock_recover().high_water();
                     Some((id.clone(), last_seq))
                 })
                 .collect()
@@ -5243,7 +5129,7 @@ impl AppHost {
                 })
                 .unwrap_or(Value::Null),
             ));
-            let slots = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+            let slots = self.sessions.read_recover();
             if let Some(inner) = slots.get(&id).and_then(|s| s.inner.get()) {
                 // 队列基线:非空才发(空队列由 subscribed 清旧代表达)
                 if !queue_items(inner).is_empty() {
@@ -5256,12 +5142,7 @@ impl AppHost {
                 }
             }
         }
-        for pending in self
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-        {
+        for pending in self.pending.lock_recover().values() {
             out.push(pending.frame.clone());
         }
         out
@@ -5277,8 +5158,7 @@ impl AppHost {
     /// 附着会话数(host.describe)
     pub fn attached_count(&self) -> usize {
         self.sessions
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_recover()
             .values()
             .filter(|s| s.inner.get().is_some())
             .count()
@@ -5287,18 +5167,14 @@ impl AppHost {
     /// workspace.list 响应值(默认 + 添加的工作区)
     pub fn workspace_view(&self) -> Value {
         let now = iso8601(now_ms());
-        let attached: Vec<String> = self
-            .sessions
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .keys()
-            .cloned()
-            .collect();
+        let attached: Vec<String> = self.sessions.read_recover().keys().cloned().collect();
         let items: Vec<Value> = self
             .workspace_names()
             .into_iter()
             .enumerate()
             .map(|(i, name)| {
+                // 不变式:名字与索引同源于一张工作区表,查得必中
+                #[allow(clippy::expect_used)]
                 let ws = self.workspace_of(&name).expect("workspace_names 与表一致");
                 let ids: Vec<String> = attached
                     .iter()
@@ -5326,7 +5202,7 @@ impl AppHost {
 
     /// respond:按 rpcId 路由未决问题应答
     pub fn respond(&self, rpc_id: &str, result: &RpcResult) -> RespondReceipt {
-        let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+        let mut pending = self.pending.lock_recover();
         let Some(p) = pending.remove(rpc_id) else {
             return RespondReceipt {
                 accepted: false,
@@ -5478,19 +5354,16 @@ async fn plan_question(
         payload: serde_json::to_value(&request).unwrap_or(Value::Null),
     };
     let (tx, rx) = oneshot::channel();
-    host.pending
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .insert(
-            rpc_id.clone(),
-            PendingInteraction {
-                kind: PendingKind::Plan {
-                    approve_label: APPROVE.into(),
-                    tx,
-                },
-                frame: request_frame.clone(),
+    host.pending.lock_recover().insert(
+        rpc_id.clone(),
+        PendingInteraction {
+            kind: PendingKind::Plan {
+                approve_label: APPROVE.into(),
+                tx,
             },
-        );
+            frame: request_frame.clone(),
+        },
+    );
     let _ = host.mux.send(request_frame);
 
     let (outcome, frame_outcome): (PlanReviewOutcome, &str) = match rx.await {
@@ -5511,10 +5384,7 @@ async fn plan_question(
             (PlanReviewOutcome::Cancelled, "cancelled")
         }
     };
-    host.pending
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(&rpc_id);
+    host.pending.lock_recover().remove(&rpc_id);
     let _ = host.mux.send(frame(
         "question/resolved",
         serde_json::to_value(QuestionResolvedFrame {
@@ -5547,7 +5417,7 @@ fn plan_decline_guide(feedback: &str) -> String {
 /// 取消与「拒绝+反馈」共用同一机制
 fn inject_plan_guide_turn(session_id: &str, inner: &SlotInner, host: &Arc<AppHost>, guide: &str) {
     let gid = format!("s-guide-{}", Uuid::now_v7().simple());
-    let mut q = inner.qs.lock().unwrap_or_else(|p| p.into_inner());
+    let mut q = inner.qs.lock_recover();
     let at = q.pending.len();
     q.pending.push_back(PendingItem {
         id: gid.clone(),
@@ -5577,7 +5447,7 @@ fn inject_plan_guide_turn(session_id: &str, inner: &SlotInner, host: &Arc<AppHos
 /// 队列帧 items:待运行(queued)+ 中途输入(steering)条目。
 /// 权威瞬态快照(session/queue 帧;消息形状 = 客方 Message)
 fn queue_items(inner: &SlotInner) -> Vec<Value> {
-    let qs = inner.qs.lock().unwrap_or_else(|p| p.into_inner());
+    let qs = inner.qs.lock_recover();
     let mut items = Vec::new();
     // 客方 Message 形状恒为块数组(附件在前文本在后;纯文本包 text 块)
     let frame_content = |text: &str,
@@ -5601,7 +5471,7 @@ fn queue_items(inner: &SlotInner) -> Vec<Value> {
             },
         }));
     }
-    for s in qs.steer.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+    for s in qs.steer.lock_recover().iter() {
         // 通知条目不下发队列帧:结算通知在认领前短暂驻留 steer,
         // 队列条/steer 伪行不闪现通知,呈现只剩消息落档后的通知卡一路
         if s.source.as_ref().and_then(|v| v["kind"].as_str()) == Some("subagent-settled") {
@@ -5937,7 +5807,7 @@ fn apply_queue_action(
         message: "queued item is no longer pending".into(),
         details: Value::Null,
     };
-    let mut q = qs.lock().unwrap_or_else(|p| p.into_inner());
+    let mut q = qs.lock_recover();
     match action {
         QueueAction::Edit(text) => {
             let Some(item) = q.pending.iter_mut().find(|i| i.id == item_id) else {
@@ -5996,9 +5866,11 @@ fn apply_queue_action(
                     details: Value::Null,
                 });
             }
+            // 不变式:pos 刚在同持锁区间内定位,pending 中间无人改动
+            #[allow(clippy::expect_used)]
             let item = q.pending.remove(pos).expect("刚定位的条目必在");
             let at = {
-                let mut steer = q.steer.lock().unwrap_or_else(|p| p.into_inner());
+                let mut steer = q.steer.lock_recover();
                 let at = steer.len();
                 steer.push_back(SteerInput {
                     id: item.id.clone(),
@@ -6170,7 +6042,7 @@ impl dsh_tools::subagent::SessionFactory for SessionFactoryImpl {
                 // 开 turn 补收口)并持久化,重挂引擎才见一致历史
                 let log = Arc::new(Mutex::new(EventLog::new()));
                 {
-                    let mut l = log.lock().unwrap_or_else(|p| p.into_inner());
+                    let mut l = log.lock_recover();
                     for ev in &events {
                         let _ = l.append(ev.clone());
                     }
@@ -6271,11 +6143,7 @@ impl Drop for ApprovalGuard {
         if self.disarmed {
             return;
         }
-        self.host
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&self.rpc_id);
+        self.host.pending.lock_recover().remove(&self.rpc_id);
         splice_event(
             &self.log,
             &self.backend,
@@ -6400,7 +6268,7 @@ async fn pump_loop(
                 contexts,
             } => {
                 let rec = {
-                    let mut q = qs.lock().unwrap_or_else(|p| p.into_inner());
+                    let mut q = qs.lock_recover();
                     match mode {
                         PromptMode::Queue => {
                             let at = q.pending.len();
@@ -6425,7 +6293,7 @@ async fn pump_loop(
                             }
                         }
                         PromptMode::Steer => {
-                            let mut steer = q.steer.lock().unwrap_or_else(|p| p.into_inner());
+                            let mut steer = q.steer.lock_recover();
                             let at = steer.len();
                             steer.push_back(SteerInput {
                                 id: id.clone(),
@@ -6472,8 +6340,8 @@ async fn pump_loop(
                 // 通知走 steer 通道(父空闲=驱动弹出作 turn 输入;忙碌=引擎
                 // step 边界认领)。队列条不闪现通知:queue_frame 按 source 过滤。
                 let rec = {
-                    let q = qs.lock().unwrap_or_else(|p| p.into_inner());
-                    let mut steer = q.steer.lock().unwrap_or_else(|p| p.into_inner());
+                    let q = qs.lock_recover();
+                    let mut steer = q.steer.lock_recover();
                     let at = steer.len();
                     steer.push_back(SteerInput {
                         id: id.clone(),
@@ -6774,8 +6642,8 @@ async fn driver_loop(
         }
         // 认领:steer 优先(锁序:qs → steer 各自获取,不交叉持有)
         let claimed = {
-            let steer = qs.lock().unwrap_or_else(|p| p.into_inner()).steer.clone();
-            let mut steer_guard = steer.lock().unwrap_or_else(|p| p.into_inner());
+            let steer = qs.lock_recover().steer.clone();
+            let mut steer_guard = steer.lock_recover();
             if let Some(s) = steer_guard.pop_front() {
                 Some((
                     s.id,
@@ -6788,7 +6656,7 @@ async fn driver_loop(
                 ))
             } else {
                 drop(steer_guard);
-                let mut q = qs.lock().unwrap_or_else(|p| p.into_inner());
+                let mut q = qs.lock_recover();
                 q.pending.pop_front().map(|p| {
                     (
                         p.id,
@@ -6818,7 +6686,7 @@ async fn driver_loop(
         // running 标记 + 状态广播(认领 splice 前——steer-unavailable 判断窗口)
         slot.running
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        qs.lock().unwrap_or_else(|p| p.into_inner()).running = true;
+        qs.lock_recover().running = true;
         let _ = host0.host.send(frame(
             "host/session-status",
             serde_json::to_value(HostSessionStatus {
@@ -6945,7 +6813,7 @@ async fn driver_loop(
             .await;
         slot.running
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        qs.lock().unwrap_or_else(|p| p.into_inner()).running = false;
+        qs.lock_recover().running = false;
         let _ = host0.host.send(frame(
             "host/session-status",
             serde_json::to_value(HostSessionStatus {
