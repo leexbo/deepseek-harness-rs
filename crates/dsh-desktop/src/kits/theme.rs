@@ -55,8 +55,7 @@ pub struct Palette {
     pub sidebar_hover: Rgba,
     /// 侧栏行激活/选中(对照 Finder 选中行的同级提亮)
     pub sidebar_active: Rgba,
-    /// 标题栏面(深盘中性灰,勿随 base 走海军蓝——顶条与画布分色;
-    /// 浅盘纯白同画布)
+    /// 标题栏面(深盘与侧栏同色同源,顶条延伸侧栏观感;浅盘纯白)
     pub title_bar: Rgba,
     pub ink: Rgba,
     pub layer: Rgba,
@@ -98,6 +97,10 @@ const fn color(hex: u32, a: f32) -> Rgba {
 /// 非 macOS 无模糊落地,保持实色
 const WINDOW_TINT_A: f32 = if cfg!(target_os = "macos") { 0.9 } else { 1.0 };
 
+/// 深盘侧栏与标题栏同源色(Finder 板岩蓝灰采样一族;用户拍板顶条
+/// 与侧栏同色,同源常量防漂移)
+const DARK_SIDEBAR: Rgba = color(0x2A363E, 0.5);
+
 /// 深色盘:蓝灰色相家族——base 深海军蓝(参考图采样 #212734),
 /// sidebar 板岩蓝灰(Finder 暗侧栏采样 #253035 一族);macOS 毛玻璃
 /// 下 base/sidebar 为半透 tint 涂层,其余表面不透明浮于涂层上。
@@ -105,10 +108,10 @@ const WINDOW_TINT_A: f32 = if cfg!(target_os = "macos") { 0.9 } else { 1.0 };
 const fn dark_palette() -> Palette {
     Palette {
         base: color(0x212734, WINDOW_TINT_A),
-        sidebar: color(0x2A363E, 0.5),
+        sidebar: DARK_SIDEBAR,
         sidebar_hover: color(0x2F3B42, 1.0),
         sidebar_active: color(0x39454C, 1.0),
-        title_bar: color(0x232326, WINDOW_TINT_A),
+        title_bar: DARK_SIDEBAR,
         ink: color(0x000000, 1.0),
         layer: color(0x2A3140, 1.0),
         card: color(0x2E3644, 1.0),
@@ -526,7 +529,9 @@ mod tests {
         // 侧栏交互三态互异(hover/选中串色即侧栏语义失效)
         assert_ne!(d.sidebar, d.sidebar_hover);
         assert_ne!(d.sidebar_hover, d.sidebar_active);
-        // 标题栏中性灰与画布海军蓝分族(顶条随 base 走即分色失效)
+        // 标题栏与侧栏同色(用户拍板顶条延伸侧栏观感;分族即回退)
+        assert_eq!(d.title_bar, d.sidebar);
+        // 标题栏与画布分色
         assert_ne!(d.title_bar, d.base);
     }
 
