@@ -11,19 +11,35 @@ use gpui_kit::{AppContext, Context, Entity, Window};
 
 use crate::shell::store::AppStore;
 
-/// 上下文窗口输入的占位(空 = 用内置默认;数字本身由宿主层解析)
+/// 上下文窗口输入的占位(空 = 用内置默认;单位由解析层展开)
 pub(crate) const CONTEXT_WINDOW_PLACEHOLDER: &str = "默认 1,000,000";
 
-/// 解析上下文窗口草稿:空串 = 不覆盖(None);仅接受 1 以上的整数
-/// (容忍 `_` 与 `,` 千分位);其余 = 非法(表单拒绝保存并就地提示)。
+/// 解析上下文窗口草稿:空串 = 不覆盖(None);接受 1 以上的整数,可带
+/// 单位后缀——`K`/`M` 十进制(1K = 1,000、1M = 1,000,000,与默认值
+/// 和展示同一进制),`Ki`/`Mi` 二进制(1Ki = 1,024、1Mi = 1,048,576,
+/// 上下文窗口的常见写法的精确表达);大小写不敏感,容忍 `_` 与 `,`
+/// 千分位。其余 = 非法(表单拒绝保存并就地提示);溢出同非法。
 pub(crate) fn parse_context_window_tokens(raw: &str) -> Result<Option<u64>, ()> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(None);
     }
-    match trimmed.replace(['_', ','], "").parse::<u64>() {
-        Ok(v) if v > 0 => Ok(Some(v)),
-        _ => Err(()),
+    let cleaned = trimmed.replace(['_', ','], "").to_ascii_lowercase();
+    // 先长后短:Ki/Mi 必须先于 K/M 判定,否则 "128ki" 会以 "i" 残留失败
+    let (digits, scale) = if let Some(head) = cleaned.strip_suffix("ki") {
+        (head, 1_024u64)
+    } else if let Some(head) = cleaned.strip_suffix("mi") {
+        (head, 1_024 * 1_024)
+    } else if let Some(head) = cleaned.strip_suffix('k') {
+        (head, 1_000)
+    } else if let Some(head) = cleaned.strip_suffix('m') {
+        (head, 1_000_000)
+    } else {
+        (cleaned.as_str(), 1)
+    };
+    match digits.parse::<u64>() {
+        Ok(v) => v.checked_mul(scale).filter(|t| *t > 0).map(Some).ok_or(()),
+        Err(_) => Err(()),
     }
 }
 
@@ -2329,7 +2345,8 @@ impl AppStore {
 mod context_window_tests {
     use super::{grouped_tokens, parse_context_window_tokens};
 
-    /// 空 = 不覆盖(回落默认);分组符容忍;零/负/非数 = 非法
+    /// 空 = 不覆盖(回落默认);分组符容忍;K/M 十进制、Ki/Mi 二进制;
+    /// 零/裸单位/余缀/小数/溢出均非法
     #[test]
     fn parses_draft_into_override_or_default() {
         assert_eq!(parse_context_window_tokens(""), Ok(None));
@@ -2340,10 +2357,28 @@ mod context_window_tests {
             parse_context_window_tokens("1_000_000"),
             Ok(Some(1_000_000))
         );
+        // 单位后缀:十进制照默认值进制,二进制给上下文窗口的精确写法
+        assert_eq!(parse_context_window_tokens("1M"), Ok(Some(1_000_000)));
+        assert_eq!(parse_context_window_tokens("1m"), Ok(Some(1_000_000)));
+        assert_eq!(parse_context_window_tokens("256K"), Ok(Some(256_000)));
+        assert_eq!(parse_context_window_tokens("128k"), Ok(Some(128_000)));
+        assert_eq!(parse_context_window_tokens("128Ki"), Ok(Some(131_072)));
+        assert_eq!(parse_context_window_tokens("128ki"), Ok(Some(131_072)));
+        assert_eq!(parse_context_window_tokens("1Mi"), Ok(Some(1_048_576)));
+        assert_eq!(parse_context_window_tokens("2_000K"), Ok(Some(2_000_000)));
         assert_eq!(parse_context_window_tokens("0"), Err(()));
+        assert_eq!(parse_context_window_tokens("0K"), Err(()));
         assert_eq!(parse_context_window_tokens("-1"), Err(()));
-        assert_eq!(parse_context_window_tokens("128k"), Err(()));
+        assert_eq!(parse_context_window_tokens("k"), Err(()));
+        assert_eq!(parse_context_window_tokens("128kk"), Err(()));
+        assert_eq!(parse_context_window_tokens("128Kt"), Err(()));
+        assert_eq!(parse_context_window_tokens("1.5M"), Err(()));
         assert_eq!(parse_context_window_tokens("abc"), Err(()));
+        assert_eq!(
+            parse_context_window_tokens("18446744073709551615K"),
+            Err(()),
+            "乘单位溢出 = 非法"
+        );
     }
 
     /// 展示用千分位分组(输入解析接受同一形态)

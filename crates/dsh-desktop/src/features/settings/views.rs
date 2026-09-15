@@ -1908,7 +1908,7 @@ fn editor_models_block(store: &Entity<AppStore>, cx: &App, fetch_pid: String) ->
                 ),
         )
         .child(caption_line(
-            "点「窗口」为该模型单独设置上下文 token 数;留空使用默认 1,000,000,仅影响自动压缩阈值与上下文计量。",
+            "点「窗口」设置该模型的上下文 token 数(可写 256K / 1M,1M = 1,000,000);留空使用默认,仅影响自动压缩阈值与上下文计量。",
         ))
 }
 
@@ -2228,7 +2228,7 @@ fn context_window_edit_row(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyE
                 div()
                     .text_size(px(11.))
                     .text_color(theme::DANGER())
-                    .child("填 1 以上的整数 token 数,或留空使用默认值"),
+                    .child("填 1 以上的整数或带单位(256K / 1M),或留空使用默认值"),
             )
         })
         .into_any_element()

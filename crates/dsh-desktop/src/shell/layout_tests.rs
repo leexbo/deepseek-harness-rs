@@ -5372,7 +5372,8 @@ fn model_context_window_inline_edit(cx: &mut TestAppContext) {
     assert!(wcx.debug_bounds("model-window-input").is_some());
     click_sel(&mut wcx, "model-window-input");
     wcx.run_until_parked();
-    wcx.simulate_input("131072");
+    // 单位简写:256K → 256,000(解析层展开)
+    wcx.simulate_input("256K");
     wcx.run_until_parked();
     click_sel(&mut wcx, "model-window-apply");
     wcx.run_until_parked();
@@ -5385,7 +5386,7 @@ fn model_context_window_inline_edit(cx: &mut TestAppContext) {
                 .get(&first_model)
                 .copied()
         }),
-        Some(131_072)
+        Some(256_000)
     );
     assert!(cx.update(|app| store.read(app).settings.context_window_edit.is_none()));
 
@@ -5417,7 +5418,7 @@ fn model_context_window_inline_edit(cx: &mut TestAppContext) {
                 .get(&first_model)
                 .copied()
         }),
-        Some(131_072),
+        Some(256_000),
         "草稿值不被非法输入覆盖"
     );
 
@@ -5445,7 +5446,7 @@ fn model_context_window_inline_edit(cx: &mut TestAppContext) {
         .expect("deepseek 条目应保存成功");
     assert_eq!(
         saved["model_context_windows"][first_model.as_str()],
-        131_072,
+        256_000,
         "窗口覆盖应随 provider 落盘:{saved}"
     );
     let _ = std::fs::remove_dir_all(root);
