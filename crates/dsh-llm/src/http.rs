@@ -353,8 +353,11 @@ fn map_event(event: crate::streaming::StreamEvent) -> Option<LlmEvent> {
     }
 }
 
-/// 一次性摘要调用:复用同一 adapter/client,替换 system 与
-/// tools(一次性请求不携带工具目录),累积流式文本为摘要
+/// 一次性摘要调用:照源 compaction summarizer 语义——保留会话请求的
+/// system 头与 tools(逐字前缀 = 上次路由请求的前缀,命中 provider
+/// KV cache),仅在消息尾追加含 checkpoint 指令的最终 user 消息
+/// (dsh_compaction::COMPACTION_INSTRUCTION);累积流式文本为摘要。
+/// `messages` 语义 = 待折叠前缀(逐字,不含指令)。
 impl dsh_agent_loop::Summarizer for HttpTransport {
     fn summarize<'a>(
         &'a mut self,
@@ -365,21 +368,23 @@ impl dsh_agent_loop::Summarizer for HttpTransport {
         Box::pin(async move {
             let one_shot = RequestHeader {
                 model: header.model.clone(),
-                system: "Summarize the conversation so far for a coding agent session. \
-Keep key decisions, file paths, commands, and open tasks. Reply with the summary only."
-                    .into(),
-                temperature: 0.0,
-                reasoning_effort: None,
-                tools: Vec::new(),
+                system: header.system.clone(),
+                temperature: header.temperature,
+                reasoning_effort: header.reasoning_effort.clone(),
+                tools: header.tools.clone(),
             };
-            // 折叠请求上限 30s:超时按折叠失败处理(engine 降级跳过);
+            // 折叠请求上限 300s(手动 /compact 输入可达数百 KB,30s 不够);
+            // 超时按折叠失败处理(自动路径降级跳过/手动路径报错)
             // 摘要 = 纯文本面(源 compaction text-only:图块降级占位,不背 base64)
             let events = tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                self.stream(&one_shot, &strip_images_for_summary(messages)),
+                std::time::Duration::from_secs(300),
+                self.stream(
+                    &one_shot,
+                    &strip_images_for_summary(&dsh_compaction::summarization_messages(messages)),
+                ),
             )
             .await
-            .map_err(|_| "summarize timeout after 30s".to_string())?
+            .map_err(|_| "summarize timeout after 300s".to_string())?
             .map_err(|e| e.to_string())?;
             let mut text = String::new();
             for event in events {
@@ -401,6 +406,7 @@ Keep key decisions, file paths, commands, and open tasks. Reply with the summary
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dsh_agent_loop::Summarizer as _;
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -471,6 +477,58 @@ mod tests {
         assert_eq!(sent["messages"][0]["role"], "system");
         assert_eq!(sent["messages"][1]["role"], "user");
         assert!(sent.get("tools").is_none(), "无工具声明时不带 tools 键");
+    }
+
+    /// 回归锁:summarize 的出网请求必须保留会话 header 的 system 与
+    /// tools(逐字前缀命中 KV cache),且以含 checkpoint 指令的最终
+    /// user 消息收尾(照源 compaction summarizer 语义)
+    #[tokio::test]
+    async fn summarize_replays_system_tools_and_appends_instruction() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"ckpt\"}}]}\n\n\
+                    data: [DONE]\n\n";
+        let (base_url, captured) = spawn_sse_server(body).await;
+
+        let mut transport = HttpTransport::new(ProviderConfig {
+            base_url,
+            api_key: "sk-test".into(),
+            stream_mode: StreamMode::Sse,
+        })
+        .unwrap();
+        let header = RequestHeader {
+            model: "test-model".into(),
+            system: "session system prompt".into(),
+            temperature: 0.3,
+            reasoning_effort: None,
+            tools: vec![json!({ "type": "function", "function": { "name": "bash" } })],
+        };
+        let prefix = json!([
+            { "role": "user", "content": "old question" },
+            { "role": "assistant", "content": "old answer" },
+        ]);
+        let summary = transport
+            .summarize(&header, &prefix)
+            .await
+            .expect("summary");
+        assert_eq!(summary, "ckpt");
+
+        let raw = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        let body_start = raw.find("\r\n\r\n").expect("body") + 4;
+        let sent: Value = serde_json::from_str(&raw[body_start..]).expect("json body");
+        assert_eq!(sent["model"], "test-model");
+        assert_eq!(sent["temperature"], 0.3);
+        // system 与 tools 原样保留(KV cache 前缀)
+        assert_eq!(sent["messages"][0]["role"], "system");
+        assert_eq!(sent["messages"][0]["content"], "session system prompt");
+        assert_eq!(sent["tools"][0]["function"]["name"], "bash");
+        // 消息 = 逐字前缀 + 指令尾注(最终 user 消息)
+        assert_eq!(sent["messages"][1]["content"], "old question");
+        assert_eq!(sent["messages"][2]["content"], "old answer");
+        assert_eq!(sent["messages"][3]["role"], "user");
+        assert_eq!(
+            sent["messages"][3]["content"],
+            dsh_compaction::COMPACTION_INSTRUCTION
+        );
+        assert_eq!(sent["messages"].as_array().unwrap().len(), 4);
     }
 
     /// 悬挂服务端(接受连接后永不回包):读超时必须把 stream() 在

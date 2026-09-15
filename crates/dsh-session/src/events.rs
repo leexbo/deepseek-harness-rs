@@ -378,6 +378,9 @@ pub const KNOWN_EVENT_TYPES: &[&str] = &[
     "audit/call",
     "todo/write",
     "compaction/summary",
+    // 手动压缩失败(/compact;失败留在日志,桌面通告;非 surface;
+    // 新增类型对旧日志安全)
+    "compaction/error",
     "session/mode",
     "plan/submitted",
     "plan/approved",
@@ -545,6 +548,15 @@ pub fn prune_output(output: &str) -> String {
     format!("{head}\n…[pruned {omitted} chars]…\n{tail}")
 }
 
+/// 折叠摘要的包装(照源 frameSummary:使替换消息成为「既定背景」)。
+/// 属派生面词汇故居本层;摘要指令常量在 dsh-compaction。
+pub const CHECKPOINT_PREAMBLE: &str = "This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.";
+
+/// 以 checkpoint 形态包装折叠摘要正文
+pub fn frame_checkpoint(summary: &str) -> String {
+    format!("{CHECKPOINT_PREAMBLE}\n\n<compacted-summary>\n{summary}\n</compacted-summary>")
+}
+
 /// 模型可见消息 = 日志投影 + 显式策略栈。
 ///
 /// 策略栈:① tool/result 输出裁剪(常量,确定性);② 历史折叠——最近一条
@@ -582,7 +594,7 @@ pub fn derive_visible_messages<'a>(
         if through > 0 {
             msgs.push(serde_json::json!({
                 "role": "user",
-                "content": format!("<session-summary>\n{summary}\n</session-summary>"),
+                "content": frame_checkpoint(&summary),
             }));
         }
         for ev in events
@@ -1040,7 +1052,7 @@ mod tests {
             arr[0]["content"]
                 .as_str()
                 .unwrap()
-                .contains("<session-summary>\nasked and answered")
+                .contains("<compacted-summary>\nasked and answered")
         );
         assert_eq!(arr[1]["content"], "new question");
 

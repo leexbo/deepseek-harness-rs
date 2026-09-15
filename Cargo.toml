@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/dsh",
     "crates/dsh-app",
+    "crates/dsh-compaction",
     "crates/dsh-desktop",
     "crates/dsh-core",
     "crates/dsh-mcp",
@@ -62,6 +63,7 @@ dsh-core = { path = "crates/dsh-core" }
 dsh-hooks = { path = "crates/dsh-hooks" }
 dsh-host = { path = "crates/dsh-host" }
 dsh-session = { path = "crates/dsh-session" }
+dsh-compaction = { path = "crates/dsh-compaction" }
 dsh-wit = { path = "crates/dsh-wit" }
 dsh-agent-loop = { path = "crates/dsh-agent-loop" }
 dsh-prompt = { path = "crates/dsh-prompt" }

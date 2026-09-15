@@ -79,6 +79,15 @@ impl AnySession {
         }
     }
 
+    /// 手动压缩(/compact):返回 `Some((seq, items, tokens))` =
+    /// 落档 compaction/summary 的 seq 与统计;None = 无可压缩。
+    async fn compact_now(&mut self) -> anyhow::Result<Option<(u64, u64, u64)>> {
+        match self {
+            AnySession::Real(s) => s.compact_now().await,
+            AnySession::Fake(s) => s.compact_now().await,
+        }
+    }
+
     fn set_hook_port(&mut self, port: Arc<dyn dsh_agent_loop::hooks::HookPortObj>) {
         match self {
             AnySession::Real(s) => s.set_hook_port(port),
@@ -213,6 +222,9 @@ enum Job {
     SetPermission(String),
     /// 审批策略切换(经驱动通道落档 approval/policy;与 turn 串行)
     SetApproval(String),
+    /// 手动压缩(/compact;经驱动通道执行,与 turn 串行——turn 中受理
+    /// 即排队,turn 结束后压)
+    Compact,
 }
 
 /// 驱动任务控制命令(泵 → 驱动;与 turn 串行——驱动只在 turn 间隙处理)
@@ -226,6 +238,8 @@ enum DriverCmd {
     SetApproval(String),
     /// hooks 桥热替换(保存配置即生效,turn 边界换装;None = 卸载)
     SetHooks(Option<std::sync::Arc<dyn dsh_agent_loop::hooks::HookPortObj>>),
+    /// 手动压缩(/compact;摘要调用可达分钟级,驱动侧 await)
+    Compact,
 }
 
 /// 队列态(进程内权威快照经 session/queue 帧下发)。
@@ -496,6 +510,11 @@ pub fn builtin_commands() -> Vec<CommandDescriptor> {
             description: "进入或退出计划模式",
             // 无 hint = 菜单点击立即执行(进计划模式,chip 随回声点亮);
             // off/首条任务走手打斜杠:/plan off、/plan <任务>
+            hint: None,
+        },
+        CommandDescriptor {
+            name: "compact",
+            description: "压缩以上对话内容",
             hint: None,
         },
         CommandDescriptor {
@@ -4628,6 +4647,18 @@ impl AppHost {
                 self.set_model(session_id, args)?;
                 Ok(json!({ "accepted": true, "model": args }))
             }
+            "compact" => {
+                // 受理即返回:压缩 = 驱动侧分钟级摘要任务(经 Job 通道与
+                // turn 串行);完成/失败经 compaction/summary|error 帧
+                // 通告(桌面标记行/通告行)
+                let slot = self.attach(session_id)?;
+                let inner = slot.inner()?;
+                inner
+                    .queue_tx
+                    .send(Job::Compact)
+                    .map_err(|_| RpcError::internal("session worker 已退出"))?;
+                Ok(json!({ "accepted": true, "kind": "compact" }))
+            }
             other => Err(RpcError::bad_request(format!("未知命令 /{other}"))),
         }
     }
@@ -4830,14 +4861,14 @@ impl AppHost {
         };
         let trimmed = text.trim();
         // 命令统一短路(command.execute 语义——命令不走模型面)。
-        // 命令名 plan/goal/model/export;附件带命令 → 全批拒
+        // 命令名 plan/compact/goal/model/export;附件带命令 → 全批拒
         // (command.imagesUnsupported;文件同规则)。
         let cmd_name = trimmed
             .split_whitespace()
             .next()
             .unwrap_or_default()
             .trim_start_matches('/');
-        if matches!(cmd_name, "plan" | "goal" | "model" | "export") {
+        if matches!(cmd_name, "plan" | "compact" | "goal" | "model" | "export") {
             if !refs.is_empty() {
                 return Err(RpcError {
                     code: "attachment-error".into(),
@@ -6376,12 +6407,15 @@ async fn pump_loop(
             Job::SetApproval(policy) => {
                 let _ = driver_cmd.send(DriverCmd::SetApproval(policy));
             }
+            Job::Compact => {
+                let _ = driver_cmd.send(DriverCmd::Compact);
+            }
         }
     }
 }
 
 /// 驱动命令处理(与 turn 串行;session/mode 落档 + 广播尾事件)
-fn handle_driver_cmd(
+async fn handle_driver_cmd(
     session: &mut AnySession,
     provider_info: &ProviderInfo,
     inner: &SlotInner,
@@ -6409,6 +6443,31 @@ fn handle_driver_cmd(
             // hooks 桥热替换(保存配置即生效;turn 边界换装,不中断运行中
             // turn)。None = 卸载全部钩子。
             session.set_hook_port_opt(port);
+        }
+        DriverCmd::Compact => {
+            // 手动压缩:摘要调用可达分钟级,await 阻塞的是驱动循环本身
+            // (turn 间隙),新输入在队列排队、压完即处理(照源维护任务
+            // 独占、插话排队语义)。成功广播 summary(桌面标记行);
+            // 失败落 compaction/error(记录⟺可见,桌面通告)
+            match session.compact_now().await {
+                Ok(Some((seq, _, _))) => {
+                    broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
+                }
+                Ok(None) => {
+                    if let Ok(seq) = session
+                        .session_event("compaction/error", json!({ "message": "暂无可压缩的历史" }))
+                    {
+                        broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
+                    }
+                }
+                Err(e) => {
+                    if let Ok(seq) = session
+                        .session_event("compaction/error", json!({ "message": e.to_string() }))
+                    {
+                        broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
+                    }
+                }
+            }
         }
     }
 }
@@ -6638,7 +6697,8 @@ async fn driver_loop(
                 &session_id,
                 &host0.mux,
                 cmd,
-            );
+            )
+            .await;
         }
         // 认领:steer 优先(锁序:qs → steer 各自获取,不交叉持有)
         let claimed = {
@@ -6678,7 +6738,8 @@ async fn driver_loop(
                     let Some(cmd) = cmd else { return }; // 泵已死(槽被移除)
                     handle_driver_cmd(
                         &mut session, &provider_info, inner, &session_id, &host0.mux, cmd,
-                    );
+                    )
+                    .await;
                 }
             }
             continue;
@@ -9148,6 +9209,7 @@ mod tests {
         let cmds = host.command_list();
         let names: Vec<&str> = cmds.iter().map(|c| c.name).collect();
         assert!(names.contains(&"plan"));
+        assert!(names.contains(&"compact"));
         assert!(names.contains(&"export"));
         assert!(names.contains(&"goal"));
         assert!(names.contains(&"model"));
@@ -9174,6 +9236,11 @@ mod tests {
         assert_eq!(v["accepted"], true);
         let state = host.goal_state(&id).unwrap();
         assert!(state["goals"].as_array().unwrap().is_empty());
+
+        // /compact → 受理即返回(kind=compact;完成/失败走 compaction 事件)
+        let v = host.execute_command(&id, "/compact").await.unwrap();
+        assert_eq!(v["accepted"], true);
+        assert_eq!(v["kind"], "compact");
 
         // 未知命令 → 错
         let err = host.execute_command(&id, "/nope").await.unwrap_err();

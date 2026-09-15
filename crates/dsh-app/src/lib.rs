@@ -529,6 +529,33 @@ where
         self.turn_with(input, None, &[], &[], &[], &mut |_| {})
             .await
     }
+
+    /// 手动压缩(/compact;照源 runMaintenance:非 turn 维护任务)。
+    /// 无压力阈值门槛,选段/摘要/落档与自动折叠同路径;失败上抛。
+    /// 返回 `Some((seq, items, tokens))` = 落档的 compaction/summary
+    /// 事件 seq 与压缩统计;`None` = 无可压缩历史。
+    pub async fn compact_now(&mut self) -> Result<Option<(u64, u64, u64)>> {
+        self.refresh_header();
+        let Session {
+            engine,
+            gate,
+            backend,
+            ..
+        } = self;
+        let mut sink = |ev: &EventEnvelope| {
+            if let Err(e) = backend.append(ev) {
+                eprintln!("持久化失败:{e}");
+            }
+        };
+        let clock = wall_clock;
+        match engine.compact_now(gate, &clock, &mut sink).await {
+            Ok(dsh_agent_loop::FoldOutcome::Folded { seq, items, tokens }) => {
+                Ok(Some((seq, items, tokens)))
+            }
+            Ok(dsh_agent_loop::FoldOutcome::Skipped) => Ok(None),
+            Err(e) => Err(anyhow::anyhow!("{e}")),
+        }
+    }
 }
 
 /// 网关 header 重建器:每 turn 前按日志态(plan 模式/活跃计划)重建 prompt

@@ -2220,6 +2220,7 @@ name = "dsh-agent-loop"
 version = "0.1.0"
 dependencies = [
  "dsh-attachment",
+ "dsh-compaction",
  "dsh-session",
  "serde",
  "serde_json",
@@ -2255,6 +2256,14 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "dsh-compaction"
+version = "0.1.0"
+dependencies = [
+ "dsh-session",
+ "serde_json",
 ]
 
 [[package]]
@@ -2363,6 +2372,7 @@ dependencies = [
  "base64 0.23.1",
  "dsh-agent-loop",
  "dsh-attachment",
+ "dsh-compaction",
  "dsh-session",
  "reqwest",
  "serde_json",

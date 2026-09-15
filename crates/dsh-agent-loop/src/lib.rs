@@ -22,9 +22,8 @@ pub mod tools;
 
 pub use cancel::CancelToken;
 pub use engine::{
-    FOLD_BUDGET_CHARS, FOLD_KEEP_MESSAGES, InstructionsProvider, InstructionsProviderFn,
-    LoopEngine, LoopError, Phase, SkillCatalogProvider, SkillGestureProvider, SteerInput,
-    TurnOutcome,
+    FoldOutcome, InstructionsProvider, InstructionsProviderFn, LoopEngine, LoopError, Phase,
+    SkillCatalogProvider, SkillGestureProvider, SteerInput, TurnOutcome,
 };
 pub use hooks::{
     HookPort, HookPortObj, PostToolVerdict, PreStepVerdict, PreToolVerdict, StopVerdict,

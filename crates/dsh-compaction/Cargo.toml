@@ -1,0 +1,17 @@
+[package]
+name = "dsh-compaction"
+description = "上下文压缩策略:压力阈值/保留尾预算、压缩范围选段(tool 配对平衡)、checkpoint 摘要指令(照源 compaction 包族语义)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# 棘轮已点亮:生产代码零 unwrap/expect(见根 Cargo.toml [workspace.lints.clippy])
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+dsh-session.workspace = true
+serde_json.workspace = true

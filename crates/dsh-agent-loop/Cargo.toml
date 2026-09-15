@@ -10,6 +10,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 dsh-attachment.workspace = true
+dsh-compaction.workspace = true
 dsh-session.workspace = true
 serde.workspace = true
 serde_json.workspace = true

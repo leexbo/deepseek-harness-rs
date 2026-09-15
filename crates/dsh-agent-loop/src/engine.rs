@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use crate::cancel::CancelToken;
 use crate::runtime_context::{ContextSection, RuntimeContextProjection};
 use dsh_session::audit::{BOUNDARY_LLM, BOUNDARY_TOOL, audit_call_event};
-use dsh_session::events::{derive_visible_messages, message_from_event};
+use dsh_session::events::derive_visible_messages;
 use dsh_session::{EventEnvelope, EventLog};
 use serde_json::Value;
 use thiserror::Error;
@@ -59,12 +59,21 @@ pub enum LoopError {
     Cancelled,
 }
 
-/// 历史折叠预算:可见消息 JSON 字符数超此值触发折叠。
-/// 上下文窗口按 1M tokens 计,窗口内不折叠——预算 = 1M token 的
-/// 中文字符估算(4 字/token);超窗口才折叠兜底
-pub const FOLD_BUDGET_CHARS: usize = 4_000_000;
-/// 折叠保留的最近消息条数(近期工具往返不折)
-pub const FOLD_KEEP_MESSAGES: usize = 6;
+/// 一次折叠的结果(`Skipped` = 低于阈值/无可压缩/前缀退化)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldOutcome {
+    /// 未折叠
+    Skipped,
+    /// 已折叠落档
+    Folded {
+        /// compaction/summary 事件 seq(广播锚)
+        seq: u64,
+        /// 折叠条数
+        items: u64,
+        /// 折叠前缀估算 token
+        tokens: u64,
+    },
+}
 
 /// 流式消费累积态(回调侧零借用:事件经 channel,消费侧在主帧处理)
 #[derive(Default)]
@@ -120,8 +129,10 @@ pub struct LoopEngine {
     /// 带 source 的条目(如 subagent 结算通知)时设置,run_turn 消费——
     /// 宿主每次认领必设(有则 Some、无则 None),不存在跨 turn 残留。
     pending_input_source: Option<serde_json::Value>,
-    /// 历史折叠预算字符数(可调小测试;默认 [`FOLD_BUDGET_CHARS`])
-    fold_budget_chars: usize,
+    /// 自动折叠压力阈值 token(可调小测试;默认 [`dsh_compaction::threshold_tokens`])
+    fold_threshold_tokens: u64,
+    /// 自动折叠保留尾 token(可调小测试;默认 [`dsh_compaction::retain_tokens`])
+    fold_retain_tokens: u64,
     /// 会话级 runtime-context 投影(retained 快照去重;每步 project,折叠命中失效)。
     /// 引擎跨 turn 保留,替代 driver 的 `last_runtime_snapshot` 单文本比对。
     projection: RuntimeContextProjection,
@@ -187,7 +198,8 @@ impl LoopEngine {
             cancel: CancelToken::new(),
             steer_buf: None,
             pending_input_source: None,
-            fold_budget_chars: FOLD_BUDGET_CHARS,
+            fold_threshold_tokens: dsh_compaction::threshold_tokens(),
+            fold_retain_tokens: dsh_compaction::retain_tokens(),
             projection: RuntimeContextProjection::new(),
             context_provider: None,
             instructions_provider: None,
@@ -363,9 +375,10 @@ impl LoopEngine {
         Ok(claims)
     }
 
-    /// 调整历史折叠预算(测试用;默认 [`FOLD_BUDGET_CHARS`])
-    pub fn set_fold_budget(&mut self, budget: usize) {
-        self.fold_budget_chars = budget;
+    /// 调整自动折叠阈值/保留尾 token(测试用;默认照源窗口占比)
+    pub fn set_fold_thresholds(&mut self, threshold: u64, retain: u64) {
+        self.fold_threshold_tokens = threshold;
+        self.fold_retain_tokens = retain;
     }
 
     /// 替换请求 header(plan mode 切换后由装配层重建 prompt 注入;
@@ -890,12 +903,13 @@ impl LoopEngine {
                 }
             }
 
-            // 历史折叠:可见消息超预算 → 一次性摘要(记录优先:
+            // 历史折叠:上下文量测越压力阈值 → 一次性摘要(记录优先:
             // audit → 调用 → compaction/summary 落档;重放读记录不重调)。
             // turn_anchor = 本 turn 首条 claimed 的归因锚。
             Self::maybe_fold(
                 &self.log,
-                self.fold_budget_chars,
+                self.fold_threshold_tokens,
+                self.fold_retain_tokens,
                 transport,
                 &self.header,
                 turn_anchor,
@@ -1343,13 +1357,14 @@ impl LoopEngine {
         })
     }
 
-    /// 折叠判定与执行:可见消息超预算且余量足够时,把前缀摘要为一条
-    /// `compaction/summary` 事件。折叠前缀 = 除最近 [`FOLD_KEEP_MESSAGES`]
-    /// 条外的全部可见消息;`through_seq` = 前缀最后一条消息对应的事件 seq。
+    /// 折叠判定与执行:上下文量测越过压力阈值时,把保留尾之前的前缀
+    /// 摘要为一条 `compaction/summary` 事件。量测优先真实 usage、选段
+    /// 切点 tool 配对平衡、保留尾预算照源——见 [`dsh_compaction`]。
     #[allow(clippy::too_many_arguments)]
     async fn maybe_fold<T>(
         log: &Arc<Mutex<EventLog>>,
-        budget: usize,
+        threshold: u64,
+        retain: u64,
         transport: &mut T,
         header: &RequestHeader,
         user_seq: u64,
@@ -1359,102 +1374,148 @@ impl LoopEngine {
     where
         T: LlmTransport + crate::summarizer::Summarizer,
     {
-        let visible = {
+        match Self::fold_once(
+            log,
+            Some(threshold),
+            retain,
+            transport,
+            header,
+            Some(user_seq),
+            clock,
+            sink,
+        )
+        .await
+        {
+            Ok(_) => Ok(()),
+            // 自动路径失败已降级 Skipped;此处仅剩日志/锁错误
+            Err(e) => Err(e),
+        }
+    }
+
+    /// 手动压缩(/compact;照源 runMaintenance:非 turn 维护任务,由驱动
+    /// 在 turn 间隙调用)。显式要求即压(无压力阈值门槛),其余与自动
+    /// 折叠同路径(量测/选段/摘要/落档);失败上抛。`Skipped` = 无可压缩。
+    pub async fn compact_now<T>(
+        &mut self,
+        transport: &mut T,
+        clock: &(dyn Fn() -> i64 + Send + Sync),
+        sink: &mut (dyn FnMut(&EventEnvelope) + Send),
+    ) -> Result<FoldOutcome, LoopError>
+    where
+        T: LlmTransport + crate::summarizer::Summarizer,
+    {
+        Self::fold_once(
+            &self.log,
+            None,
+            self.fold_retain_tokens,
+            transport,
+            &self.header,
+            None,
+            clock,
+            sink,
+        )
+        .await
+    }
+
+    /// 折叠共用实现:`threshold` Some = 自动(低于即跳过;摘要失败降级
+    /// 跳过),None = 手动(无门槛;失败上抛)。`user_seq` = 自动折叠的
+    /// 归因锚(手动无 turn,审计不带 source)。
+    #[allow(clippy::too_many_arguments)]
+    async fn fold_once<T>(
+        log: &Arc<Mutex<EventLog>>,
+        threshold: Option<u64>,
+        retain: u64,
+        transport: &mut T,
+        header: &RequestHeader,
+        user_seq: Option<u64>,
+        clock: &(dyn Fn() -> i64 + Send + Sync),
+        sink: &mut (dyn FnMut(&EventEnvelope) + Send),
+    ) -> Result<FoldOutcome, LoopError>
+    where
+        T: LlmTransport + crate::summarizer::Summarizer,
+    {
+        let events: Vec<EventEnvelope> = {
             let Ok(l) = log.lock() else {
                 return Err(LoopError::Log("log 锁中毒".into()));
             };
-            derive_visible_messages(l.iter())
+            l.iter().cloned().collect()
         };
-        let total = visible.to_string().chars().count();
-        if total <= budget {
-            return Ok(());
+        let visible = derive_visible_messages(events.iter());
+        let derived_chars = visible.to_string().chars().count() as u64;
+        let measure = dsh_compaction::measure_tokens(&events, derived_chars);
+        if threshold.is_some_and(|t| measure < t) {
+            return Ok(FoldOutcome::Skipped);
         }
+        let Some(range) = dsh_compaction::select_range(&events, retain) else {
+            return Ok(FoldOutcome::Skipped);
+        };
         let Some(arr) = visible.as_array() else {
-            return Ok(());
+            return Ok(FoldOutcome::Skipped);
         };
-        if arr.len() <= FOLD_KEEP_MESSAGES {
-            return Ok(());
-        }
-        let fold_len = arr.len() - FOLD_KEEP_MESSAGES;
-
-        // through_seq:与当前可见面一致地数事件产出(folding 后只数
-        // 最近 summary 之后的事件),取第 fold_len 条(扣除摘要消息)条。
-        // shadowed_range = 折叠遮蔽的可见面 seq 区间——
-        // start = 折叠前缀第一条 message seq,end = through_seq。
-        let (through_seq, shadowed_start) = {
-            let Ok(l) = log.lock() else {
-                return Err(LoopError::Log("log 锁中毒".into()));
-            };
-            let prev_through = l
-                .iter()
-                .rev()
-                .find(|e| e.r#type == "compaction/summary")
-                .and_then(|e| e.data["throughSeq"].as_u64())
-                .unwrap_or(0);
-            let summary_msgs = u64::from(prev_through > 0) as usize;
-            let mut produced = 0usize;
-            let mut through = 0u64;
-            let mut start = 0u64;
-            for ev in l.iter().filter(|e| e.seq > prev_through) {
-                if message_from_event(&ev.r#type, &ev.data).is_some() {
-                    if start == 0 {
-                        start = ev.seq;
-                    }
-                    produced += 1;
-                    if produced + summary_msgs == fold_len {
-                        through = ev.seq;
-                        break;
-                    }
-                }
-            }
-            (through, start)
-        };
-        if through_seq == 0 {
-            return Ok(()); // 前缀映射不到事件(不应发生;不折叠保守处理)
+        if range.prefix_len == 0 || range.prefix_len > arr.len() {
+            return Ok(FoldOutcome::Skipped); // 前缀越界(悬空占位等派生差;不折叠保守处理)
         }
 
-        // 记录优先:审计先落(一次性调用,归因当前 user/message)
+        // 记录优先:审计先落(一次性调用;自动归因当前 user/message)
         Self::commit(
             log,
             audit_call_event(
                 clock(),
                 BOUNDARY_LLM,
                 "compaction",
-                serde_json::json!({ "chars": total, "through": through_seq }),
-                vec![user_seq],
+                serde_json::json!({
+                    "tokens": measure,
+                    "items": range.fold_len,
+                    "through": range.through_seq,
+                    "manual": threshold.is_none(),
+                }),
+                user_seq.map(|s| vec![s]).unwrap_or_default(),
             ),
             sink,
         )?;
-        let fold_messages = Value::Array(arr[..fold_len].to_vec());
+        // 前缀 = 派生面头部到切点(含上次 checkpoint 占位;prefix_len
+        // 已把该偏移算入——切 fold_len 会漏掉 through_seq 指向的尾条)
+        let fold_messages = Value::Array(arr[..range.prefix_len].to_vec());
         let summary = match transport.summarize(header, &fold_messages).await {
             Ok(s) => s,
             Err(e) => {
-                // 折叠失败(超时/拒绝):跳过折叠,历史保持完整,本次 turn 不受阻
-                // (不落 compaction/summary → 后续可见面与日志一致,不变式保持)
-                eprintln!("[dsh-agent-loop] 历史折叠失败,跳过: {e}");
-                return Ok(());
+                // 自动折叠失败(超时/拒绝):跳过折叠,历史保持完整,本次
+                // turn 不受阻(不落 compaction/summary → 后续可见面与日志
+                // 一致,不变式保持);手动失败上抛给调用方处置
+                if threshold.is_some() {
+                    eprintln!("[dsh-agent-loop] 历史折叠失败,跳过: {e}");
+                    return Ok(FoldOutcome::Skipped);
+                }
+                return Err(LoopError::Log(format!("压缩失败:{e}")));
             }
         };
-        Self::commit(
+        let seq = Self::commit(
             log,
             EventEnvelope::new(
                 "compaction/summary",
                 clock(),
                 serde_json::json!({
                     "summary": summary,
-                    "throughSeq": through_seq,
+                    "throughSeq": range.through_seq,
                     // 折叠遮蔽的可见面 seq 区间(投影据此判定
                     // retained 失效——端取 through_seq,启取折叠前缀首条 message seq,
                     // 退化时以 end 兜底)
                     "shadowedRange": {
-                        "start": if shadowed_start == 0 { through_seq } else { shadowed_start },
-                        "end": through_seq,
+                        "start": if range.shadowed_start == 0 { range.through_seq } else { range.shadowed_start },
+                        "end": range.through_seq,
                     },
+                    // 压缩统计(UI 标记行「已压缩 N 条(约 X tokens)」)
+                    "items": range.fold_len,
+                    "shadowedTokens": range.estimated_tokens,
                 }),
             ),
             sink,
         )?;
-        Ok(())
+        Ok(FoldOutcome::Folded {
+            seq,
+            items: range.fold_len as u64,
+            tokens: range.estimated_tokens,
+        })
     }
 
     /// 软取消收尾:turn/end 记录 cancelled 归因,phase 置 Stopped

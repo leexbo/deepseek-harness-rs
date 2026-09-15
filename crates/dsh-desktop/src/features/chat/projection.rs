@@ -104,6 +104,18 @@ pub enum ChatNode {
         /// 文本
         text: String,
     },
+    /// 压缩标记行(compaction/summary 落档;照源 CompactionItem:
+    /// 折叠态显统计行,点击展开摘要全文)
+    Compaction {
+        /// 稳定 key(cpt:<seq>)
+        key: String,
+        /// 摘要正文(markdown)
+        summary: String,
+        /// 折叠条数(None = 载荷无统计,标题退「上下文已压缩」)
+        items: Option<u64>,
+        /// 折叠前缀估算 token
+        tokens: Option<u64>,
+    },
     /// 计划归档卡(plan/submitted 落档;批准/取消仅更新状态)
     Plan {
         /// 稳定 key(plan:<seq>)
@@ -152,6 +164,7 @@ impl ChatNode {
             | ChatNode::TurnTail { key, .. }
             | ChatNode::Context { key, .. }
             | ChatNode::Notice { key, .. }
+            | ChatNode::Compaction { key, .. }
             | ChatNode::Plan { key, .. }
             | ChatNode::Retry { key, .. } => key,
         }
@@ -534,6 +547,24 @@ impl ChatState {
                     key: format!("plan:{}", ev.seq),
                     plan,
                     status: PlanStatus::Pending,
+                });
+            }
+            // 压缩标记行(历史折叠落档;照源 CompactionItem:标记行不
+            // 替换被折叠的转写行,展开看摘要)
+            "compaction/summary" => {
+                self.nodes.push(ChatNode::Compaction {
+                    key: format!("cpt:{}", ev.seq),
+                    summary: ev.data["summary"].as_str().unwrap_or_default().to_string(),
+                    items: ev.data["items"].as_u64(),
+                    tokens: ev.data["shadowedTokens"].as_u64(),
+                });
+            }
+            // 手动压缩失败(留档通告;None=无可压缩 的空反馈同路)
+            "compaction/error" => {
+                let msg = ev.data["message"].as_str().unwrap_or("未知错误");
+                self.push_node(ChatNode::Notice {
+                    key: format!("cpt-err:{}", ev.seq),
+                    text: format!("压缩:{msg}"),
                 });
             }
             "plan/approved" | "plan/cancelled" => {
@@ -1224,6 +1255,44 @@ mod tests {
                 );
             }
             other => panic!("expected turn tail, got {other:?}"),
+        }
+    }
+
+    /// 压缩事件对:summary → Compaction 标记行(带统计);error →
+    /// Notice 通告(手动压缩失败/空反馈)
+    #[test]
+    fn compaction_events_project_marker_and_notice() {
+        let mut st = ChatState::default();
+        st.apply(&ev(
+            "compaction/summary",
+            2,
+            json!({ "summary": "ckpt body", "items": 5, "shadowedTokens": 1234 }),
+        ));
+        match &st.nodes[0] {
+            ChatNode::Compaction {
+                key,
+                summary,
+                items,
+                tokens,
+            } => {
+                assert_eq!(key, "cpt:2");
+                assert_eq!(summary, "ckpt body");
+                assert_eq!(*items, Some(5));
+                assert_eq!(*tokens, Some(1234));
+            }
+            other => panic!("expected compaction marker, got {other:?}"),
+        }
+        st.apply(&ev(
+            "compaction/error",
+            3,
+            json!({ "message": "暂无可压缩的历史" }),
+        ));
+        match &st.nodes[1] {
+            ChatNode::Notice { key, text } => {
+                assert_eq!(key, "cpt-err:3");
+                assert!(text.contains("暂无可压缩的历史"), "{text}");
+            }
+            other => panic!("expected notice, got {other:?}"),
         }
     }
 

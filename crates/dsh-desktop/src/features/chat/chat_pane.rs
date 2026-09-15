@@ -137,6 +137,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                     cx,
                     &st.chat.open_reasoning,
                     &st.chat.open_context,
+                    &st.chat.open_compactions,
                     &st.chat.expanded_tools,
                     &st.chat.open_retries,
                     *n,
@@ -161,6 +162,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                     cx,
                     &st.chat.open_reasoning,
                     &st.chat.open_context,
+                    &st.chat.open_compactions,
                     &st.chat.expanded_tools,
                     &st.chat.open_retries,
                     *n,
@@ -741,6 +743,61 @@ fn context_block(
         .into_any_element()
 }
 
+/// 压缩标记行(compaction/summary;照源 CompactionItem zh 文案):
+/// 折叠态 = Archive 图标 + 统计行(已压缩 N 条历史记录(约 X tokens),
+/// 无统计退「上下文已压缩」);点击展开渲染摘要全文(markdown)
+fn compaction_block(
+    store: &Entity<AppStore>,
+    open_compactions: &std::collections::HashSet<String>,
+    ix: usize,
+    key: &str,
+    summary: &str,
+    items: Option<u64>,
+    tokens: Option<u64>,
+) -> impl IntoElement {
+    let open = open_compactions.contains(key);
+    let s = store.clone();
+    let key_owned = key.to_string();
+    let click_key = key.to_string();
+    // zh 逐字照源 locale:completed='已压缩 {items} 条历史记录(约
+    // {tokens} tokens)';title='上下文已压缩'
+    let title = match (items, tokens) {
+        (Some(n), Some(t)) => format!("已压缩 {n} 条历史记录(约 {t} tokens)"),
+        _ => "上下文已压缩".to_string(),
+    };
+    div()
+        .id(("compaction", ix))
+        .v_flex()
+        .rounded(px(8.))
+        .bg(theme::LAYER())
+        .px(px(10.))
+        .cursor_pointer()
+        .when(open, |el| el.py(px(8.)))
+        .when(!open, |el| el.py(px(6.)))
+        .child(collapse_row_header(
+            fixed(DshIcon::Archive, 14.).into_any_element(),
+            &title,
+            None,
+            open,
+        ))
+        .when(open, |el| {
+            let order = crate::kits::markdown::CHAT_ORDER_BASE
+                + (1 + ix as u64) * crate::kits::markdown::ORDER_STRIDE;
+            el.child(
+                div()
+                    .mt(px(4.))
+                    .child(crate::kits::markdown::render_clickable(
+                        &key_owned, summary, None, order,
+                    )),
+            )
+        })
+        .on_click(move |_, _, cx| {
+            let key = click_key.clone();
+            s.update(cx, |st, cx| st.toggle_compaction(&key, cx));
+        })
+        .into_any_element()
+}
+
 /// 子代理通知卡:Bot 图标+状态标题+折叠摘要
 /// (closing 首行)+展开正文与「查看子会话」跳转(senderSessionId → open_session,
 /// 血缘会话不经侧栏)。
@@ -977,6 +1034,7 @@ fn render_node(
     cx: &App,
     open_reasoning: &std::collections::HashSet<String>,
     open_context: &std::collections::HashSet<String>,
+    open_compactions: &std::collections::HashSet<String>,
     expanded_tools: &std::collections::HashSet<String>,
     open_retries: &std::collections::HashSet<String>,
     ix: usize,
@@ -1046,6 +1104,13 @@ fn render_node(
             ..
         } => turn_tail(store, *aborted, meta.as_deref(), deliverables).into_any_element(),
         ChatNode::Notice { text, .. } => notice(text).into_any_element(),
+        ChatNode::Compaction {
+            key,
+            summary,
+            items,
+            tokens,
+        } => compaction_block(store, open_compactions, ix, key, summary, *items, *tokens)
+            .into_any_element(),
         ChatNode::Plan { key, plan, status } => {
             plan_archive_card(store, cx, ix, key, plan, *status).into_any_element()
         }

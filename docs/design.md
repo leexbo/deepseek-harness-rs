@@ -112,6 +112,7 @@ flowchart TB
 | `dsh-llm` | LLM 接入:通用方言引擎(chat/responses/anthropic)+ Ext 差异点(deepseek-responses / openai-responses / anthropic / deepseek-chat / openai-chat)、HTTP/SSE transport、不变式闸门(InvariantGate)、假 provider 测试装备 | 库 API;扩展点 `ProviderAdapter` / `FrameMapper` / `ChatExt` / `ResponsesExt` / `AnthropicExt` |
 | `dsh-sandbox` | 执行原语:沙箱链(fail-closed)、受控 spawn/PTY(独立进程组、SIGTERM→grace→SIGKILL) | 库 API |
 | `dsh-agent-loop` | turn/step 状态机;驱动端口定义 | `LlmTransport` / `Summarizer` / `ToolPort` / `ToolSet`(名字分发)/ `CancelToken`(trait 由宿主实现) |
+| `dsh-compaction` | 上下文压缩策略(纯函数):压力阈值/保留尾 token 预算(0.8/0.16×窗口)、压缩范围选段(tool 配对平衡切点)、checkpoint 摘要指令(照源 compaction 包族语义) | 纯函数(select_range / measure_tokens / COMPACTION_INSTRUCTION) |
 | `dsh-session` | 事件日志:信封、类型、seq 强制、消息派生、归因查询 | rlib API + WIT `dsh:session` 导出 |
 | `dsh-prompt` | system prompt 组装(纯函数;宿主注入身份/环境/指令文件内容) | `assemble(ctx)` |
 | `dsh-tools` | BashTool(沙箱执行、取消、PTY)+ FileTools(file_read / file_edit / file_search——检索为 ripgrep 引擎:ignore 遍历尊重 .gitignore,grep-searcher 行搜索)+ TodoTool(todo/state)+ PlanTool(exit_plan_mode)+ GoalTool(goal/state)+ SubagentTool(嵌套引擎,独立子日志,能力束窄化)+ SubagentControlTool + JobTool(后台任务 list/read/stop;输出落盘 .dshrs/jobs) | `ToolPort` 实现 |
@@ -134,6 +135,7 @@ crates/dsh-sandbox/       执行原语(沙箱链/进程/PTY)
 crates/dsh-wit/           host bindgen + 组件契约测试
 crates/dsh-session/       事件日志组件(wasm32-wasip2 产物 + rlib)
 crates/dsh-agent-loop/    turn 引擎 + 端口 trait
+crates/dsh-compaction/    上下文压缩策略(阈值/选段/摘要指令,纯函数)
 crates/dsh-prompt/        prompt 组装
 crates/dsh-tools/         工具注册表与内置工具(含 BashTool)
 crates/dsh-example-tool/  示例工具组件(dsh:tools 参考实现,测试物料)
@@ -242,7 +244,7 @@ JSONL 日志逐事件重放:信封校验(§7.1)通过即重建 EventLog,`derive_
 模型可见消息 = 裸映射 + 显式策略栈(`derive_visible_messages`,唯一实现):
 
 1. **tool/result 裁剪**:输出超 8192 字符截断为 head 4096 + tail 1024,中段注明省略量;常量而非配置——投影必须跨重放稳定。日志保留全文(审计保真),裁剪只作用于请求面。
-2. **历史折叠**:最近一条 `compaction/summary` 之前的事件折叠为单条摘要消息(用户角色、`<session-summary>` 包裹),其后照常派生。折叠由 engine 在 step 起点判定(可见消息超预算 96000 字符,保留最近 6 条),一次性摘要经 `Summarizer` 端口出网——**非会话面请求**,不经闸门比对;其持久化 = `audit/call`(operation=compaction)+ `compaction/summary` 事件,重放读记录、不重调。
+2. **历史折叠**:最近一条 `compaction/summary` 之前的事件折叠为单条摘要消息(用户角色、checkpoint 前言 + `<compacted-summary>` 包裹,照源 frameSummary),其后照常派生。折叠由 engine 在 step 起点判定(策略照源 compaction-basic:量测优先真实 usage、退化字符÷4;越过 0.8×窗口触发,保留尾 0.16×窗口,选段切点回退到 tool 配对平衡处——策略纯函数在 `dsh-compaction`),一次性摘要经 `Summarizer` 端口出网——**非会话面请求**,不经闸门比对;请求 = 会话 header 的 system/tools + 逐字前缀 + checkpoint 指令尾注(源 KV-cache 复用语义)。其持久化 = `audit/call`(operation=compaction)+ `compaction/summary` 事件(载荷含 items/shadowedTokens,桌面标记行素材),重放读记录、不重调。**手动 /compact**(host 命令):经 Job 通道在驱动 turn 间隙执行,无压力阈值门槛,失败落 `compaction/error`;桌面呈现「已压缩 N 条历史记录(约 X tokens)」标记行,可展开摘要。
 
 engine 的请求构造与闸门的期望比对共用该函数——策略栈两侧同一实现,不变式不被策略破坏。
 

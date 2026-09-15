@@ -142,6 +142,9 @@ pub struct FakeProvider {
     pub received: Vec<(RequestHeader, Value)>,
     /// 摘要脚本:summarize 调用依序弹出;空则回固定串
     pub summaries: Vec<String>,
+    /// 录制:summarize 收到的 (header, messages)——待折叠前缀逐字
+    /// (回归锁:二次压缩前缀末条须 == through_seq 指向的消息)
+    pub summary_inputs: Vec<(RequestHeader, Value)>,
 }
 
 impl FakeProvider {
@@ -160,9 +163,10 @@ impl FakeProvider {
 impl dsh_agent_loop::Summarizer for FakeProvider {
     fn summarize<'a>(
         &'a mut self,
-        _header: &'a RequestHeader,
-        _messages: &'a Value,
+        header: &'a RequestHeader,
+        messages: &'a Value,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+        self.summary_inputs.push((header.clone(), messages.clone()));
         Box::pin(async move {
             Ok(if self.summaries.is_empty() {
                 "[fake summary]".into()

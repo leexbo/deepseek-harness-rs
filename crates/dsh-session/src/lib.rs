@@ -23,11 +23,12 @@ pub mod guest;
 pub use audit::{Attribution, AuditRecord, attribution_chain, audit_call_event, audit_records};
 pub use envelope::{EnvelopeError, EventEnvelope, SESSION_FORMAT_VERSION, decode_envelope};
 pub use events::{
-    ATTRIBUTED_EVENT_TYPES, AssistantChunk, AssistantMessage, CompactionSummary, GoalItem,
-    GoalState, KNOWN_EVENT_TYPES, LlmRetry, LlmRetryStarted, PRUNE_HEAD_CHARS, PRUNE_TAIL_CHARS,
-    PRUNE_THRESHOLD_CHARS, PlanApproved, PlanSubmitted, SURFACE_EVENT_TYPES, SessionEventData,
-    SessionMode, TodoItem, TodoWrite, ToolResult, UserMessage, derive_messages,
-    derive_visible_messages, message_from_event, prune_output,
+    ATTRIBUTED_EVENT_TYPES, AssistantChunk, AssistantMessage, CHECKPOINT_PREAMBLE,
+    CompactionSummary, GoalItem, GoalState, KNOWN_EVENT_TYPES, LlmRetry, LlmRetryStarted,
+    PRUNE_HEAD_CHARS, PRUNE_TAIL_CHARS, PRUNE_THRESHOLD_CHARS, PlanApproved, PlanSubmitted,
+    SURFACE_EVENT_TYPES, SessionEventData, SessionMode, TodoItem, TodoWrite, ToolResult,
+    UserMessage, derive_messages, derive_visible_messages, frame_checkpoint, message_from_event,
+    prune_output,
 };
 pub use log::{EventLog, LogError};
 

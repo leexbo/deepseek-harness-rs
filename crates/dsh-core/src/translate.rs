@@ -344,6 +344,11 @@ impl Translator {
             "plan/submitted" | "plan/approved" | "plan/cancelled" => {
                 session_event(ev, ev.data.clone(), None, None, None)
             }
+            // 压缩结果对(summary 落档成功 / error 手动压缩失败)——原样
+            // 透传,桌面投影成「已压缩」标记行(可展开摘要)或失败通告
+            "compaction/summary" | "compaction/error" => {
+                session_event(ev, ev.data.clone(), None, None, None)
+            }
             "session/mode" => {
                 let active = ev.data["mode"].as_str() == Some("plan");
                 let mut out = session_event(ev, json!({ "active": active }), None, None, None);
@@ -797,13 +802,28 @@ mod tests {
             ("goal/state", json!({ "goals": [] })),
             ("goal/state", json!({ "goals": [] })),
             ("audit/call", json!({ "boundary": "llm" })),
-            (
-                "compaction/summary",
-                json!({ "summary": "s", "throughSeq": 1 }),
-            ),
         ] {
             assert!(tr.translate(&ev(ty, 1, data)).is_none(), "{ty} 应丢弃");
         }
+    }
+
+    #[test]
+    fn compaction_events_pass_through() {
+        // 压缩结果对进桌面(summary 标记行 / error 通告)
+        let mut tr = Translator::new(info());
+        let s = tr
+            .translate(&ev(
+                "compaction/summary",
+                1,
+                json!({ "summary": "s", "throughSeq": 1 }),
+            ))
+            .expect("summary 透传");
+        assert_eq!(s.ty, "compaction/summary");
+        assert_eq!(s.data["summary"], "s");
+        let e = tr
+            .translate(&ev("compaction/error", 2, json!({ "message": "m" })))
+            .expect("error 透传");
+        assert_eq!(e.ty, "compaction/error");
     }
 
     /// 多 turn 计数器推进
