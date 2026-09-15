@@ -23,7 +23,7 @@ use gpui_kit::{
 };
 
 use crate::features::settings::SettingsNav;
-use crate::features::settings::store::McpDetailMode;
+use crate::features::settings::store::{McpDetailMode, grouped_tokens};
 use crate::kits::icons::{DshIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -1839,7 +1839,7 @@ fn editor_models_block(store: &Entity<AppStore>, cx: &App, fetch_pid: String) ->
                         .set_form_models
                         .iter()
                         .enumerate()
-                        .map(|(ix, m)| model_draft_row(store, ix, m)),
+                        .map(|(ix, m)| model_draft_row(store, cx, ix, m)),
                 )
                 .into_any_element()
         })
@@ -1907,6 +1907,9 @@ fn editor_models_block(store: &Entity<AppStore>, cx: &App, fetch_pid: String) ->
                         }),
                 ),
         )
+        .child(caption_line(
+            "点「窗口」为该模型单独设置上下文 token 数;留空使用默认 1,000,000,仅影响自动压缩阈值与上下文计量。",
+        ))
 }
 
 /// 计费端点块(开关 + 形态 + URL + JSON 路径)
@@ -2065,38 +2068,170 @@ fn editor_billing_block(
         })
 }
 
-/// 草稿模型行(id + 移除 x)
-fn model_draft_row(store: &Entity<AppStore>, ix: usize, model: &str) -> impl IntoElement {
-    let s = store.clone();
+/// 草稿模型行:名称 + 上下文窗口 chip(展开行内编辑)+ 移除
+fn model_draft_row(store: &Entity<AppStore>, cx: &App, ix: usize, model: &str) -> impl IntoElement {
+    let st = store.read(cx);
+    let editing = st.settings.context_window_edit.as_deref() == Some(model);
+    // 窗口 chip:已覆盖 = 「窗口 128,000」;无覆盖 = 「窗口 默认」(点击展开编辑)
+    let chip_text = st
+        .settings
+        .set_form_context_windows
+        .get(model)
+        .map(|v| format!("窗口 {}", grouped_tokens(*v)))
+        .unwrap_or_else(|| "窗口 默认".to_string());
+    let s_chip = store.clone();
+    let s_remove = store.clone();
+    let chip_model = model.to_string();
     div()
-        .id(sid("model-draft", &ix.to_string()))
-        .debug_selector(|| format!("model-draft-{ix}"))
-        .flex()
-        .items_center()
-        .justify_between()
-        .h(px(30.))
-        .px(px(10.))
-        .rounded(px(8.))
-        .bg(theme::SIDEBAR())
-        .text_size(px(13.))
-        .text_color(theme::LABEL_2())
-        .child(model.to_string())
+        .v_flex()
+        .gap(px(4.))
         .child(
             div()
-                .id(sid("model-draft-remove", &ix.to_string()))
+                .id(sid("model-draft", &ix.to_string()))
+                .debug_selector(|| format!("model-draft-{ix}"))
                 .flex()
-                .size(px(20.))
                 .items_center()
-                .justify_center()
-                .rounded(px(6.))
-                .cursor_pointer()
-                .text_color(theme::CAPTION())
-                .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
-                .child(fixed(IconName::Close, 12.))
-                .on_click(move |_, _, cx| {
-                    s.update(cx, |st, cx| st.remove_form_model(ix, cx));
-                }),
+                .gap(px(8.))
+                .h(px(30.))
+                .px(px(10.))
+                .rounded(px(8.))
+                .bg(theme::SIDEBAR())
+                .text_size(px(13.))
+                .text_color(theme::LABEL_2())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .truncate()
+                        .child(model.to_string()),
+                )
+                .child(
+                    div()
+                        .id(sid("model-window", &ix.to_string()))
+                        .debug_selector(|| format!("model-window-{ix}"))
+                        .flex()
+                        .h(px(22.))
+                        .flex_shrink_0()
+                        .items_center()
+                        .px(px(8.))
+                        .rounded(px(11.))
+                        .border_1()
+                        .border_color(if editing {
+                            theme::BRAND()
+                        } else {
+                            theme::BORDER()
+                        })
+                        .cursor_pointer()
+                        .text_size(px(11.))
+                        .text_color(if editing {
+                            theme::LABEL()
+                        } else {
+                            theme::CAPTION()
+                        })
+                        .hover(|s| s.text_color(theme::LABEL()))
+                        .child(chip_text)
+                        .on_click(move |_, window, cx| {
+                            let m = chip_model.clone();
+                            s_chip
+                                .update(cx, |st, cx| st.begin_context_window_edit(&m, window, cx));
+                        }),
+                )
+                .child(
+                    div()
+                        .id(sid("model-draft-remove", &ix.to_string()))
+                        .flex()
+                        .size(px(20.))
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .text_color(theme::CAPTION())
+                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
+                        .child(fixed(IconName::Close, 12.))
+                        .on_click(move |_, _, cx| {
+                            s_remove.update(cx, |st, cx| st.remove_form_model(ix, cx));
+                        }),
+                ),
         )
+        .when(editing, |el| el.child(context_window_edit_row(store, cx)))
+}
+
+/// 窗口行内编辑行(展开态):输入 + 应用/取消;非法时行内提示
+fn context_window_edit_row(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
+    let st = store.read(cx);
+    let (s_apply, s_cancel) = (store.clone(), store.clone());
+    div()
+        .v_flex()
+        .gap(px(4.))
+        .px(px(10.))
+        .pb(px(2.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .children(st.settings.context_window_input.as_ref().map(|e| {
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h(px(30.))
+                        .debug_selector(|| "model-window-input".to_string())
+                        .child(Input::new(e).small())
+                }))
+                .child(
+                    div()
+                        .id("model-window-apply")
+                        .debug_selector(|| "model-window-apply".to_string())
+                        .flex()
+                        .h(px(26.))
+                        .flex_shrink_0()
+                        .items_center()
+                        .px(px(10.))
+                        .rounded(px(13.))
+                        .bg(theme::DOCK())
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(theme::LABEL())
+                        .hover(|s| s.bg(theme::BUBBLE()))
+                        .child("应用")
+                        .on_click(move |_, _, cx| {
+                            s_apply.update(cx, |st, cx| {
+                                st.commit_context_window_edit(cx);
+                            });
+                        }),
+                )
+                .child(
+                    div()
+                        .id("model-window-cancel")
+                        .debug_selector(|| "model-window-cancel".to_string())
+                        .flex()
+                        .h(px(26.))
+                        .flex_shrink_0()
+                        .items_center()
+                        .px(px(10.))
+                        .rounded(px(13.))
+                        .border_1()
+                        .border_color(theme::BORDER())
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(theme::LABEL_2())
+                        .hover(|s| s.bg(theme::DOCK()))
+                        .child("取消")
+                        .on_click(move |_, _, cx| {
+                            s_cancel.update(cx, |st, cx| st.cancel_context_window_edit(cx));
+                        }),
+                ),
+        )
+        .when(st.settings.context_window_error, |el| {
+            el.child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(theme::DANGER())
+                    .child("填 1 以上的整数 token 数,或留空使用默认值"),
+            )
+        })
+        .into_any_element()
 }
 
 /// 开关(toggle;开 = BRAND 底白点右,关 = DOCK 底灰点左)

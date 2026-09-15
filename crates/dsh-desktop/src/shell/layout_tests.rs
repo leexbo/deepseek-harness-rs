@@ -5329,6 +5329,128 @@ fn provider_editor_postures(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 每模型上下文窗口:模型行「窗口」chip 展开行内编辑,非法值行内报错且不落草稿,
+/// 合法值提交后随 provider 保存进 settings(`model_context_windows`)。
+/// 回归锁:窗口此前无设置页入口,只能手改设置文件。
+#[gpui_kit::test]
+fn model_context_window_inline_edit(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "ctxwin");
+    click_sel(&mut wcx, "settings-row");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    // setup 卡收起,走「添加提供方」内置卡(目录模型清单预填)
+    click_sel(&mut wcx, "provider-editor-cancel");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "provider-add");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "builtin-advanced-toggle");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+
+    let first_model = cx
+        .update(|app| store.read(app).settings.set_form_models.first().cloned())
+        .expect("目录预填模型清单");
+    assert!(
+        wcx.debug_bounds("model-window-0").is_some(),
+        "模型行应带窗口 chip"
+    );
+
+    // 展开 → 输入合法值 → 应用:草稿落值,编辑收起
+    click_sel(&mut wcx, "model-window-0");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).settings.context_window_edit.clone())
+            .as_deref(),
+        Some(first_model.as_str())
+    );
+    assert!(wcx.debug_bounds("model-window-input").is_some());
+    click_sel(&mut wcx, "model-window-input");
+    wcx.run_until_parked();
+    wcx.simulate_input("131072");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "model-window-apply");
+    wcx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| {
+            store
+                .read(app)
+                .settings
+                .set_form_context_windows
+                .get(&first_model)
+                .copied()
+        }),
+        Some(131_072)
+    );
+    assert!(cx.update(|app| store.read(app).settings.context_window_edit.is_none()));
+
+    // 再展开 → 追加非法字符 → 应用:行内报错、草稿保持原值、编辑不收起
+    click_sel(&mut wcx, "model-window-0");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "model-window-input");
+    wcx.run_until_parked();
+    wcx.simulate_input("abc");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "model-window-apply");
+    wcx.run_until_parked();
+    assert!(
+        cx.update(|app| store.read(app).settings.context_window_error),
+        "非法输入应进入行内错误态"
+    );
+    assert!(
+        cx.update(|app| store.read(app).settings.context_window_edit.is_some()),
+        "非法输入不得静默收起"
+    );
+    assert_eq!(
+        cx.update(|app| {
+            store
+                .read(app)
+                .settings
+                .set_form_context_windows
+                .get(&first_model)
+                .copied()
+        }),
+        Some(131_072),
+        "草稿值不被非法输入覆盖"
+    );
+
+    // 取消:收起编辑、清错误,草稿不变
+    click_sel(&mut wcx, "model-window-cancel");
+    wcx.run_until_parked();
+    assert!(cx.update(|app| {
+        let st = store.read(app);
+        st.settings.context_window_edit.is_none() && !st.settings.context_window_error
+    }));
+
+    // 保存 provider(key 必填)→ 覆盖值随条目落 settings 快照
+    click_sel(&mut wcx, "field-key");
+    wcx.run_until_parked();
+    wcx.simulate_input("sk-ctx-window");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "provider-editor-apply");
+    wcx.run_until_parked();
+    let saved = cx
+        .update(|app| {
+            store.read(app).settings.settings_snapshot["providers"]
+                .as_array()
+                .and_then(|ps| ps.iter().find(|p| p["id"] == "deepseek").cloned())
+        })
+        .expect("deepseek 条目应保存成功");
+    assert_eq!(
+        saved["model_context_windows"][first_model.as_str()],
+        131_072,
+        "窗口覆盖应随 provider 落盘:{saved}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 全库检索命中面板 → 点击跳转(开会话/开轨迹面板标签/定位台账
 /// 行)。命中数据手动注入(registry 检索链路在 dsh-core 已测);fake
 /// turn 的 user/message seq 确定性 = 4(splice×2 + turn/start 之后)

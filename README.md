@@ -21,7 +21,7 @@ Rust + WASM Component Agent Harness——以事件日志为唯一事实源,驱�
 - **沙箱执行**:macOS Seatbelt / Linux Landlock / bubblewrap 沙箱链(fail-closed),受控 spawn 与 PTY(独立进程组,SIGTERM→宽限→SIGKILL);权限三态 + 审批门(ask / never)与 bash 一次性沙箱升级。
 - **内置工具面**:bash / file_read / file_edit / file_search(ripgrep 引擎)/ todo / plan / goal / 子代理(嵌套引擎、独立子日志、能力束窄化)/ 后台任务(输出落盘,状态可查可停)。
 - **多模态附件**:图片与文件附件,粘贴 / 拖拽 / `@` 引用统一准入链;MCP 图片自动转附件。
-- **上下文压缩**:手动 `/compact` 与压力阈值自动折叠(0.8×窗口触发、保留尾 0.16×窗口、tool 配对平衡切点),结构化 checkpoint 摘要照源 compaction 语义,桌面「已压缩」标记行可展开;窗口按模型解析(`dsh.toml context_window` > provider per-model 映射 > 默认 1M),provider 报上下文超长时强制压缩一次并重试(照源 maxOverflowRetries=1)。
+- **上下文压缩**:手动 `/compact` 与压力阈值自动折叠(0.8×窗口触发、保留尾 0.16×窗口、tool 配对平衡切点),结构化 checkpoint 摘要照源 compaction 语义,桌面「已压缩」标记行可展开;窗口按模型解析(`dsh.toml context_window` > 设置页逐模型设定 > 默认 1M),provider 报上下文超长时强制压缩一次并重试(照源 maxOverflowRetries=1)。
 - **MCP 工具桥**:rmcp 官方 SDK,stdio + streamable-http 双传输,工具以 `mcp__<server>__<tool>` 桥入,断线自动重连。
 - **Skill 子系统**:加载 `.agents/skills` 的 SKILL.md,渐进披露目录 + `skill` 工具 + `/name` 用户手势。
 - **Hooks 桥**:运行 Claude Code / Codex 形态的 hooks.json,UserPromptSubmit / PreToolUse / PostToolUse / Stop 四拦截点。

@@ -11,6 +11,35 @@ use gpui_kit::{AppContext, Context, Entity, Window};
 
 use crate::shell::store::AppStore;
 
+/// 上下文窗口输入的占位(空 = 用内置默认;数字本身由宿主层解析)
+pub(crate) const CONTEXT_WINDOW_PLACEHOLDER: &str = "默认 1,000,000";
+
+/// 解析上下文窗口草稿:空串 = 不覆盖(None);仅接受 1 以上的整数
+/// (容忍 `_` 与 `,` 千分位);其余 = 非法(表单拒绝保存并就地提示)。
+pub(crate) fn parse_context_window_tokens(raw: &str) -> Result<Option<u64>, ()> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match trimmed.replace(['_', ','], "").parse::<u64>() {
+        Ok(v) if v > 0 => Ok(Some(v)),
+        _ => Err(()),
+    }
+}
+
+/// 千分位分组(仅展示用;输入解析容忍分组符)
+pub(crate) fn grouped_tokens(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (ix, ch) in digits.chars().enumerate() {
+        if ix > 0 && (digits.len() - ix).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// 从端点获取模型的弹层态(候选清单 + 逐项勾选)
 pub(crate) struct ModelFetch {
     /// 端点返回的候选模型
@@ -92,6 +121,15 @@ pub(crate) struct SettingsStore {
     pub set_form_models: Vec<String>,
     /// 手动添加模型的单行输入
     pub set_form_model_input: Option<Entity<InputState>>,
+    /// 每模型上下文窗口覆盖草稿(模型 id → token;保存时落
+    /// `ProviderEntry.model_context_windows`;缺席 = 用内置默认 1M)
+    pub set_form_context_windows: std::collections::BTreeMap<String, u64>,
+    /// 行内编辑中的模型(Some = 该模型行展开为窗口输入)
+    pub context_window_edit: Option<String>,
+    /// 窗口输入(单例;编辑中的模型共用;表单输入惰建时一并建)
+    pub context_window_input: Option<Entity<InputState>>,
+    /// 窗口输入校验错误(非法时行内提示;提交成功即清)
+    pub context_window_error: bool,
     /// 计费端点启用(表单开关)
     pub set_form_billing_enabled: bool,
     /// 计费形态(balance / usage)
@@ -185,6 +223,10 @@ impl Default for SettingsStore {
             set_form_name: None,
             set_form_models: Vec::new(),
             set_form_model_input: None,
+            set_form_context_windows: std::collections::BTreeMap::new(),
+            context_window_edit: None,
+            context_window_input: None,
+            context_window_error: false,
             set_form_billing_enabled: false,
             set_form_billing_kind: "balance".into(),
             set_form_billing_url: None,
@@ -249,6 +291,11 @@ impl AppStore {
             self.settings.set_form_model_input =
                 Some(cx.new(|cx| InputState::new(window, cx).placeholder("模型 id")));
         }
+        if self.settings.context_window_input.is_none() {
+            self.settings.context_window_input = Some(
+                cx.new(|cx| InputState::new(window, cx).placeholder(CONTEXT_WINDOW_PLACEHOLDER)),
+            );
+        }
         if self.settings.set_form_billing_url.is_none() {
             self.settings.set_form_billing_url =
                 Some(cx.new(|cx| InputState::new(window, cx).placeholder("https://…")));
@@ -293,6 +340,15 @@ impl AppStore {
             cx.subscribe(input, |this, _i, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
                     this.apply_provider_editor(cx);
+                }
+            })
+            .detach();
+        }
+        // 窗口行内输入:Enter = 提交该行(不解锁整卡,避免误保存半填表单)
+        if let Some(input) = &self.settings.context_window_input {
+            cx.subscribe(input, |this, _i, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
+                    this.commit_context_window_edit(cx);
                 }
             })
             .detach();
@@ -754,6 +810,9 @@ impl AppStore {
         {
             self.settings.set_form_models = entry.models.clone();
         }
+        // 模型清单整体更换:窗口覆盖随旧清单作废(回落默认)
+        self.settings.set_form_context_windows.clear();
+        self.close_context_window_edit();
         cx.notify();
     }
 
@@ -821,6 +880,11 @@ impl AppStore {
     /// 应用编辑/添加卡:key 非空随条目直存 settings(provider `api_key`);
     /// 留空 = 保留已存值。成功 → 保存通告 + 静默探测 + 刷新 + 关卡
     pub fn apply_provider_editor(&mut self, cx: &mut Context<Self>) {
+        // 展开中的窗口编辑先提交;非法则拒绝保存(不静默丢弃输入)
+        if self.settings.context_window_edit.is_some() && !self.commit_context_window_edit(cx) {
+            self.push_local_notice("上下文窗口需为 1 以上的整数 token 数", cx);
+            return;
+        }
         let id = if let Some(id) = &self.settings.editing_provider {
             id.clone()
         } else if self.settings.adding_provider {
@@ -937,18 +1001,8 @@ impl AppStore {
                         .find(|p| p["id"].as_str() == Some(id.as_str()))
                         .and_then(|p| serde_json::from_value(p["billing_cache"].clone()).ok())
                 }),
-            // 设置页不渲染 per-model 窗口(手改设置文件);保存时按原值
-            // 保留,避免整条 upsert 把映射清空
-            model_context_windows: self.settings.settings_snapshot["providers"]
-                .as_array()
-                .and_then(|ps| {
-                    ps.iter()
-                        .find(|p| p["id"].as_str() == Some(id.as_str()))
-                        .and_then(|p| {
-                            serde_json::from_value(p["model_context_windows"].clone()).ok()
-                        })
-                })
-                .unwrap_or_default(),
+            // 每模型上下文窗口:表单已提交草稿(空输入 = 不覆盖 → 缺省 1M)
+            model_context_windows: self.form_context_windows(),
         };
         match self.bridge.host().upsert_provider(entry) {
             Ok(()) => {
@@ -1074,9 +1128,93 @@ impl AppStore {
     /// 移除草稿清单中的模型
     pub fn remove_form_model(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix < self.settings.set_form_models.len() {
-            self.settings.set_form_models.remove(ix);
+            let removed = self.settings.set_form_models.remove(ix);
+            self.settings.set_form_context_windows.remove(&removed);
+            if self.settings.context_window_edit.as_deref() == Some(removed.as_str()) {
+                self.close_context_window_edit();
+            }
             cx.notify();
         }
+    }
+
+    /// 展开某模型的上下文窗口行内编辑(预填当前覆盖;无覆盖 = 空输入)。
+    /// 已展开同一行 = no-op(不覆盖正在输入的内容);已展开其他行 = 先
+    /// 提交当前输入,当前输入非法则拒绝切换(不静默丢弃)。
+    pub fn begin_context_window_edit(
+        &mut self,
+        model: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(open) = self.settings.context_window_edit.clone() {
+            if open == model {
+                return; // 同一行:不覆盖正在输入的内容
+            }
+            // 已展开其他行:先提交当前输入;非法则拒绝切换(不静默丢弃)
+            if !self.commit_context_window_edit(cx) {
+                return;
+            }
+        }
+        let Some(input) = &self.settings.context_window_input else {
+            return;
+        };
+        let text = self
+            .settings
+            .set_form_context_windows
+            .get(model)
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        input.update(cx, |s, cx| s.set_value(&text, window, cx));
+        self.settings.context_window_edit = Some(model.to_string());
+        self.settings.context_window_error = false;
+        cx.notify();
+    }
+
+    /// 提交窗口编辑:`true` = 已提交并收起;`false` = 非法(行内提示,
+    /// 保持展开)。空输入 = 清除覆盖(回落默认)。
+    pub fn commit_context_window_edit(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(model) = self.settings.context_window_edit.clone() else {
+            return true;
+        };
+        let raw = self
+            .settings
+            .context_window_input
+            .as_ref()
+            .map(|i| i.read(cx).value())
+            .unwrap_or_default();
+        match parse_context_window_tokens(&raw) {
+            Ok(Some(v)) => {
+                self.settings.set_form_context_windows.insert(model, v);
+            }
+            Ok(None) => {
+                self.settings.set_form_context_windows.remove(&model);
+            }
+            Err(()) => {
+                self.settings.context_window_error = true;
+                cx.notify();
+                return false;
+            }
+        }
+        self.close_context_window_edit();
+        cx.notify();
+        true
+    }
+
+    /// 放弃窗口编辑
+    pub fn cancel_context_window_edit(&mut self, cx: &mut Context<Self>) {
+        self.close_context_window_edit();
+        cx.notify();
+    }
+
+    /// 收起窗口编辑行(不触碰草稿值)
+    fn close_context_window_edit(&mut self) {
+        self.settings.context_window_edit = None;
+        self.settings.context_window_error = false;
+    }
+
+    /// 表单每模型上下文窗口草稿(传入保存路径;模型清单驱动,已提交值)
+    pub(crate) fn form_context_windows(&self) -> std::collections::BTreeMap<String, u64> {
+        self.settings.set_form_context_windows.clone()
     }
 
     /// 从端点拉取可用模型:base_url/方言取表单;key = 表单值(空 = 交给
@@ -1419,25 +1557,31 @@ impl AppStore {
                             p["display_name"].as_str().unwrap_or_default().to_string(),
                             p["models"].as_array().cloned().unwrap_or_default(),
                             p["billing"].clone(),
+                            p["model_context_windows"].clone(),
                         )
                     })
                 })
         });
-        let (url, dialect, model, name, models, billing) = entry.unwrap_or_else(|| {
-            (
-                String::new(),
-                "openai-completions".into(),
-                String::new(),
-                String::new(),
-                Vec::new(),
-                serde_json::Value::Null,
-            )
-        });
+        let (url, dialect, model, name, models, billing, context_windows) =
+            entry.unwrap_or_else(|| {
+                (
+                    String::new(),
+                    "openai-completions".into(),
+                    String::new(),
+                    String::new(),
+                    Vec::new(),
+                    serde_json::Value::Null,
+                    serde_json::Value::Null,
+                )
+            });
         self.settings.set_form_dialect = dialect;
         self.settings.set_form_models = models
             .iter()
             .filter_map(|m| m.as_str().map(String::from))
             .collect();
+        // 每模型上下文窗口回填(JSON 对象;非法值忽略 = 回落默认)
+        let prefill: std::collections::BTreeMap<String, u64> =
+            serde_json::from_value(context_windows).unwrap_or_default();
         // 计费表单回填(快照字段 = ProviderEntry serde 直出)
         let billing_kind = billing["kind"].as_str().unwrap_or("balance").to_string();
         let billing_url = billing["url"].as_str().unwrap_or_default().to_string();
@@ -1501,6 +1645,8 @@ impl AppStore {
             window,
             cx,
         );
+        self.settings.set_form_context_windows = prefill;
+        self.close_context_window_edit();
     }
 }
 
@@ -2176,5 +2322,35 @@ impl AppStore {
             self.settings_refresh(cx);
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod context_window_tests {
+    use super::{grouped_tokens, parse_context_window_tokens};
+
+    /// 空 = 不覆盖(回落默认);分组符容忍;零/负/非数 = 非法
+    #[test]
+    fn parses_draft_into_override_or_default() {
+        assert_eq!(parse_context_window_tokens(""), Ok(None));
+        assert_eq!(parse_context_window_tokens("   "), Ok(None));
+        assert_eq!(parse_context_window_tokens("131072"), Ok(Some(131_072)));
+        assert_eq!(parse_context_window_tokens(" 128,000 "), Ok(Some(128_000)));
+        assert_eq!(
+            parse_context_window_tokens("1_000_000"),
+            Ok(Some(1_000_000))
+        );
+        assert_eq!(parse_context_window_tokens("0"), Err(()));
+        assert_eq!(parse_context_window_tokens("-1"), Err(()));
+        assert_eq!(parse_context_window_tokens("128k"), Err(()));
+        assert_eq!(parse_context_window_tokens("abc"), Err(()));
+    }
+
+    /// 展示用千分位分组(输入解析接受同一形态)
+    #[test]
+    fn groups_token_counts_for_display() {
+        assert_eq!(grouped_tokens(128), "128");
+        assert_eq!(grouped_tokens(65_536), "65,536");
+        assert_eq!(grouped_tokens(1_000_000), "1,000,000");
     }
 }
