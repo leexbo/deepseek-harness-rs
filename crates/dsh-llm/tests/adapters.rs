@@ -141,6 +141,40 @@ fn tool_message_with_images_wire_shape() {
 }
 
 #[test]
+fn anthropic_stream_mapping_thinking_delta_reasons_without_polluting_content() {
+    // 回归锁:扩展思考块的 thinking_delta 必须进 Reasoning 流(signature_delta
+    // 忽略),正文 content 不被思考文本污染
+    let mut mapper = GenericAnthropicAdapter::<StandardAnthropicExt>::default().mapper();
+    let mut events = Vec::new();
+    for frame in [
+        r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"先想"}}"#,
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"一下"}}"#,
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig=="}}"#,
+        r#"{"type":"content_block_stop","index":0}"#,
+        r#"{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#,
+        r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"答案"}}"#,
+        r#"{"type":"content_block_stop","index":1}"#,
+        r#"{"type":"message_stop"}"#,
+    ] {
+        events.extend(mapper.frame(frame));
+    }
+    assert_eq!(
+        events,
+        vec![
+            StreamEvent::Reasoning("先想".into()),
+            StreamEvent::Reasoning("一下".into()),
+            StreamEvent::Chunk("答案".into()),
+            StreamEvent::AssistantMessage(json!({
+                "content": "答案",
+                "tool_calls": [],
+            })),
+            StreamEvent::Done,
+        ]
+    );
+}
+
+#[test]
 fn anthropic_stream_mapping_with_tool_use() {
     let mut mapper = GenericAnthropicAdapter::<StandardAnthropicExt>::default().mapper();
     let mut events = Vec::new();

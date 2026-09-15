@@ -227,10 +227,11 @@ fn anthropic_user_blocks(content: &Value, images: &dyn AttachmentSource) -> Valu
 
 /// Anthropic Messages 流映射器。
 ///
-/// 事件(data.type):`content_block_start`(text/tool_use 注册块)→
-/// `content_block_delta`(text_delta → Chunk;input_json_delta → 累积)→
-/// `content_block_stop`(tool_use 块定稿)→ `message_stop`(冲刷完整
-/// AssistantMessage + Done)。`message_start/message_delta` 的 usage → Usage。
+/// 事件(data.type):`content_block_start`(text/thinking/tool_use 注册块)→
+/// `content_block_delta`(text_delta → Chunk;thinking_delta → Reasoning;
+/// input_json_delta → 累积)→ `content_block_stop`(tool_use 块定稿)→
+/// `message_stop`(冲刷完整 AssistantMessage + Done)。
+/// `message_start/message_delta` 的 usage → Usage。
 #[derive(Debug, Default)]
 pub struct AnthropicMapper {
     /// 按 index 注册的内容块(text / tool_use)
@@ -297,6 +298,15 @@ impl FrameMapper for AnthropicMapper {
                             block["arguments"] = Value::String(format!("{args}{partial}"));
                         }
                         Vec::new()
+                    }
+                    "thinking_delta" => {
+                        // 扩展思考块增量:进推理流(不进正文;signature_delta 非内容,忽略)
+                        let text = v["delta"]["thinking"].as_str().unwrap_or_default();
+                        if text.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![StreamEvent::Reasoning(text.to_string())]
+                        }
                     }
                     _ => Vec::new(),
                 }
