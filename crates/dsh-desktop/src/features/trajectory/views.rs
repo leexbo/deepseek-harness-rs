@@ -548,69 +548,6 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         })
         .collect();
 
-    // 检查器拖宽中:窗口级 move/up(渲染期注册;结束即自然消失)
-    if resizing {
-        let m = store.clone();
-        window.on_mouse_event(move |ev: &MouseMoveEvent, _, _, cx| {
-            m.update(cx, |st, cx| {
-                st.inspector_resize_move(f32::from(ev.position.x), cx)
-            });
-        });
-        let u = store.clone();
-        window.on_mouse_event(move |_: &MouseUpEvent, _, _, cx| {
-            u.update(cx, |st, cx| st.inspector_resize_end(cx));
-        });
-    }
-
-    // 时间线拖拽中:窗口级 move/up
-    if s.drag.is_some() {
-        let bounds = track_bounds_cell();
-        let m = store.clone();
-        window.on_mouse_event(move |ev: &MouseMoveEvent, _, _, cx| {
-            if let Some(frac) = local_frac(&bounds, ev.position.x) {
-                m.update(cx, |st, cx| st.move_timeline_drag(frac, cx));
-            }
-        });
-        let u = store.clone();
-        let u_bounds = track_bounds_cell();
-        let u_spans = spans.clone();
-        window.on_mouse_event(move |ev: &MouseUpEvent, _, _, cx| {
-            let (anchor, draft) = {
-                let st = u.read(cx);
-                (st.trajectory.timeline_drag, st.trajectory.timeline_draft)
-            };
-            let Some(anchor) = anchor else {
-                u.update(cx, |st, cx| st.clear_timeline_drag(cx));
-                return;
-            };
-            let track_w = u_bounds
-                .get()
-                .map(|b| f32::from(b.size.width))
-                .unwrap_or(0.) as f64;
-            let cur = local_frac(&u_bounds, ev.position.x).unwrap_or(anchor);
-            // 位移 <3px 视为点击:命中条形 → 选记录;空白 → 最小窗口选区
-            let is_click = (cur - anchor).abs() * track_w < 3.;
-            u.update(cx, |st, cx| {
-                st.clear_timeline_drag(cx);
-                if is_click {
-                    let (v0, v1) = st.trajectory.timeline_viewport.unwrap_or((0., 1.));
-                    let domain = cur * (v1 - v0) + v0;
-                    if let Some(sp) = u_spans.iter().find(|sp| domain >= sp.x0 && domain <= sp.x1) {
-                        let ix = sp.record_index;
-                        st.select_trajectory_record(ix, cx);
-                    } else {
-                        // 最小窗口 = 4 个操作宽,以点击点为中心
-                        let n = u_spans.len().max(1) as f64;
-                        let half = 2. / n;
-                        st.set_timeline_selection(Some((domain - half, domain + half)), cx);
-                    }
-                } else if let Some(d) = draft {
-                    st.set_timeline_selection(Some(d), cx);
-                }
-            });
-        });
-    }
-
     let rows = build_rows(records, &visible, &s.collapse);
 
     div()
@@ -630,6 +567,93 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 .child(ledger(store, &s, rows, cx))
                 .children(inspector(store, &s, window, cx)),
         )
+        // 拖宽/时间线拖拽进行中:窗口级 move/up 经 canvas.paint(Paint
+        // 相位)注册——render 在 Prepaint 相位跑,直接 on_mouse_event
+        // 会 panic(与 sessions::drag_overlay 同款惯例)
+        .when(resizing || s.drag.is_some(), |el| {
+            el.child(window_listeners(store, spans.clone()))
+        })
+}
+
+/// 拖宽/时间线拖拽进行中的窗口级 move/up 注册(Paint 相位):
+/// canvas.paint 每帧重跑,指针移出面板仍收拖动事件(无指针捕获的
+/// GPUI 惯例);拖拽态清空后内层早退,结束即自然消失
+fn window_listeners(store: &Entity<AppStore>, spans: Vec<TlSpan>) -> impl IntoElement {
+    let m = store.clone();
+    let u = store.clone();
+    gpui_kit::canvas(
+        // prepaint:无自定义绘制
+        |_, _, _| (),
+        move |_, _, window, cx| {
+            let resizing = m.read(cx).trajectory.inspector_resize_anchor.is_some();
+            let dragging = m.read(cx).trajectory.timeline_drag.is_some();
+            if resizing {
+                let m2 = m.clone();
+                window.on_mouse_event(move |ev: &MouseMoveEvent, _, _, cx| {
+                    m2.update(cx, |st, cx| {
+                        st.inspector_resize_move(f32::from(ev.position.x), cx)
+                    });
+                });
+                let u2 = u.clone();
+                window.on_mouse_event(move |_: &MouseUpEvent, _, _, cx| {
+                    u2.update(cx, |st, cx| st.inspector_resize_end(cx));
+                });
+            }
+            if dragging {
+                let bounds = track_bounds_cell();
+                let m2 = m.clone();
+                window.on_mouse_event(move |ev: &MouseMoveEvent, _, _, cx| {
+                    if let Some(frac) = local_frac(&bounds, ev.position.x) {
+                        m2.update(cx, |st, cx| st.move_timeline_drag(frac, cx));
+                    }
+                });
+                let u2 = u.clone();
+                let u_bounds = track_bounds_cell();
+                let u_spans = spans.clone();
+                window.on_mouse_event(move |ev: &MouseUpEvent, _, _, cx| {
+                    let (anchor, draft) = {
+                        let st = u2.read(cx);
+                        (st.trajectory.timeline_drag, st.trajectory.timeline_draft)
+                    };
+                    let Some(anchor) = anchor else {
+                        u2.update(cx, |st, cx| st.clear_timeline_drag(cx));
+                        return;
+                    };
+                    let track_w = u_bounds
+                        .get()
+                        .map(|b| f32::from(b.size.width))
+                        .unwrap_or(0.) as f64;
+                    let cur = local_frac(&u_bounds, ev.position.x).unwrap_or(anchor);
+                    // 位移 <3px 视为点击:命中条形 → 选记录;空白 → 最小窗口选区
+                    let is_click = (cur - anchor).abs() * track_w < 3.;
+                    u2.update(cx, |st, cx| {
+                        st.clear_timeline_drag(cx);
+                        if is_click {
+                            let (v0, v1) = st.trajectory.timeline_viewport.unwrap_or((0., 1.));
+                            let domain = cur * (v1 - v0) + v0;
+                            if let Some(sp) =
+                                u_spans.iter().find(|sp| domain >= sp.x0 && domain <= sp.x1)
+                            {
+                                let ix = sp.record_index;
+                                st.select_trajectory_record(ix, cx);
+                            } else {
+                                // 最小窗口 = 4 个操作宽,以点击点为中心
+                                let n = u_spans.len().max(1) as f64;
+                                let half = 2. / n;
+                                st.set_timeline_selection(Some((domain - half, domain + half)), cx);
+                            }
+                        } else if let Some(d) = draft {
+                            st.set_timeline_selection(Some(d), cx);
+                        }
+                    });
+                });
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
 // ── 工具栏(源 TrajectoryToolbar)─────────────────────────────

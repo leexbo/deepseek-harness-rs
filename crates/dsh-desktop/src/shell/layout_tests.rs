@@ -2622,6 +2622,86 @@ fn trajectory_ledger_rows_inspector_and_tabs(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 回归锁:轨迹拖拽/拖宽态曾在 render(Prepaint 相位)直接注册窗口级
+/// on_mouse_event,debug 断言炸「this method can only be called during
+/// paint」(点时间线即崩);现经 canvas.paint(Paint 相位)注册——
+/// 拖拽/拖宽双态在场时渲染必须存活,清空后同样正常
+#[gpui_kit::test]
+fn trajectory_drag_state_renders_in_paint_phase(cx: &mut TestAppContext) {
+    use crate::features::trajectory::TrajectoryView;
+    use dsh_core::trajectory::TrajectoryRecord;
+
+    let (store, mut wcx, root) = menu_harness(cx, "traj-drag");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+    let rec = |index: u64| TrajectoryRecord {
+        index,
+        seq: index,
+        kind: "message".into(),
+        turn: Some(1),
+        group: "Step 1".into(),
+        turn_start: index == 1,
+        text: format!("记录 {index}"),
+        result: None,
+        is_error: false,
+        time_seconds: Some(1.2),
+        started_at: Some(1000 + index as i64 * 100),
+        request_number: None,
+        input: None,
+        output: None,
+        think: None,
+        ttft_ms: None,
+        payload: None,
+        output_detail: None,
+        thinking_detail: None,
+        system_prompt: None,
+        tools_catalog: None,
+        schema_detail: None,
+        source: None,
+    };
+
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            st.trajectory.trajectory = TrajectoryView {
+                records: vec![rec(1), rec(2), rec(3)],
+                requests: vec![],
+                has_older: false,
+                total: 3,
+                loading: false,
+                loading_older: false,
+            };
+            st.trajectory.trajectory_session = Some(id);
+            st.panel_open = true;
+            st.panel_tabs = vec![crate::shell::panel::PanelTab::Trajectory];
+            st.panel_active_tab = Some(crate::shell::panel::PanelTab::Trajectory);
+            // 拖拽 + 拖宽双态在场:旧实现于 render(Prepaint)直接注册
+            // 窗口级 on_mouse_event → debug 断言炸
+            st.trajectory.timeline_drag = Some(0.5);
+            st.trajectory.inspector_resize_anchor = Some((100., st.trajectory.inspector_width));
+        });
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("timeline-track").is_some(),
+        "拖拽态应正常渲染时间线"
+    );
+
+    // 拖拽态清空后一帧:监听自然消失,渲染仍正常
+    cx.update(|app| {
+        store.update(app, |st, _| st.trajectory.timeline_drag = None);
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("timeline-track").is_some(),
+        "拖拽态清空后仍应正常渲染"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 会话行 ⋯ 菜单:根级渲染(行内 absolute 被侧栏卡裁剪 + 内容卡
 /// 遮挡);点击钮 → 菜单卡在场且锚在点击点左下
 #[gpui_kit::test]

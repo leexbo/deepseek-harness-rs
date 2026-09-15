@@ -81,9 +81,7 @@ pub fn install(window: &gpui_kit::Window) {
         // macOS 26+:Liquid Glass——玻璃视图顶替画布原位并收编画布
         // (性能灾难档,仅 DSH_GLASS=host 显式取证时走)
         let want_host = mode == GlassMode::Host || mode == GlassMode::Auto;
-        if want_host
-            && let Some(glass_cls) = AnyClass::get(c"NSGlassEffectView")
-        {
+        if want_host && let Some(glass_cls) = AnyClass::get(c"NSGlassEffectView") {
             install_glass(root, content, glass_cls);
             return;
         }
