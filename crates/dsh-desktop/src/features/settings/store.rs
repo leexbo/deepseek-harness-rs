@@ -937,6 +937,18 @@ impl AppStore {
                         .find(|p| p["id"].as_str() == Some(id.as_str()))
                         .and_then(|p| serde_json::from_value(p["billing_cache"].clone()).ok())
                 }),
+            // 设置页不渲染 per-model 窗口(手改设置文件);保存时按原值
+            // 保留,避免整条 upsert 把映射清空
+            model_context_windows: self.settings.settings_snapshot["providers"]
+                .as_array()
+                .and_then(|ps| {
+                    ps.iter()
+                        .find(|p| p["id"].as_str() == Some(id.as_str()))
+                        .and_then(|p| {
+                            serde_json::from_value(p["model_context_windows"].clone()).ok()
+                        })
+                })
+                .unwrap_or_default(),
         };
         match self.bridge.host().upsert_provider(entry) {
             Ok(()) => {

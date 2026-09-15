@@ -542,6 +542,7 @@ mod tests {
             dialect: "openai-completions".into(),
             reasoning_effort: None,
             models: None,
+            context_window: dsh_compaction::DEFAULT_CONTEXT_WINDOW,
             preset,
         }
     }

@@ -69,6 +69,9 @@ pub struct Resolved {
     pub reasoning_effort: Option<String>,
     /// 可选模型清单(配置覆盖;None = 内置默认)
     pub models: Option<Vec<String>>,
+    /// 上下文窗口 token 数(dsh.toml `context_window`;缺省 = 内置默认
+    /// 1M)。消费方:引擎压缩阈值/保留尾与 stats context meter。
+    pub context_window: u64,
     /// 能力 preset(k8s 形态 YAML manifest:组件装配清单)
     pub preset: PresetManifest,
 }
@@ -117,6 +120,10 @@ impl Resolved {
                 .unwrap_or_else(|| "deepseek-responses".into()),
             reasoning_effort: args.reasoning_effort.clone().or(cfg.reasoning_effort),
             models: cfg.models.clone(),
+            context_window: cfg
+                .context_window
+                .filter(|w| *w > 0)
+                .unwrap_or(dsh_compaction::DEFAULT_CONTEXT_WINDOW),
             workspace,
             preset,
         })
@@ -473,6 +480,12 @@ where
     T: dsh_agent_loop::LlmTransport + dsh_agent_loop::Summarizer + Send,
     TOOLS: ToolPort + Send,
 {
+    /// 装配当前模型的上下文窗口(宿主解析 per-model 后注入):自动折叠
+    /// 压力阈值/保留尾按窗口占比重算(见 `dsh_compaction`)。
+    pub fn set_context_window(&mut self, window: u64) {
+        self.engine.set_context_window(window);
+    }
+
     /// 以日志中的 plan 态重建 header(模式切换/计划批准后生效)
     pub fn refresh_header(&mut self) {
         let header = {
@@ -613,6 +626,7 @@ mod tests {
             dialect: String::new(),
             reasoning_effort: None,
             models: None,
+            context_window: dsh_compaction::DEFAULT_CONTEXT_WINDOW,
             preset,
         };
         let parts = prompt_parts(&resolved, false);

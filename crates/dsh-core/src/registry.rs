@@ -95,6 +95,14 @@ impl AnySession {
         }
     }
 
+    /// 装配当前模型上下文窗口(自动折叠阈值/保留尾 + stats 同源)
+    fn set_context_window(&mut self, window: u64) {
+        match self {
+            AnySession::Real(s) => s.set_context_window(window),
+            AnySession::Fake(s) => s.set_context_window(window),
+        }
+    }
+
     /// hooks 桥热替换(None = 卸载;保存配置即生效,turn 边界换装)
     fn set_hook_port_opt(&mut self, port: Option<Arc<dyn dsh_agent_loop::hooks::HookPortObj>>) {
         match port {
@@ -1851,11 +1859,14 @@ impl AppHost {
             agg.apply(&ev.r#type, &ev.data);
         }
         let breakdown = crate::context::context_breakdown(log.iter());
-        Ok(agg.to_json(stats::Breakdown {
-            system_tokens: breakdown.system_tokens,
-            tools_tokens: breakdown.tools_tokens,
-            message_tokens: breakdown.message_tokens,
-        }))
+        Ok(agg.to_json(
+            stats::Breakdown {
+                system_tokens: breakdown.system_tokens,
+                tools_tokens: breakdown.tools_tokens,
+                message_tokens: breakdown.message_tokens,
+            },
+            self.session_context_window(id),
+        ))
     }
 
     /// 工作区 dsh.toml 显式配置(合并序中设置层的上位;读失败视为无)
@@ -1903,6 +1914,19 @@ impl AppHost {
     /// workspace-write)。可重放:从会话日志读,跨重启/子代理一致。
     pub fn session_permission(&self, id: &str) -> String {
         self.session_sandbox_mode(id).to_string()
+    }
+
+    /// 会话当前模型的上下文窗口(合并序:dsh.toml `context_window` >
+    /// provider `model_context_windows[model]` > 内置默认 1M)。
+    /// 消费方:引擎自动折叠阈值/保留尾、stats/context meter——同源不漂移。
+    pub fn session_context_window(&self, id: &str) -> u64 {
+        let (ws_root, _) = self.resolve_session(id);
+        if let Some(w) = self.ws_config(&ws_root).context_window.filter(|w| *w > 0) {
+            return w;
+        }
+        self.provider_for(&ws_root)
+            .context_window_for(&self.session_model(id))
+            .unwrap_or(dsh_compaction::DEFAULT_CONTEXT_WINDOW)
     }
 
     /// 会话当前 sandbox 模式(fold 磁盘会话日志;无则默认 workspace-write)。
@@ -3730,6 +3754,7 @@ impl AppHost {
 
         // 队列重放 + 驱动通道 + 唤醒(泵/驱动双任务拆分)。
         // durable 队列:折叠 splice 事件重建未消费条目——重启不丢排队消息
+        session.set_context_window(self.session_context_window(id));
         let (pending, steer_items) = {
             let l = session_log
                 .lock()
@@ -6773,7 +6798,9 @@ async fn driver_loop(
         let _ = host0.mux.send(queue_frame(&session_id, inner));
         // 翻译器计数预热(扫描既有日志)
         let mut translator = Translator::new(provider_info.clone());
-        // 统计聚合预热(同一 fold 逻辑;turn 内增量 apply)
+        // 统计聚合预热(同一 fold 逻辑;turn 内增量 apply)。
+        // 窗口随会话模型解析(与引擎压缩阈值同源)
+        let context_window = host0.session_context_window(&session_id);
         let mut stats_agg = stats::StatsAgg::default();
         if let Ok(l) = inner.log.lock() {
             for ev in l.iter() {
@@ -6866,7 +6893,7 @@ async fn driver_loop(
                             .unwrap_or_default();
                         let _ = mux.send(frame(
                             "session/stats",
-                            json!({ "sessionId": sid, "stats": stats_agg.to_json(breakdown) }),
+                            json!({ "sessionId": sid, "stats": stats_agg.to_json(breakdown, context_window) }),
                         ));
                     }
                 },
@@ -8820,6 +8847,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(host2.session_model("s1"), "toml-model", "dsh.toml > 设置层");
+    }
+
+    /// 上下文窗口三层解析:dsh.toml `context_window` > provider
+    /// `model_context_windows[model]` > 内置默认。压缩阈值/保留尾与
+    /// stats context meter 同源读它。
+    #[tokio::test]
+    async fn context_window_resolves_toml_over_provider_over_default() {
+        let host = temp_host("ctxwin");
+        assert_eq!(
+            host.session_context_window("s1"),
+            dsh_compaction::DEFAULT_CONTEXT_WINDOW,
+            "无配置落内置默认"
+        );
+        // provider 层:per-model 映射
+        let mut p = crate::settings::builtin_provider();
+        p.model_context_windows =
+            std::collections::BTreeMap::from([("deepseek-chat".to_string(), 128_000)]);
+        host.upsert_provider(p).unwrap();
+        assert_eq!(
+            host.session_context_window("s1"),
+            128_000,
+            "provider 映射命中当前模型"
+        );
+        // 工作区层:dsh.toml 覆盖 provider 映射
+        std::fs::write(host.workspace.join("dsh.toml"), "context_window = 65536\n").unwrap();
+        assert_eq!(
+            host.session_context_window("s1"),
+            65_536,
+            "dsh.toml > provider 映射"
+        );
     }
 
     /// provider 注册表 CRUD + 凭据录入(settings `api_key`)+ 状态翻转

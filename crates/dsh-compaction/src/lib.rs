@@ -11,8 +11,8 @@
 
 use dsh_session::EventEnvelope;
 
-/// 上下文窗口 token 数(per-model 探测后置,暂取 DeepSeek 系 1M 常量)
-pub const CONTEXT_WINDOW_TOKENS: u64 = 1_000_000;
+/// 上下文窗口缺省值(未配置 per-model 窗口时;照源 DEFAULT_CONTEXT_WINDOW)
+pub const DEFAULT_CONTEXT_WINDOW: u64 = 1_000_000;
 /// 压力阈值占比:上下文 ≥ 窗口×此值时自动折叠(源 thresholdRatio)
 pub const THRESHOLD_RATIO: f64 = 0.8;
 /// 保留尾占比:最近窗口×此值的上下文逐字保留(源 retainRatio)
@@ -20,14 +20,14 @@ pub const RETAIN_RATIO: f64 = 0.16;
 /// 无真实 usage 时的 token 估算启发式(中文文本 ≈ 4 字符/token)
 pub const CHARS_PER_TOKEN: u64 = 4;
 
-/// 压力阈值 token 数(自动折叠触发线)
-pub fn threshold_tokens() -> u64 {
-    (CONTEXT_WINDOW_TOKENS as f64 * THRESHOLD_RATIO) as u64
+/// 压力阈值 token 数(自动折叠触发线;`window` = 当前模型上下文窗口)
+pub fn threshold_tokens(window: u64) -> u64 {
+    (window as f64 * THRESHOLD_RATIO) as u64
 }
 
-/// 保留尾预算 token 数(最近上下文逐字保留的下限)
-pub fn retain_tokens() -> u64 {
-    (CONTEXT_WINDOW_TOKENS as f64 * RETAIN_RATIO) as u64
+/// 保留尾预算 token 数(最近上下文逐字保留的下限;`window` 同上)
+pub fn retain_tokens(window: u64) -> u64 {
+    (window as f64 * RETAIN_RATIO) as u64
 }
 
 /// 当前上下文量测:优先最近一次 LLM 请求的真实 usage
@@ -241,7 +241,10 @@ mod tests {
     fn below_retain_selects_nothing() {
         // 全部消息估算 token < retain(160K)→ 无可压缩(源同款:小会话 no-op)
         let all = logged(&[user_msg("hi"), assistant_msg("hello")]);
-        assert_eq!(select_range(&all, retain_tokens()), None);
+        assert_eq!(
+            select_range(&all, retain_tokens(DEFAULT_CONTEXT_WINDOW)),
+            None
+        );
     }
 
     #[test]
@@ -301,7 +304,10 @@ mod tests {
             assistant_msg("after fold"),
         ]);
         // throughSeq 之后仅 1 条小消息 → 无可压缩
-        assert_eq!(select_range(&all, retain_tokens()), None);
+        assert_eq!(
+            select_range(&all, retain_tokens(DEFAULT_CONTEXT_WINDOW)),
+            None
+        );
     }
 
     /// 回归锁:二次压缩的前缀长度须含派生面头部的旧 checkpoint 占位,
@@ -382,10 +388,14 @@ mod tests {
         }
     }
 
+    /// 阈值随窗口线性缩放(默认 1M 与 128K 两档锚点)
     #[test]
     fn thresholds_follow_source_ratios() {
-        assert_eq!(threshold_tokens(), 800_000);
-        assert_eq!(retain_tokens(), 160_000);
+        assert_eq!(threshold_tokens(DEFAULT_CONTEXT_WINDOW), 800_000);
+        assert_eq!(retain_tokens(DEFAULT_CONTEXT_WINDOW), 160_000);
+        // 128K 窗口:阈值 102_400 / 保留尾 20_480(旧硬编码 1M 会晚触发 8 倍)
+        assert_eq!(threshold_tokens(128_000), 102_400);
+        assert_eq!(retain_tokens(128_000), 20_480);
     }
 
     #[test]

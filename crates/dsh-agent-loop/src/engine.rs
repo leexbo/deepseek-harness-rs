@@ -198,8 +198,12 @@ impl LoopEngine {
             cancel: CancelToken::new(),
             steer_buf: None,
             pending_input_source: None,
-            fold_threshold_tokens: dsh_compaction::threshold_tokens(),
-            fold_retain_tokens: dsh_compaction::retain_tokens(),
+            fold_threshold_tokens: dsh_compaction::threshold_tokens(
+                dsh_compaction::DEFAULT_CONTEXT_WINDOW,
+            ),
+            fold_retain_tokens: dsh_compaction::retain_tokens(
+                dsh_compaction::DEFAULT_CONTEXT_WINDOW,
+            ),
             projection: RuntimeContextProjection::new(),
             context_provider: None,
             instructions_provider: None,
@@ -379,6 +383,13 @@ impl LoopEngine {
     pub fn set_fold_thresholds(&mut self, threshold: u64, retain: u64) {
         self.fold_threshold_tokens = threshold;
         self.fold_retain_tokens = retain;
+    }
+
+    /// 装配当前模型的上下文窗口(宿主在会话装配/换模型时注入):
+    /// 压力阈值与保留尾按窗口占比重算(照源 0.8/0.16)。
+    pub fn set_context_window(&mut self, window: u64) {
+        self.fold_threshold_tokens = dsh_compaction::threshold_tokens(window);
+        self.fold_retain_tokens = dsh_compaction::retain_tokens(window);
     }
 
     /// 替换请求 header(plan mode 切换后由装配层重建 prompt 注入;
@@ -592,6 +603,10 @@ impl LoopEngine {
             },
             "EMPTY_RESPONSE" => TransportError::EmptyResponse,
             "SERVER" => TransportError::Server {
+                status: v.get("status").and_then(|s| s.as_u64()).unwrap_or(0) as u16,
+                body: message,
+            },
+            "CONTEXT_OVERFLOW" => TransportError::ContextOverflow {
                 status: v.get("status").and_then(|s| s.as_u64()).unwrap_or(0) as u16,
                 body: message,
             },
@@ -919,14 +934,9 @@ impl LoopEngine {
             .await?;
 
             // 模型可见消息 = 日志投影 + 显式策略栈(裁剪/折叠;唯一来源,
-            // 闸门期望侧共用同一函数——不变式比对的两侧同一实现)
-            let messages = {
-                let log = self
-                    .log
-                    .lock()
-                    .map_err(|_| LoopError::Log("log 锁中毒".into()))?;
-                derive_visible_messages(log.iter())
-            };
+            // 闸门期望侧共用同一函数——不变式比对的两侧同一实现)。
+            // 溢出重试会在折叠后重新派生,故为 mut。
+            let mut messages = self.visible_messages()?;
 
             // E5 审计:跨边界调用(llm 出网)记录优先——先落日志再出网,
             // 归因指向触发本 turn 的 user/message。
@@ -940,6 +950,8 @@ impl LoopEngine {
             // 清空残段(日志只追加,重发前以丢弃标记达成同一可见语义)。
             let mut acc = StreamAcc::default();
             let mut attempt: u32 = 0;
+            // 上下文超长强制压缩后重试(每步一次;照源 maxOverflowRetries=1)
+            let mut overflow_retried = false;
             loop {
                 attempt += 1;
                 // 信封变更时附带完整快照(systemPrompt 全文 + tools 全量目录;
@@ -1043,6 +1055,66 @@ impl LoopEngine {
                     ),
                     sink,
                 )?;
+                // 上下文超长:先强制压缩(无压力门槛;失败的自动路径降级
+                // 跳过)再重试同一请求一次(照源 maxOverflowRetries=1)。
+                // 压不出内容 → 落到下面的常规决策(该分类不盲重试 → 放行
+                // 原错误)。记录顺序:compaction 审计+summary 先落,再落
+                // 重试行(llm/retry + retry-started,delayMs=0 即时)。
+                if failure.is_context_overflow() && !overflow_retried {
+                    overflow_retried = true;
+                    let outcome = Self::fold_once(
+                        &self.log,
+                        Some(0), // 阈值 0 = 必然越过门槛;status 仍属自动路径
+                        self.fold_retain_tokens,
+                        transport,
+                        &self.header,
+                        Some(turn_anchor),
+                        clock,
+                        sink,
+                    )
+                    .await?;
+                    if let FoldOutcome::Folded { .. } = outcome {
+                        if acc.has_streamed_content() {
+                            Self::commit(
+                                &self.log,
+                                EventEnvelope::new_ignorable(
+                                    "assistant/stream-reset",
+                                    clock(),
+                                    serde_json::json!({}),
+                                ),
+                                sink,
+                            )?;
+                        }
+                        acc = StreamAcc::default();
+                        messages = self.visible_messages()?;
+                        Self::commit(
+                            &self.log,
+                            EventEnvelope::new(
+                                "llm/retry",
+                                clock(),
+                                serde_json::json!({
+                                    "retry": 1,
+                                    "maxRetries": 1,
+                                    "delayMs": 0,
+                                    "code": failure.code(),
+                                    "message": failure.to_string(),
+                                    "reason": "context-overflow",
+                                }),
+                            ),
+                            sink,
+                        )?;
+                        Self::commit(
+                            &self.log,
+                            EventEnvelope::new(
+                                "llm/retry-started",
+                                clock(),
+                                serde_json::json!({ "retry": 1 }),
+                            ),
+                            sink,
+                        )?;
+                        continue;
+                    }
+                }
                 // 重试决策:第 attempt 次失败 → 第 attempt 次重试;
                 // None = 不可重试分类或已耗尽 → 放行错误
                 let retry_no = attempt;
@@ -1355,6 +1427,15 @@ impl LoopEngine {
             assistant_message: final_assistant,
             seq_range: (seq_start, seq_end),
         })
+    }
+
+    /// 重新派生模型可见消息(折叠/溢出重试后刷新请求面;与出网前同源)
+    fn visible_messages(&self) -> Result<Value, LoopError> {
+        let log = self
+            .log
+            .lock()
+            .map_err(|_| LoopError::Log("log 锁中毒".into()))?;
+        Ok(derive_visible_messages(log.iter()))
     }
 
     /// 折叠判定与执行:上下文量测越过压力阈值时,把保留尾之前的前缀
@@ -2337,6 +2418,137 @@ mod streaming_tests {
         ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
             Box::pin(async { Ok(String::new()) })
         }
+    }
+
+    /// 上下文溢出 transport:首次尝试报 CONTEXT_OVERFLOW,其后成功;
+    /// 记录每次请求面(断言第二次已折叠)
+    struct OverflowRetryTransport {
+        attempts: AtomicUsize,
+        seen: Vec<Value>,
+    }
+
+    impl LlmTransport for OverflowRetryTransport {
+        async fn stream(
+            &mut self,
+            _header: &RequestHeader,
+            messages: &Value,
+        ) -> Result<Vec<LlmEvent>, TransportError> {
+            self.seen.push(messages.clone());
+            let n = self.attempts.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+            if n == 1 {
+                return Err(TransportError::ContextOverflow {
+                    status: 400,
+                    body: "maximum context length exceeded".into(),
+                });
+            }
+            Ok(vec![
+                LlmEvent::Chunk("ok".into()),
+                LlmEvent::AssistantMessage(serde_json::json!({ "content": "ok" })),
+                LlmEvent::Done,
+            ])
+        }
+    }
+
+    impl crate::summarizer::Summarizer for OverflowRetryTransport {
+        fn summarize<'a>(
+            &'a mut self,
+            _header: &'a RequestHeader,
+            _messages: &'a Value,
+        ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+            Box::pin(async { Ok("ckpt".into()) })
+        }
+    }
+
+    /// 回归锁:上下文超长 → 强制压缩一次 → 重试同一请求(照源
+    /// maxOverflowRetries=1)。断言:compaction/summary 落档、重试行带
+    /// CONTEXT_OVERFLOW/reason=context-overflow/delayMs=0、第二请求面已
+    /// 折叠(第一请求面未折叠)、总尝试 2 次(不盲目多次重发)。
+    #[tokio::test]
+    async fn context_overflow_compacts_then_retries_once() {
+        let log = Arc::new(Mutex::new(EventLog::new()));
+        {
+            let mut l = log.lock().unwrap();
+            for i in 0..4 {
+                l.append(EventEnvelope::new(
+                    "user/message",
+                    0,
+                    serde_json::json!({ "content": format!("q{i}") }),
+                ))
+                .unwrap();
+                l.append(EventEnvelope::new(
+                    "assistant/message",
+                    0,
+                    serde_json::json!({ "content": format!("a{i}") }),
+                ))
+                .unwrap();
+            }
+        }
+        let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+        // 阈值不可达 → step 起点不自动折叠;保留尾 1 token → 溢出强制
+        // 压缩必产出前缀(两条路径的差异被隔离)
+        engine.set_fold_thresholds(u64::MAX, 1);
+        let mut transport = OverflowRetryTransport {
+            attempts: AtomicUsize::new(0),
+            seen: Vec::new(),
+        };
+        let clock = || 1i64;
+        let mut sink = |_: &EventEnvelope| {};
+        engine
+            .run_turn(
+                "go",
+                None,
+                &[],
+                &[],
+                &[],
+                &mut transport,
+                &mut NoTools,
+                &clock,
+                &mut sink,
+            )
+            .await
+            .unwrap();
+
+        let (retry_code, retry_reason, retry_delay) = {
+            let l = log.lock().unwrap();
+            let retry = l
+                .iter()
+                .find(|e| e.r#type == "llm/retry")
+                .expect("溢出重试行");
+            (
+                retry.data["code"].as_str().unwrap_or_default().to_string(),
+                retry.data["reason"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                retry.data["delayMs"].as_u64().unwrap_or(u64::MAX),
+            )
+        };
+        assert_eq!(
+            count_events(&log, "compaction/summary"),
+            1,
+            "溢出触发一次强制压缩"
+        );
+        assert_eq!(count_events(&log, "llm/retry-started"), 1);
+        assert_eq!(retry_code, "CONTEXT_OVERFLOW");
+        assert_eq!(retry_reason, "context-overflow");
+        assert_eq!(retry_delay, 0, "压缩后即时重试(无退避)");
+        assert_eq!(
+            transport.attempts.load(AtomicOrdering::SeqCst),
+            2,
+            "溢出只重试一次"
+        );
+        assert!(
+            !transport.seen[0]
+                .to_string()
+                .contains("<compacted-summary>"),
+            "首请求面为全历史"
+        );
+        assert!(
+            transport.seen[1]
+                .to_string()
+                .contains("<compacted-summary>"),
+            "重试请求面已折叠"
+        );
     }
 
     /// 瞬态失败后成功:重试事件成对(retry/retry-started),最终消息

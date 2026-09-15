@@ -50,6 +50,10 @@ pub struct DshConfig {
     /// 可选模型清单(模型选择菜单;缺省 = 内置默认)
     #[serde(default)]
     pub models: Option<Vec<String>>,
+    /// 上下文窗口 token 数(本工作区覆盖;缺席 = provider per-model 映射
+    /// > 内置默认 1M)。压缩压力阈值/保留尾与 UI context meter 同源。
+    #[serde(default)]
+    pub context_window: Option<u64>,
 }
 
 impl DshConfig {
@@ -145,6 +149,14 @@ mod tests {
             .expect("parse");
         assert_eq!(cfg.model.as_deref(), Some("deepseek-chat"));
         assert_eq!(cfg.session.as_deref(), Some("s.jsonl"));
+    }
+
+    /// 上下文窗口是本工作区可配项(压缩阈值与 stats meter 同源读它)
+    #[test]
+    fn context_window_parses_and_defaults_absent() {
+        let cfg = DshConfig::from_toml("context_window = 131072\n").expect("parse");
+        assert_eq!(cfg.context_window, Some(131_072));
+        assert_eq!(DshConfig::default().context_window, None);
     }
 
     #[test]

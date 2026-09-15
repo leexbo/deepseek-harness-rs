@@ -54,6 +54,22 @@ pub struct ProviderEntry {
     /// 最近一次计费查询快照(持久化;重启后状态栏/卡片显示「N 小时前」)
     #[serde(default)]
     pub billing_cache: Option<BillingSnapshot>,
+    /// 每模型上下文窗口覆盖(model id → token 数;缺席 = 内置默认
+    /// [`dsh_compaction::DEFAULT_CONTEXT_WINDOW`])。压缩压力阈值/保留尾
+    /// 与 UI context meter 读它;设置页目前不渲染此字段(手改设置文件),
+    /// 但保存 provider 时按原值保留(见桌面 upsert)。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_context_windows: BTreeMap<String, u64>,
+}
+
+impl ProviderEntry {
+    /// 该 provider 下某模型的上下文窗口(>0 才算有效覆盖)
+    pub fn context_window_for(&self, model: &str) -> Option<u64> {
+        self.model_context_windows
+            .get(model)
+            .copied()
+            .filter(|w| *w > 0)
+    }
 }
 
 /// 计费端点配置:完全自定义 URL + JSON 提取路径(不内置适配)
@@ -555,6 +571,7 @@ pub fn builtin_provider() -> ProviderEntry {
         models: Vec::new(),
         billing: None,
         billing_cache: None,
+        model_context_windows: BTreeMap::new(),
     }
 }
 
@@ -1054,10 +1071,12 @@ mod tests {
                 resets: Some("4d22h".into()),
                 resets_7d: Some("1770000000000".into()),
             }),
+            model_context_windows: BTreeMap::from([("glm-4.7".to_string(), 128_000)]),
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(json["billing"]["kind"], "usage");
         assert_eq!(json["models"][0], "glm-4.7");
+        assert_eq!(json["model_context_windows"]["glm-4.7"], 128_000);
         let back: ProviderEntry = serde_json::from_value(json).unwrap();
         assert_eq!(back, entry);
 
@@ -1071,6 +1090,7 @@ mod tests {
         assert_eq!(legacy.display_name, None);
         assert!(legacy.models.is_empty());
         assert!(legacy.billing.is_none() && legacy.billing_cache.is_none());
+        assert!(legacy.model_context_windows.is_empty(), "旧 JSON 落空映射");
     }
     #[test]
     fn hook_bridge_settings_roundtrip_persists() {

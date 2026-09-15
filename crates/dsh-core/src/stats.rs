@@ -8,8 +8,9 @@
 
 use serde_json::{Value, json};
 
-/// 上下文窗口(DEFAULT_CONTEXT_WINDOW = 1M)
-pub const CONTEXT_WINDOW: u64 = 1_000_000;
+/// 上下文窗口缺省值(未配置 per-model 时;压缩阈值同源读
+/// `dsh_compaction::DEFAULT_CONTEXT_WINDOW`)
+pub const CONTEXT_WINDOW: u64 = dsh_compaction::DEFAULT_CONTEXT_WINDOW;
 
 /// 会话统计聚合(可增量 fold)
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -75,8 +76,10 @@ impl StatsAgg {
     }
 
     /// 输出(session.stats RPC 与 session/stats 推送同形;
-    /// 构成三段由 [crate::context] 启发式拆分,由调用方注入)
-    pub fn to_json(&self, breakdown: Breakdown) -> Value {
+    /// 构成三段由 [crate::context] 启发式拆分,由调用方注入;
+    /// `context_window` = 会话当前模型窗口,由宿主解析后传入——
+    /// 与压缩阈值同源,不在此处硬编码)
+    pub fn to_json(&self, breakdown: Breakdown, context_window: u64) -> Value {
         let cache_hit = if self.input_tokens > 0 {
             (self.cached_tokens as f64 / self.input_tokens as f64 * 100.0).round() as u64
         } else {
@@ -98,7 +101,7 @@ impl StatsAgg {
             "inputTokens": self.input_tokens,
             "outputTokens": self.output_tokens,
             "contextUsed": self.context_used,
-            "contextWindow": CONTEXT_WINDOW,
+            "contextWindow": context_window,
             "contextBreakdown": {
                 "systemTokens": breakdown.system_tokens,
                 "toolsTokens": breakdown.tools_tokens,
@@ -150,7 +153,7 @@ mod tests {
                 "boundary": "tool", "detail": { "durationMs": 300 }
             }),
         );
-        let v = a.to_json(Breakdown::default());
+        let v = a.to_json(Breakdown::default(), CONTEXT_WINDOW);
         assert_eq!(v["turns"], 1);
         assert_eq!(v["steps"], 1);
         assert_eq!(v["llmMs"], 1000);
@@ -168,10 +171,30 @@ mod tests {
         let mut a = StatsAgg::default();
         a.apply("audit/call", &llm_done(900_000, 1, 0));
         a.apply("audit/call", &llm_done(12_000, 1, 0));
-        assert_eq!(a.to_json(Breakdown::default())["contextUsed"], 12_000);
+        assert_eq!(
+            a.to_json(Breakdown::default(), CONTEXT_WINDOW)["contextUsed"],
+            12_000
+        );
         // prompt=0 的响应(异常/空)不覆盖
         a.apply("audit/call", &llm_done(0, 1, 0));
-        assert_eq!(a.to_json(Breakdown::default())["contextUsed"], 12_000);
+        assert_eq!(
+            a.to_json(Breakdown::default(), CONTEXT_WINDOW)["contextUsed"],
+            12_000
+        );
+    }
+
+    /// 窗口由宿主按会话模型注入(per-model),序列化原样带出、不硬编码
+    #[test]
+    fn context_window_is_parameterized() {
+        let a = StatsAgg::default();
+        assert_eq!(
+            a.to_json(Breakdown::default(), 128_000)["contextWindow"],
+            128_000
+        );
+        assert_eq!(
+            a.to_json(Breakdown::default(), CONTEXT_WINDOW)["contextWindow"],
+            1_000_000
+        );
     }
 
     /// 归一形只认规范键;非规范键(如 raw wire 形)计零不误报
@@ -189,7 +212,7 @@ mod tests {
                 }},
             }),
         );
-        let v = a.to_json(Breakdown::default());
+        let v = a.to_json(Breakdown::default(), CONTEXT_WINDOW);
         assert_eq!(v["cacheHitPercent"], 80);
     }
 

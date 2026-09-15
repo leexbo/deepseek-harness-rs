@@ -31,8 +31,35 @@ fn classify_reqwest(e: reqwest::Error) -> TransportError {
     }
 }
 
+/// 400/413 响应体是否「上下文超长」(provider 用词各不同;命中即归
+/// CONTEXT_OVERFLOW,由 engine 强制压缩后重试一次而非盲目重发)。
+/// 大小写不敏感子串匹配;宁可漏判(回落 INVALID_REQUEST 直通)不误判
+/// (误判会对无关 400 触发一次压缩)。
+pub(crate) fn looks_like_context_overflow(body: &str) -> bool {
+    let b = body.to_ascii_lowercase();
+    [
+        "context length",
+        "context_length",
+        "context window",
+        "context size",
+        "maximum context",
+        "max context",
+        "context limit",
+        "too many tokens",
+        "prompt is too long",
+        "input is too long",
+        "request is too large",
+        "exceeds the maximum",
+        "reduce the length",
+        "truncated",
+    ]
+    .iter()
+    .any(|p| b.contains(p))
+}
+
 /// 非 2xx 状态归类(httpErrorCode:401/403 → AUTH;400/413 →
-/// INVALID_REQUEST;429 → RATE_LIMIT;≥500 → SERVER;其余未分类直通)。
+/// CONTEXT_OVERFLOW(体命中超长用语)/ INVALID_REQUEST;429 →
+/// RATE_LIMIT;≥500 → SERVER;其余未分类直通)。
 /// crate 内共享(ext 的 200+错误体归类钩子复用状态映射)
 pub(crate) fn classify_status(
     status: reqwest::StatusCode,
@@ -52,9 +79,16 @@ pub(crate) fn classify_status(
         status,
         reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::PAYLOAD_TOO_LARGE
     ) {
-        return TransportError::InvalidRequest {
-            status: status.as_u16(),
-            body,
+        return if looks_like_context_overflow(&body) {
+            TransportError::ContextOverflow {
+                status: status.as_u16(),
+                body,
+            }
+        } else {
+            TransportError::InvalidRequest {
+                status: status.as_u16(),
+                body,
+            }
         };
     }
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -409,6 +443,34 @@ mod tests {
     use dsh_agent_loop::Summarizer as _;
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// 400 归类:响应体命中超长用语 → CONTEXT_OVERFLOW(engine 走强制
+    /// 压缩后重试一次,不盲目退避重发);其余 400 → INVALID_REQUEST 直通。
+    /// 回归锁:两类必须互不误判(误判会对无关 400 触发压缩)。
+    #[test]
+    fn bad_request_separates_context_overflow_from_invalid_request() {
+        use dsh_agent_loop::TransportError;
+        for body in [
+            "This model's maximum context length is 128000 tokens",
+            "context_length_exceeded",
+            "prompt is too long: 200000 tokens > 128000 maximum",
+        ] {
+            let e = classify_status(reqwest::StatusCode::BAD_REQUEST, None, body.into());
+            assert!(e.is_context_overflow(), "应归溢出: {body}");
+            assert_eq!(e.code(), "CONTEXT_OVERFLOW");
+            assert!(!e.retryable(), "溢出不走盲目重试(engine 专用路径)");
+        }
+        let e = classify_status(
+            reqwest::StatusCode::BAD_REQUEST,
+            None,
+            "{\"error\":{\"message\":\"invalid tool schema\"}}".into(),
+        );
+        assert!(
+            matches!(e, TransportError::InvalidRequest { .. }),
+            "普通 400 仍归 INVALID_REQUEST: {e:?}"
+        );
+        assert!(!e.is_context_overflow());
+    }
 
     /// 极简 mock 服务器:接受一个连接,读请求,回固定 SSE 体(Connection: close 分帧)
     async fn spawn_sse_server(

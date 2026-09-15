@@ -69,6 +69,9 @@ fn resolved_at(ws: &Path, preset_id: &str) -> Resolved {
         dialect: "openai-completions".into(),
         reasoning_effort: None,
         models: None,
+        // 集成测试不链 dsh-compaction:用默认窗口字面量(与
+        // dsh_compaction::DEFAULT_CONTEXT_WINDOW 同值)
+        context_window: 1_000_000,
         preset,
     }
 }

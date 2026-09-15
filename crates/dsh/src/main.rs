@@ -150,7 +150,7 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
         ]);
         let gate = InvariantGate::new(provider, app::fresh_log());
         let log = gate.log();
-        let session = Session::new(
+        let mut session = Session::new(
             parts,
             gate,
             log,
@@ -159,6 +159,7 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
             session_path,
             cancel,
         );
+        session.set_context_window(resolved.context_window);
         dispatch(session, message).await?;
     } else if common.no_tools {
         let api_key = Resolved::resolve_api_key(common.api_key.clone())?;
@@ -167,7 +168,7 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
             app::fresh_log(),
         );
         let log = gate.log();
-        let session = Session::new(
+        let mut session = Session::new(
             parts,
             gate,
             log,
@@ -176,6 +177,7 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
             session_path,
             cancel,
         );
+        session.set_context_window(resolved.context_window);
         dispatch(session, message).await?;
     } else {
         // 工具集按 preset 声明式组装(dsh-app):preset 决定模型面,
@@ -207,7 +209,8 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
             None,
             Vec::new(),
         )?;
-        let session = Session::new(parts, gate, log, tools, backend, session_path, cancel);
+        let mut session = Session::new(parts, gate, log, tools, backend, session_path, cancel);
+        session.set_context_window(resolved.context_window);
         dispatch(session, message).await?;
     }
     Ok(())
@@ -446,6 +449,7 @@ async fn serve(common: CommonOpts) -> anyhow::Result<()> {
         let mut gateway: Gateway<FakeProvider> =
             Gateway::new(header, provider, dsh_agent_loop::NoTools, backend);
         gateway.set_cancel_token(cancel);
+        gateway.set_context_window(resolved.context_window);
         serve_stdio(gateway, tokio::io::stdin(), tokio::io::stdout()).await?;
         return Ok(());
     }
@@ -457,6 +461,7 @@ async fn serve(common: CommonOpts) -> anyhow::Result<()> {
         let mut gateway: Gateway<dsh_llm::HttpTransport, dsh_agent_loop::NoTools> =
             Gateway::new(header, transport, dsh_agent_loop::NoTools, backend);
         gateway.set_cancel_token(cancel);
+        gateway.set_context_window(resolved.context_window);
         gateway.set_header_rebuilder(app::header_rebuilder(parts));
         serve_stdio(gateway, tokio::io::stdin(), tokio::io::stdout()).await?;
         return Ok(());
@@ -485,6 +490,7 @@ async fn serve(common: CommonOpts) -> anyhow::Result<()> {
     let mut gateway: Gateway<dsh_llm::HttpTransport, ToolSet> =
         Gateway::with_log(header, transport, tools, backend, log);
     gateway.set_cancel_token(cancel);
+    gateway.set_context_window(resolved.context_window);
     // 每 turn 前按日志态重建 prompt(plan 模式/活跃计划)
     gateway.set_header_rebuilder(app::header_rebuilder(parts));
     serve_stdio(gateway, tokio::io::stdin(), tokio::io::stdout()).await?;

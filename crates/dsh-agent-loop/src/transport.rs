@@ -58,6 +58,18 @@ pub enum TransportError {
         /// 响应体片段
         body: String,
     },
+    /// 上下文超长(provider 明确报 context length 超限)。**不盲重试**:
+    /// engine 据此强制压缩一次后重试(照源 maxOverflowRetries=1),
+    /// 无可压缩内容才放行错误。归类见 dsh-llm `classify_status` /
+    /// `classify_stream_failure`。
+    #[error("上下文超长: {body}")]
+    #[serde(rename = "CONTEXT_OVERFLOW", rename_all = "camelCase")]
+    ContextOverflow {
+        /// HTTP 状态码(流内错误帧缺省为 0)
+        status: u16,
+        /// 响应体片段
+        body: String,
+    },
     /// 空响应(流正常结束但零内容;engine 侧判定,transport 不产此态)
     #[error("空响应")]
     #[serde(rename = "EMPTY_RESPONSE")]
@@ -70,8 +82,9 @@ pub enum TransportError {
 
 impl TransportError {
     /// 可重试分类(DEFAULT_RETRYABLE_CODES:EMPTY_RESPONSE /
-    /// RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT;AUTH、INVALID_REQUEST
-    /// 及其余直通不重试)
+    /// RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT;AUTH、INVALID_REQUEST、
+    /// CONTEXT_OVERFLOW 及其余直通不重试——CONTEXT_OVERFLOW 由 engine
+    /// 走「强制压缩 → 重试一次」专用路径,不做无压缩的盲目退避重发)
     pub fn retryable(&self) -> bool {
         matches!(
             self,
@@ -92,9 +105,15 @@ impl TransportError {
             Self::RateLimit { .. } => "RATE_LIMIT",
             Self::Auth { .. } => "AUTH",
             Self::InvalidRequest { .. } => "INVALID_REQUEST",
+            Self::ContextOverflow { .. } => "CONTEXT_OVERFLOW",
             Self::EmptyResponse => "EMPTY_RESPONSE",
             Self::Other(_) => "OTHER",
         }
+    }
+
+    /// 上下文超长(engine 强制压缩后重试一次;见 [`Self::ContextOverflow`])
+    pub fn is_context_overflow(&self) -> bool {
+        matches!(self, Self::ContextOverflow { .. })
     }
 
     /// 服务端 Retry-After(仅 RATE_LIMIT 携带)

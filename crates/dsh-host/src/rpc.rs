@@ -128,6 +128,12 @@ impl<T, TOOLS> Gateway<T, TOOLS> {
         Arc::clone(&self.log)
     }
 
+    /// 装配当前模型上下文窗口(压缩阈值/保留尾按窗口占比重算;
+    /// 宿主从 dsh.toml `context_window` 解析后注入)
+    pub fn set_context_window(&mut self, window: u64) {
+        self.engine.set_context_window(window);
+    }
+
     /// 软取消令牌(serve 层/外部在 turn 执行中触发取消)
     pub fn cancel_token(&self) -> CancelToken {
         self.cancel.clone()
