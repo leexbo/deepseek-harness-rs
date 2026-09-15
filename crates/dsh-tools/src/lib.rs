@@ -313,7 +313,7 @@ impl BashTool {
             }
         };
         let id = next_job_id(&registry);
-        let jobs_dir = self.cwd.join(".dsh/jobs");
+        let jobs_dir = self.cwd.join(".dshrs/jobs");
         if let Err(e) = std::fs::create_dir_all(&jobs_dir) {
             return ToolOutput {
                 output: format!("jobs dir create failed: {e}"),
@@ -439,7 +439,7 @@ impl ToolPort for BashTool {
             };
         }
         // 后台路径:spawn + 注册 + 立即返回 job id;
-        // watcher 任务收尾状态并把输出落盘 .dsh/jobs/<id>.log
+        // watcher 任务收尾状态并把输出落盘 .dshrs/jobs/<id>.log
         if arguments["run_in_background"].as_bool().unwrap_or(false) {
             return self.execute_background(command).await;
         }

@@ -9,9 +9,8 @@ docs/history/
 docs/plans/
 
 # 运行时/构建产物
-.dsh/
+.dshrs/
 .zcode/
 .tmp/
 .tmp-clippy/
 .dsh-workspaces.json
-.dsh-titles.json

@@ -740,10 +740,10 @@ async fn subagent_runs_own_session_and_reports_back() {
             .any(|e| e.r#type == "tool/result" && e.data["output"] == "child-at-work"),
         "子代理的 bash 真实执行"
     );
-    // 能力束窄化:子可写根 = .dsh/subagents/1(+ 平台临时区);
+    // 能力束窄化:子可写根 = .dshrs/subagents/1(+ 平台临时区);
     // 根外(系统根目录,macOS 只读系统卷 / bwrap ro-bind /)写被拒
     // (非干净成功 = 失败或非零退出,退出详情经 Terminal 视图携带)
-    let child_root = dir.join(".dsh/subagents/1");
+    let child_root = dir.join(".dshrs/subagents/1");
     let escape = std::path::PathBuf::from(format!("/dsh-tool-escape-{}", std::process::id()));
     let mut bash = BashTool::new(&child_root);
     let denied = ToolPort::execute(
@@ -904,7 +904,7 @@ async fn background_job_runs_reads_and_stops() {
     .await;
     assert!(read.output.contains("bg-output"), "{}", read.output);
     // 输出文件即持久事实
-    assert!(dir.join(".dsh/jobs/1.log").exists());
+    assert!(dir.join(".dshrs/jobs/1.log").exists());
 
     // stop job 2:快速终止
     let started = std::time::Instant::now();

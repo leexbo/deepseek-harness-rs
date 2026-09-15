@@ -14,7 +14,7 @@
 //! - **前台(run_in_background=false)**:同步等待,最终报告作为 tool/result
 //!   返回(workflow/ralph 编排器走同一前台入口)。
 //!
-//! 能力束窄化:子代理可写根 = 主 workspace 下的 `.dsh/subagents/<id>/`
+//! 能力束窄化:子代理可写根 = 主 workspace 下的 `.dshrs/subagents/<id>/`
 //! (读全盘、写限子根)。子工具面 = 全量 minus 递归:bash(+jobs)/文件三件/
 //! todo_write/goal/session_query(port 在场)/send_message(回发父,仅驻留);
 //! 排除 subagent/workflow(递归)、ask_user_question(子代理不能向人提问)、
@@ -46,7 +46,7 @@ pub struct SubagentSessionHandle {
 
 /// 子会话工厂(会话化 + 句柄化 + 重启恢复):让 subagent
 /// 子任务注册为带血缘(parentSessionId + origin:'subagent')的独立会话。
-/// 实现方:dsh-core AppHost。None = 未注入,回落自建 `.dsh/subagents/<id>/`。
+/// 实现方:dsh-core AppHost。None = 未注入,回落自建 `.dshrs/subagents/<id>/`。
 pub trait SessionFactory: Send + Sync {
     /// 创建带血缘的子会话,返回其槽位 id 与 session.jsonl 路径
     fn create_subagent(&self, parent: &str) -> SubagentSessionHandle;
@@ -588,7 +588,7 @@ fn now_ms() -> i64 {
 
 /// subagent 工具:委派任务 → 嵌套引擎执行(前台等结果 / 后台即返回)
 pub struct SubagentTool<T> {
-    /// 父 workspace(子根 = `.dsh/subagents/<id>/`,能力束窄化)
+    /// 父 workspace(子根 = `.dshrs/subagents/<id>/`,能力束窄化)
     pub root: std::path::PathBuf,
     /// 子代理独立传输工厂(每个子代理一份传输;后台并发的前提)
     transport_factory: TransportFactory<T>,
@@ -681,13 +681,13 @@ where
     }
 
     /// 建子会话:factory 注入 → 带血缘会话(返回槽位 id);未注入 → 回落
-    /// 自建 `.dsh/subagents/<id>/`(id 为本地簿记形态)
+    /// 自建 `.dshrs/subagents/<id>/`(id 为本地簿记形态)
     fn make_session(&self) -> (u64, SubagentSessionHandle) {
         let id = self.next_id();
         match &self.factory {
             Some(f) => (id, f.create_subagent(&self.parent_id)),
             None => {
-                let root = self.root.join(format!(".dsh/subagents/{id}"));
+                let root = self.root.join(format!(".dshrs/subagents/{id}"));
                 let path = root.join("session.jsonl");
                 (
                     id,

@@ -530,7 +530,7 @@ pub struct AppHost {
     preset_overrides: std::sync::RwLock<HashMap<String, String>>,
     /// 会话 → 推理等级覆盖(low / high / max;空 = 默认)
     effort_overrides: std::sync::RwLock<HashMap<String, String>>,
-    /// 会话 → 重命名标题(持久化 .dsh-titles.json;优先于首条投影)。
+    /// 会话 → 重命名标题(持久化 .dshrs/.dsh-titles.json;优先于首条投影)。
     /// LLM 语义标题(4b)也写入此映射——手动 rename 随时覆盖,二者不冲突。
     titles: std::sync::RwLock<HashMap<String, String>>,
     /// LLM 标题生成中的会话集(去重:并发 turn 启动的重复生成只一个在跑;
@@ -688,8 +688,17 @@ fn mermaid_demo_segment() -> Vec<LlmEvent> {
     events
 }
 
-/// 重命名标题持久化文件(workspace 顶层,JSON 对象)
-const TITLES_FILE: &str = ".dsh-titles.json";
+/// 重命名标题持久化文件(workspace `.dshrs/` 内,JSON 对象)
+const TITLES_FILE: &str = ".dshrs/.dsh-titles.json";
+
+/// 标题落盘(`.dshrs/` 子目录缺席则先建——首个标题写入时该目录尚不存在)
+fn write_titles_file(workspace: &std::path::Path, text: &str) -> Result<(), std::io::Error> {
+    let path = workspace.join(TITLES_FILE);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, text)
+}
 
 /// 添加工作区持久化文件(默认工作区顶层;路径数组)
 const WORKSPACES_FILE: &str = ".dsh-workspaces.json";
@@ -947,7 +956,7 @@ fn migrate_legacy_layout(ws: &Path, sessions_root: &Path) {
 /// 会话标题派生:首条 user/message 内容取回退标题
 /// (`fallbackSessionTitle`:5 词 / 40 字节)。无消息 → None
 /// (空串会遮蔽客户端的清单摘录投影——标题仅在真实存在时下发)。
-/// 与手动 `rename`(`.dsh-titles.json`)叠加:本函数仅作无重命名时的回退。
+/// 与手动 `rename`(`.dshrs/.dsh-titles.json`)叠加:本函数仅作无重命名时的回退。
 fn title_of(events: &[EventEnvelope]) -> Option<String> {
     events
         .iter()
@@ -3012,7 +3021,7 @@ impl AppHost {
         let mut titles = self.titles.write().unwrap_or_else(|p| p.into_inner());
         titles.insert(id.into(), title.clone());
         let text = serde_json::to_string_pretty(&*titles).unwrap_or_default();
-        std::fs::write(self.default_workspace().join(TITLES_FILE), text)
+        write_titles_file(&self.default_workspace(), &text)
             .map_err(|e| RpcError::internal(format!("标题持久化失败:{e}")))?;
         Ok(())
     }
@@ -3148,7 +3157,7 @@ impl AppHost {
                 .entry(id.to_string())
                 .or_insert_with(|| title.to_string());
             let text = serde_json::to_string_pretty(&*titles).map_err(|e| e.to_string())?;
-            std::fs::write(self.default_workspace().join(TITLES_FILE), text)
+            write_titles_file(&self.default_workspace(), &text)
                 .map_err(|e| format!("标题持久化失败:{e}"))?;
         }
         // 广播 title 投影(客户端 state.titles 增量更新;history/list 全量兜底)
@@ -7997,8 +8006,9 @@ mod tests {
 
         // titles 映射落地(session_title 反映 LLM 标题)
         assert_eq!(host.session_title(&id).as_deref(), Some("Justfile"));
-        // 持久化 .dsh-titles.json 含该会话
-        let file = std::fs::read_to_string(host.workspace().join(".dsh-titles.json")).unwrap();
+        // 持久化 .dshrs/.dsh-titles.json 含该会话
+        let file =
+            std::fs::read_to_string(host.workspace().join(".dshrs/.dsh-titles.json")).unwrap();
         assert!(file.contains("Justfile"), "标题应持久化:{file}");
     }
 

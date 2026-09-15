@@ -114,7 +114,7 @@ flowchart TB
 | `dsh-agent-loop` | turn/step 状态机;驱动端口定义 | `LlmTransport` / `Summarizer` / `ToolPort` / `ToolSet`(名字分发)/ `CancelToken`(trait 由宿主实现) |
 | `dsh-session` | 事件日志:信封、类型、seq 强制、消息派生、归因查询 | rlib API + WIT `dsh:session` 导出 |
 | `dsh-prompt` | system prompt 组装(纯函数;宿主注入身份/环境/指令文件内容) | `assemble(ctx)` |
-| `dsh-tools` | BashTool(沙箱执行、取消、PTY)+ FileTools(file_read / file_edit / file_search——检索为 ripgrep 引擎:ignore 遍历尊重 .gitignore,grep-searcher 行搜索)+ TodoTool(todo/state)+ PlanTool(exit_plan_mode)+ GoalTool(goal/state)+ SubagentTool(嵌套引擎,独立子日志,能力束窄化)+ SubagentControlTool + JobTool(后台任务 list/read/stop;输出落盘 .dsh/jobs) | `ToolPort` 实现 |
+| `dsh-tools` | BashTool(沙箱执行、取消、PTY)+ FileTools(file_read / file_edit / file_search——检索为 ripgrep 引擎:ignore 遍历尊重 .gitignore,grep-searcher 行搜索)+ TodoTool(todo/state)+ PlanTool(exit_plan_mode)+ GoalTool(goal/state)+ SubagentTool(嵌套引擎,独立子日志,能力束窄化)+ SubagentControlTool + JobTool(后台任务 list/read/stop;输出落盘 .dshrs/jobs) | `ToolPort` 实现 |
 | `dsh-mcp` | MCP client 桥:stdio server 连接(后台任务,不阻塞装配)与工具桥接(公共名 `mcp__<server>__<tool>`、raw name 走线、整代原子换带、list_changed 重同步、内容投影) | `McpServerPort`(ToolPort 实现) |
 | `dsh-wit` | host 侧 bindgen 与组件契约测试 | 测试套件 |
 | `dsh-example-tool` | 示例工具组件(echo_config / spin):`dsh:tools` world 参考实现与测试物料(rlib + wasm32-wasip2 双产物,照 dsh-session 模式) | WIT `dsh:tools` 导出 |
