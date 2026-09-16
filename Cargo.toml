@@ -27,9 +27,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 
-# 棘轮:生产代码禁 unwrap/expect(测试代码经 clippy.toml 放行)。
-# 允许的例外 = AGENTS.md §1 ①「守卫/构造已保证前提的不变式断言」,
-# 逐点以 #[allow(clippy::expect_used)] + 前提说明显式登记。
+# 棘轮:生产代码禁 unwrap/expect(测试经 clippy.toml 放行);
+# 例外 = AGENTS.md §1 ①,逐点 #[allow] + 前提说明登记。
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
@@ -49,13 +48,12 @@ turso = { version = "0.7.2", features = ["fts"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 futures = "0.3"
 libc = "0.2"
-# 外部文件拖放载荷构造(gpui-pre FileDropEvent::Entered 的 ExternalPaths;
-# 与 gpui-pre 共用 1.x)
+# gpui-pre FileDropEvent 载荷构造(与其共用 1.x)
 smallvec = "1"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-# preset manifest 解析(k8s 形态 YAML 多文档流;serde_yaml 已归档,此为活跃接棒 fork)
+# preset manifest 解析(serde_yaml 的接棒 fork)
 serde_norway = "0.9"
 wit-bindgen = "0.62"
 dsh-app = { path = "crates/dsh-app" }
@@ -79,43 +77,36 @@ ignore = "0.4.33"
 grep-searcher = "0.1.17"
 grep-regex = "0.1.14"
 uuid = { version = "1", features = ["v4", "v7"] }
-# GPUI 桌面客户端(dsh-desktop):gpui-kit 门面单依赖(crates.io),内部
-# 重导出 gpui(= gpui-pre,zed 官方发布快照)+ gpui-component + base +
-# assets;platform features 与 test-support 均由其自带/透传,不再用 zed
-# 裸 git 引用。升级走 crates.io semver(cargo update -p gpui-kit)
+# GPUI 桌面门面:重导出 gpui(= gpui-pre)+ component/base/assets,升级走 semver
 gpui-kit = "0.6.1"
 pulldown-cmark = { version = "0.13", default-features = false }
-# Mermaid 图渲染(dsh-desktop markdown;引擎选型见 kits/mermaid.rs 头注:
-# zed #49064→#57644 弃 mermaid-rs-renderer 换 merman)。alpha 版本锁死防漂移,
-# 默认特征(complete-svg=svg+cytoscape+elk+math)裁到所需两项
+# Mermaid → SVG(引擎选型见 kits/mermaid.rs);alpha 锁死防漂移
 merman = { version = "=0.8.0-alpha.5", default-features = false, features = ["svg", "layout-cytoscape"] }
-# Mermaid 查看器视口裁剪光栅(自持 resvg 按 scale+translate 只渲染
-# 可见区域,内存 O(视口);版本与 gpui 0.2.2 锁同版去重)
+# Mermaid 查看器视口裁剪光栅(与 gpui 锁同版去重)
 resvg = "0.48.1"
 usvg = "0.48.1"
-# macOS Dock 图标(dsh-desktop 运行时绘制;objc2 系版本与 gpui 同源锁定)
+# macOS Dock 图标运行时绘制(objc2 系与 gpui 同源锁定)
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "objc2-core-graphics"] }
 objc2-core-graphics = { version = "0.3", features = ["CGBitmapContext", "CGColor", "CGColorSpace", "CGContext", "CGImage"] }
 objc2-foundation = "0.3"
-# 窗口毛玻璃取证探针(dsh-desktop winprobe;lock 内唯一 0.6 与 gpui 同一实例)
+# 毛玻璃探针 winprobe(lock 内与 gpui 同一 0.6 实例)
 raw-window-handle = "0.6"
-# macOS 钥匙串凭据(dsh-core credentials seam;非 macOS 平台该级缺席)
-# 图片附件:解码校验/维度(dsh-attachment 附件存储;版本与 gpui 0.2.2 锁同版)
+# macOS 钥匙串凭据(非 macOS 平台该级缺席)
+# 附件图片解码校验(与 gpui 锁同版)
 image = "0.25"
 sha2 = "0.11.0"
 hex = "0.4"
-# MCP client(官方 Rust SDK;stdio + streamable-http 首两批)
+# MCP client(stdio + streamable-http)
 rmcp = { version = "3.2", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
-# 图片附件 wire 编码(draft 提交 base64 / data URL / 读取 RPC)
+# 附件 wire 编码(base64 / data URL)
 base64 = "0.23"
 
 [profile.dev]
-# 全量 debuginfo 下 wasmtime+turso 的 debug 构建达数十 GB;行号表足够日常调试
+# 全量 debuginfo 下 wasmtime+turso 构建达数十 GB;行号表足够日常调试
 debug = "line-tables-only"
 
-# GUI/文本栈热点依赖 debug 下仍走优化(对齐 gpui-kit 官方 workspace;
-# 兼收内存与流畅度收益)。包名 = crates.io 真实名(gpui 发布为 gpui-pre)
+# 热点依赖 debug 下走优化;包名 = crates.io 真实名(gpui 发布为 gpui-pre)
 [profile.dev.package]
 gpui-pre = { opt-level = 3 }
 gpui-pre-macros = { opt-level = 3 }

@@ -19,11 +19,9 @@ anyhow.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 futures.workspace = true
-# GPUI Kit 门面:重导出 gpui(=gpui-pre)全部符号 + component/base/assets
-# 子模块;platform features 由其自带依赖携带
-# MCP JSON 粘贴区语法高亮:Editor + tree-sitter-json(经 gpui-kit 透传
-# 到 gpui-component 的 tree-sitter feature;json 随基础 feature 内置)
+# GPUI Kit 门面:重导出 gpui(=gpui-pre)+ component/base/assets
 smallvec.workspace = true
+# tree-sitter = MCP JSON 粘贴区语法高亮(经 gpui-kit 透传)
 gpui-kit = { workspace = true, features = ["tree-sitter"] }
 pulldown-cmark.workspace = true
 # Mermaid 图渲染(markdown```mermaid 围栏 → SVG → gpui 光栅;kits/mermaid.rs)
