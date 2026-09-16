@@ -106,16 +106,17 @@ flowchart TB
 |---|---|---|
 | `dsh` | CLI 入口(薄壳):参数解析、终端渲染(REPL/Reporter)、stdio 网关装配 | `chat` / `serve` / `info` 子命令 |
 | `dsh-app` | 会话装配层:配置合并、prompt 组装、transport 构建、preset 工具组装、`Session`(turn 驱动 + 会话级事件)、日志重载 | 库 API |
-| `dsh-core` | 多会话应用核心:多会话注册表(worker/队列/计划问题)、客方线上协议类型、事件翻译(我方词汇 → 客方 SessionEvent)、轨迹/统计/上下文投影;构建于 `dsh-app` 之上(单会话装配 ↔ 多会话核心的分工) | 库 API(`dsh-desktop` 进程内直连) |
+| `dsh-core` | 多会话应用核心:多会话注册表(worker/队列/turn 内计划评审)、客方线上协议类型、事件翻译(我方词汇 → 客方 SessionEvent)、轨迹/统计/上下文投影;构建于 `dsh-app` 之上(单会话装配 ↔ 多会话核心的分工) | 库 API(`dsh-desktop` 进程内直连) |
 | `dsh-desktop` | 桌面客户端(GPUI 原生 UI,gpui-component):进程内直连 `dsh-core` AppHost(同步方法直调/异步经 tokio runtime,mux+host 广播帧经 futures channel 桥入 GPUI),唯一 UI 客户端;关窗即退出 | `dsh-desktop [--workspace <dir>] [--fake]` |
 | `dsh-host` | 组件宿主:wasmtime 组件管理器、事件总线与插件、持久化(JSONL/turso)、总线 transport、rpc 网关、遥测、配置/preset | 库 API(LLM 接入见 dsh-llm,执行原语见 dsh-sandbox) |
 | `dsh-llm` | LLM 接入:通用方言引擎(chat/responses/anthropic)+ Ext 差异点(deepseek-responses / openai-responses / anthropic / deepseek-chat / openai-chat)、HTTP/SSE transport、不变式闸门(InvariantGate)、假 provider 测试装备 | 库 API;扩展点 `ProviderAdapter` / `FrameMapper` / `ChatExt` / `ResponsesExt` / `AnthropicExt` |
 | `dsh-sandbox` | 执行原语:沙箱链(fail-closed)、受控 spawn/PTY(独立进程组、SIGTERM→grace→SIGKILL) | 库 API |
 | `dsh-agent-loop` | turn/step 状态机;驱动端口定义 | `LlmTransport` / `Summarizer` / `ToolPort` / `ToolSet`(名字分发)/ `CancelToken`(trait 由宿主实现) |
 | `dsh-compaction` | 上下文压缩策略(纯函数):压力阈值/保留尾 token 预算(0.8/0.16×窗口)、压缩范围选段(tool 配对平衡切点)、checkpoint 摘要指令(照源 compaction 包族语义) | 纯函数(select_range / measure_tokens / COMPACTION_INSTRUCTION) |
+| `dsh-plan` | 计划模式协作状态(照源 packages/plan 包边界):状态折叠(模式/待审/活跃计划)、plan:policy 提示词段、exit_plan_mode 工具(turn 内阻塞评审,`^#\\s+\\S` 标题校验)、PlanReviewPort(宿主面:dsh-core/Gateway/CLI)、事件信封构造与载荷校验 | `PlanTool` / `PlanReviewPort` / `header_sections` / 纯函数 fold |
 | `dsh-session` | 事件日志:信封、类型、seq 强制、消息派生、归因查询 | rlib API + WIT `dsh:session` 导出 |
-| `dsh-prompt` | system prompt 组装(纯函数;宿主注入身份/环境/指令文件内容) | `assemble(ctx)` |
-| `dsh-tools` | BashTool(沙箱执行、取消、PTY)+ FileTools(file_read / file_edit / file_search——检索为 ripgrep 引擎:ignore 遍历尊重 .gitignore,grep-searcher 行搜索)+ TodoTool(todo/state)+ PlanTool(exit_plan_mode)+ GoalTool(goal/state)+ SubagentTool(嵌套引擎,独立子日志,能力束窄化)+ SubagentControlTool + JobTool(后台任务 list/read/stop;输出落盘 .dshrs/jobs) | `ToolPort` 实现 |
+| `dsh-prompt` | system prompt 组装(纯函数;宿主注入身份/环境/指令文件内容;plan 段由 dsh-plan 预渲染注入) | `assemble(ctx)` |
+| `dsh-tools` | BashTool(沙箱执行、取消、PTY)+ FileTools(file_read / file_edit / file_search——检索为 ripgrep 引擎:ignore 遍历尊重 .gitignore,grep-searcher 行搜索)+ TodoTool(todo/state)+ GoalTool(goal/state)+ SubagentTool(嵌套引擎,独立子日志,能力束窄化)+ SubagentControlTool + JobTool(后台任务 list/read/stop;输出落盘 .dshrs/jobs) | `ToolPort` 实现 |
 | `dsh-mcp` | MCP client 桥:stdio server 连接(后台任务,不阻塞装配)与工具桥接(公共名 `mcp__<server>__<tool>`、raw name 走线、整代原子换带、list_changed 重同步、内容投影) | `McpServerPort`(ToolPort 实现) |
 | `dsh-wit` | host 侧 bindgen 与组件契约测试 | 测试套件 |
 | `dsh-example-tool` | 示例工具组件(echo_config / spin):`dsh:tools` world 参考实现与测试物料(rlib + wasm32-wasip2 双产物,照 dsh-session 模式) | WIT `dsh:tools` 导出 |
@@ -220,8 +221,10 @@ JSONL 日志逐事件重放:信封校验(§7.1)通过即重建 EventLog,`derive_
 | todo/state | 簿记 | `todos` 全量快照(id/task/status);恢复 = 读最近一条 |
 | compaction/summary | 簿记 | `summary`、`throughSeq`(折叠覆盖边界);重放读记录不重调 |
 | session/mode | 簿记 | `mode`(standard / plan);影响 prompt → 必须入日志 |
-| plan/submitted | 簿记 | `plan`;模型经 exit_plan_mode 提交 |
-| plan/approved | 簿记 | `plan`;批准后注入 active-plan 段 |
+| plan/submitted | 簿记 | `plan`;模型经 exit_plan_mode 提交(turn 内评审发起时落档) |
+| plan/approved | 簿记 | `plan`;批准后注入 active-plan 段,session/mode 回 standard |
+| plan/declined | 簿记 | `plan` + 可选 `feedback`;拒绝留在 plan 模式,反馈经 tool/result 回传模型 |
+| plan/cancelled | 簿记 | `plan`;评审被关闭/中断(等待用户在聊天中说话) |
 | goal/state | 簿记 | `goals` 全量快照(id/text/done);恢复 = 读最近一条 |
 | approval/asked · approval/decided | 簿记 | 沙箱升级审计对:`id` 配对;asked 带 `toolName`/`reason`,decided 带 `outcome`(allowed-once / rejected / cancelled / unavailable) |
 
@@ -360,7 +363,7 @@ span 为日志投影:turn/step → 区间 span(span_id = 起始事件 seq);audit
 | 插件 | 总线订阅 + lifecycle(init / dispose / config-schema) | `PluginRegistry` 注册,逆序销毁 | 重试 / 回放 / title 均为插件 |
 | 日志后端 | `LogBackend` | 装配期选择 | JSONL ⇄ SQLite(turso) |
 | 传输 | `LlmTransport` | 闸门包裹装配 | HTTP ⇄ 假 provider ⇄ 总线传输 |
-| prompt 策略 | `assemble(ctx)` 纯函数 | 装配期组装(AGENTS.md ≤64KB 注入;plan 态/active-plan 自日志每 turn 重组;persona mount 行可覆盖 identity/追加段) | 计划模式 / compaction 策略 |
+| prompt 策略 | `assemble(ctx)` 纯函数 | 装配期组装(AGENTS.md ≤64KB 注入;plan 态/active-plan 自日志折叠,段文本由 dsh-plan 产出、引擎每 step 重建 header——turn 中途落档的状态事件立即生效于下一步;persona mount 行可覆盖 identity/追加段) | 计划模式 / compaction 策略 |
 | preset 组合 | `PresetManifest`(k8s 形态 YAML) | 装配期加载(内置 include_str + workspace `presets/` 覆盖;mount 行 = 在树组件 / wasm 路径 / OCI 引用) | 复制改一份 manifest 即增删能力,零代码 |
 
 ### 7.11 配置

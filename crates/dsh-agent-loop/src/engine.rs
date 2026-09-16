@@ -153,6 +153,12 @@ pub struct LoopEngine {
     /// hooks 拦截点(宿主注入;None = 无钩子,零开销直通)。四调用点:
     /// prompt-submit / pre-tool / post-tool / stop(M4.2 拍板 1)。
     hook_port: Option<std::sync::Arc<dyn crate::hooks::HookPortObj>>,
+    /// 每 step 重建 header 的回调(宿主注入;None = 沿用 turn 开始时的
+    /// header)。照源 per-request 组装:turn 中途落档的状态事件(如计划
+    /// 批准切回 standard)立即反映到下一步的提示词段——批准结果
+    /// 「carry out from your next step」与 plan 段不再打架。工具声明
+    /// 不来自日志,重建后由引擎重注。
+    header_rebuilder: Option<StepHeaderRebuilder>,
     /// 本 turn 内待下探的触碰路径(file_read/file_edit 的 path 参数);
     /// 下一次组合指令时消费并清空,turn 结束自然丢弃
     pending_touches: Vec<String>,
@@ -161,6 +167,9 @@ pub struct LoopEngine {
     /// 抖动随机源(∈ [0,1];默认取 uuid v7 随机位,测试注入固定样本)
     random_source: Box<dyn Fn() -> f64 + Send + Sync>,
 }
+
+/// 每 step 重建 header 的回调类型(宿主注入;输入共享日志,产出新 header)
+pub type StepHeaderRebuilder = Box<dyn Fn(&EventLog) -> RequestHeader + Send>;
 
 /// 每步重扫 workspace 指令的回调类型(宿主注入;`&[String]` = 上步触碰路径)
 pub type InstructionsProviderFn = dyn Fn(&[String]) -> Option<Value> + Send + Sync;
@@ -210,6 +219,7 @@ impl LoopEngine {
             skill_catalog_provider: None,
             skill_gesture_provider: None,
             hook_port: None,
+            header_rebuilder: None,
             pending_touches: Vec::new(),
             retry_policy: RetryPolicy::default(),
             random_source: Box::new(uuid_random),
@@ -219,6 +229,12 @@ impl LoopEngine {
     /// 装配重试策略(测试注入短延迟/零次数)
     pub fn set_retry_policy(&mut self, policy: RetryPolicy) {
         self.retry_policy = policy;
+    }
+
+    /// 装配每 step header 重建回调(宿主注入;dsh-app 的 header_rebuilder
+    /// 形态)。未设置 = 沿用 turn 开始时的 header(原语义)。
+    pub fn set_header_rebuilder(&mut self, rebuild: StepHeaderRebuilder) {
+        self.header_rebuilder = Some(rebuild);
     }
 
     /// 装配抖动随机源(测试注入固定样本;默认 uuid v7 随机位)
@@ -771,6 +787,18 @@ impl LoopEngine {
                 EventEnvelope::new("step/start", clock(), serde_json::json!({})),
                 sink,
             )?;
+
+            // 每 step 重建 header(照源 per-request 组装):turn 中途落档的
+            // 状态事件(计划批准切 standard)立即生效于下一步提示词段。
+            // 工具声明不来自日志——重建后由引擎重注。锁失败 = 沿用旧 header。
+            let rebuilt = match (self.header_rebuilder.as_ref(), self.log.lock().ok()) {
+                (Some(rebuild), Some(l)) => Some(rebuild(&l)),
+                _ => None,
+            };
+            if let Some(header) = rebuilt {
+                self.header = header;
+                self.header.tools = tools.specs();
+            }
 
             // step/start 之后:①认领 steer(claimed)→ ②真实用户消息(仅首步,
             // 1 条)→ ③注入上下文(每步经 projection,

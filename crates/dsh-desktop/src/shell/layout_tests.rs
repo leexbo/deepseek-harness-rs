@@ -3066,6 +3066,21 @@ fn plan_review_compact_card_two_options(cx: &mut TestAppContext) {
         approve.top() < decline.top() && decline.top() < confirm.top(),
         "纵向序应为 ①②批准钮"
     );
+    // 选项说明行(宿主选项描述;fixture options=None 走回落文案)在场且
+    // 贴在各自选项行内
+    let approve_desc = wcx
+        .debug_bounds("plan-approve-desc")
+        .expect("选项①说明应渲染");
+    let decline_desc = wcx
+        .debug_bounds("plan-decline-desc")
+        .expect("选项②说明应渲染");
+    assert!(
+        approve_desc.top() >= approve.top()
+            && approve_desc.bottom() <= approve.bottom()
+            && decline_desc.top() >= decline.top()
+            && decline_desc.bottom() <= decline.bottom(),
+        "说明行应在各自选项行内"
+    );
     assert!(
         view.right() <= dismiss.left() && approve.top() >= card.top(),
         "查看在 ✕ 之前、选项在卡内,view={view:?} dismiss={dismiss:?}"

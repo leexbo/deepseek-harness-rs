@@ -15,6 +15,7 @@ members = [
     "crates/dsh-sandbox",
     "crates/dsh-session",
     "crates/dsh-attachment",
+    "crates/dsh-plan",
     "crates/dsh-agent-loop",
     "crates/dsh-prompt",
     "crates/dsh-tools",
@@ -64,6 +65,7 @@ dsh-hooks = { path = "crates/dsh-hooks" }
 dsh-host = { path = "crates/dsh-host" }
 dsh-session = { path = "crates/dsh-session" }
 dsh-compaction = { path = "crates/dsh-compaction" }
+dsh-plan = { path = "crates/dsh-plan" }
 dsh-wit = { path = "crates/dsh-wit" }
 dsh-agent-loop = { path = "crates/dsh-agent-loop" }
 dsh-prompt = { path = "crates/dsh-prompt" }

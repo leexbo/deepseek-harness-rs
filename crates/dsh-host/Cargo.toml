@@ -9,6 +9,7 @@ rust-version.workspace = true
 dsh-attachment.workspace = true
 dsh-agent-loop.workspace = true
 dsh-llm.workspace = true
+dsh-plan.workspace = true
 dsh-wit.workspace = true
 futures.workspace = true
 hex.workspace = true

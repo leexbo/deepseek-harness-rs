@@ -305,13 +305,16 @@ async fn gateway_cancel_interrupts_running_turn() {
 
 #[tokio::test]
 async fn gateway_mode_and_approve_roundtrip() {
-    // mode 切换与计划批准经网关方法入日志(单边界,engine 追加);
-    // 非法 mode 值 -32602;无待批准计划时 approve 拒绝
+    // mode 切换入日志(单边界,engine 追加);非法 mode 值 -32602;
+    // approve/decline 经评审通道直答在审评审(turn 内阻塞评审的宿主面),
+    // 无通道/无在审均 -32602;终局事件序 = 源语义(批准切 standard、
+    // 拒绝留 plan 模式)
+    use dsh_host::rpc::PlanReviewChannel;
     let dir = std::env::temp_dir().join(format!("dsh-rpc-mode-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut gw = gateway(&dir, vec![]);
 
-    // 无待批准计划
+    // 无评审通道(工具面无 plan)
     let err = gw.handle("approve", &json!({})).await.unwrap_err();
     assert_eq!(err.code, -32602);
 
@@ -326,22 +329,49 @@ async fn gateway_mode_and_approve_roundtrip() {
     let (result, _) = gw.handle("mode", &json!({ "mode": "plan" })).await.unwrap();
     assert_eq!(result["mode"], "plan");
 
-    // 提交计划(直接 append 模拟 exit_plan_mode 的状态事件)
-    {
-        let log = gw.log();
-        let mut l = log.lock().unwrap();
-        use dsh_session::EventEnvelope;
-        l.append(EventEnvelope::new(
-            "plan/submitted",
-            0,
-            json!({ "plan": "# the plan" }),
-        ))
-        .unwrap();
-    }
-    let (result, _) = gw.handle("approve", &json!({})).await.unwrap();
-    assert_eq!(result["approved"], true);
+    // 接线评审通道(与 engine/工具同一日志视图;测试侧独立落盘文件)
+    let channel = PlanReviewChannel::new(
+        gw.log(),
+        JsonlBackend::create(dir.join("plan.jsonl")).unwrap(),
+    );
+    gw.set_plan_review(channel.clone());
 
-    // 日志断言:mode ×2 + submitted + approved 顺序完整
+    // 通道在场但无在审评审
+    let err = gw.handle("approve", &json!({})).await.unwrap_err();
+    assert_eq!(err.code, -32602);
+
+    // 在审评审:批准(模拟 exit_plan_mode 的 turn 内阻塞)
+    let review = tokio::spawn({
+        let ch = channel.clone();
+        async move { dsh_plan::PlanReviewPort::review(&ch, "s", "# the plan").await }
+    });
+    wait_review_open(&channel).await;
+    let (result, _) = gw.handle("approve", &json!({})).await.unwrap();
+    assert_eq!(result["decision"], "approved");
+    let decision = review.await.unwrap().unwrap();
+    assert_eq!(decision, dsh_plan::PlanReviewDecision::Approve);
+
+    // 拒绝(带反馈):留在 plan 模式
+    let review = tokio::spawn({
+        let ch = channel.clone();
+        async move { dsh_plan::PlanReviewPort::review(&ch, "s", "# v2").await }
+    });
+    wait_review_open(&channel).await;
+    let (result, _) = gw
+        .handle("decline", &json!({ "feedback": "use OAuth" }))
+        .await
+        .unwrap();
+    assert_eq!(result["decision"], "declined");
+    let decision = review.await.unwrap().unwrap();
+    assert_eq!(
+        decision,
+        dsh_plan::PlanReviewDecision::Decline {
+            feedback: Some("use OAuth".into())
+        }
+    );
+
+    // 日志断言:mode → submitted → approved → mode(standard)→
+    // declined(拒绝不切模式,无第二条 standard)
     let log = gw.log();
     let l = log.lock().unwrap();
     let tail: Vec<&str> = l
@@ -349,7 +379,7 @@ async fn gateway_mode_and_approve_roundtrip() {
         .filter(|e| {
             matches!(
                 e.r#type.as_str(),
-                "session/mode" | "plan/submitted" | "plan/approved"
+                "session/mode" | "plan/submitted" | "plan/approved" | "plan/declined"
             )
         })
         .map(|e| e.r#type.as_str())
@@ -360,7 +390,27 @@ async fn gateway_mode_and_approve_roundtrip() {
             "session/mode",
             "plan/submitted",
             "plan/approved",
-            "session/mode"
-        ]
+            "session/mode",
+            "plan/submitted",
+            "plan/declined",
+        ],
+        "批准 = approved+回 standard;拒绝 = declined 留在 plan 模式"
     );
+    let declined = l
+        .iter()
+        .rev()
+        .find(|e| e.r#type == "plan/declined")
+        .unwrap();
+    assert_eq!(declined.data["feedback"], "use OAuth");
+}
+
+/// 轮询等待评审打开(通道置 tx 后 is_open)
+async fn wait_review_open(channel: &dsh_host::rpc::PlanReviewChannel) {
+    for _ in 0..200 {
+        if channel.is_open() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("评审未打开");
 }

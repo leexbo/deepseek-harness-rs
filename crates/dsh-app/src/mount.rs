@@ -57,6 +57,9 @@ pub struct MountContext<'a> {
     pub query_port: Option<Arc<dyn dsh_tools::session_query::SessionQueryPort>>,
     /// ask_user_question 宿主 port(缺 = 该组件跳过)
     pub ask_port: Option<Arc<dyn dsh_tools::AskQuestionPort>>,
+    /// 计划评审 port(缺 = 工具仍装配——目录跨模式/宿主稳定,执行期报
+    /// 「无评审通道」照源;有 = turn 内阻塞评审)
+    pub plan_review_port: Option<Arc<dyn dsh_plan::PlanReviewPort>>,
     /// 子代理会话工厂(桌面 attach 形态)
     pub session_factory: Option<Arc<dyn dsh_tools::subagent::SessionFactory>>,
     /// 子代理结算通知 port(缺 = subagent 同步语义)
@@ -75,6 +78,20 @@ impl<'a> MountContext<'a> {
     /// 指定组件是否在场(同一 manifest 的 mounts 集合)
     fn present(&self, source: &str) -> bool {
         self.present.contains(source)
+    }
+
+    /// port 定向的归属会话 id:优先调用方传入的**槽位 id**(非默认工作区为
+    /// "<ws>/<stem>" 复合形式;此前从文件路径反推裸 stem,与桌面当前会话
+    /// 复合 id 不相等 → question/requested 帧被会话门控整批跳过 = 不弹窗)
+    fn session_id_for_ports(&self) -> String {
+        self.current_session.map(String::from).unwrap_or_else(|| {
+            self.resolved
+                .session
+                .rsplit('/')
+                .nth(1)
+                .unwrap_or_default()
+                .to_string()
+        })
     }
 
     /// jobs↔bash 共享的后台任务注册表(懒构造)
@@ -297,11 +314,16 @@ fn mount_todo_write(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn Tool
     )))])
 }
 
-/// plan:计划模式工具(共享日志)
+/// plan:计划模式工具(共享日志 + 评审 port)。**port 缺席也装配**——
+/// 工具目录跨模式/宿主稳定(request-cache 稳定),无评审通道在执行期
+/// 报错并请模型让用户手动切模式(照源;plan 态约束由提示词段承担)。
 fn mount_plan(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj>>> {
-    Ok(vec![Box::new(dsh_tools::PlanTool::new(Arc::clone(
-        ctx.log,
-    )))])
+    let current = ctx.session_id_for_ports();
+    Ok(vec![Box::new(dsh_plan::PlanTool::new(
+        Arc::clone(ctx.log),
+        ctx.plan_review_port.clone(),
+        &current,
+    ))])
 }
 
 /// goal:目标工具(共享日志)
@@ -401,17 +423,7 @@ fn mount_ask(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj
     let Some(port) = ctx.ask_port.clone() else {
         return Ok(vec![]);
     };
-    // 归属会话 = 调用方传入的**槽位 id**(非默认工作区为 "<ws>/<stem>" 复合
-    // 形式;此前从文件路径反推裸 stem,与桌面当前会话复合 id 不相等 →
-    // question/requested 帧被问答卡会话门控整批跳过 = 不弹窗)
-    let current = ctx.current_session.map(String::from).unwrap_or_else(|| {
-        ctx.resolved
-            .session
-            .rsplit('/')
-            .nth(1)
-            .unwrap_or_default()
-            .to_string()
-    });
+    let current = ctx.session_id_for_ports();
     Ok(vec![Box::new(dsh_tools::AskQuestionTool::new(
         port, &current,
     ))])
@@ -463,6 +475,7 @@ pub fn assemble(
     approval_port: Option<Arc<dyn dsh_tools::ApprovalPort>>,
     query_port: Option<Arc<dyn dsh_tools::session_query::SessionQueryPort>>,
     ask_port: Option<Arc<dyn dsh_tools::AskQuestionPort>>,
+    plan_review_port: Option<Arc<dyn dsh_plan::PlanReviewPort>>,
     session_factory: Option<Arc<dyn dsh_tools::subagent::SessionFactory>>,
     notify_port: Option<Arc<dyn dsh_tools::subagent::SettlementNotificationPort>>,
     current_session: Option<&str>,
@@ -486,6 +499,7 @@ pub fn assemble(
         approval: approval_port,
         query_port,
         ask_port,
+        plan_review_port,
         session_factory,
         notify_port,
         current_session,
@@ -552,7 +566,7 @@ mod tests {
         let cancel = CancelToken::new();
         let tools = assemble(
             resolved, "key", &log, &cancel, false, permission, None, None, None, None, None, None,
-            None, None,
+            None, None, None,
         )
         .unwrap();
         tools
@@ -697,6 +711,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         ) else {
             panic!("未知组件源应拒绝");
         };
@@ -714,6 +729,7 @@ mod tests {
             &CancelToken::new(),
             false,
             "workspace-write",
+            None,
             None,
             None,
             None,

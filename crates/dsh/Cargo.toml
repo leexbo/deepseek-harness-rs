@@ -13,6 +13,7 @@ dsh-agent-loop.workspace = true
 dsh-app.workspace = true
 dsh-host.workspace = true
 dsh-llm.workspace = true
+dsh-plan.workspace = true
 dsh-prompt.workspace = true
 dsh-session.workspace = true
 dsh-tools.workspace = true

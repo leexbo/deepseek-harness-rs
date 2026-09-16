@@ -1,10 +1,9 @@
 //! prompt 组件:system-prompt 组装(纯函数面)。
 //!
-//! system-prompt 组装保持纯函数性质:输入是数据(身份/环境/计划态),
-//! 输出是字符串;无 IO、无时钟——天然可重放。
-//! plan-mode 折叠与 skill 渲染此阶段为最小实现,compaction 策略只立接口。
-
-use serde_json::Value;
+//! system-prompt 组装保持纯函数性质:输入是数据(身份/环境/预渲染段),
+//! 输出是字符串;无 IO、无时钟——天然可重放。plan 段不在此层解析:
+//! dsh-plan 折叠日志产出预渲染段(active-plan/plan-mode),此层只管槽位。
+//! compaction 策略只立接口。
 
 /// 一个提示词段(标题 + 内容;渲染为 Markdown 分段)
 #[derive(Debug, Clone, PartialEq)]
@@ -23,12 +22,8 @@ pub struct AssembleContext {
     /// 环境段(cwd/平台/日期等;由宿主注入,组件不读时钟)
     pub env_info: String,
     /// 指令文件内容(AGENTS.md;由宿主读取注入,prompt 保持纯函数)
-    /// 计划模式(折叠为一段约束)
-    pub plan_mode: bool,
-    /// 计划内容(plan_mode 时渲染)
-    pub plan: Option<Value>,
-    /// 已批准的活跃计划(标准模式渲染为 active-plan 段;引导实现)
-    pub active_plan: Option<String>,
+    /// 活跃计划段(已批准计划;由 dsh-plan 折叠日志产出,此层不解析日志)
+    pub active_plan_section: Option<PromptSection>,
     /// preset 追加段(声明式组合;渲染为 "# additional" 段)
     pub append: Option<String>,
     /// @file 引用提示(context:file-reference——@ 前缀文件用 read 工具读)
@@ -36,6 +31,8 @@ pub struct AssembleContext {
     /// 在场工具的使用指南节(tool:<name> section;装配期收集,
     /// 无标题纯段落)
     pub tool_sections: Vec<String>,
+    /// plan 模式约束段(由 dsh-plan 产出;置于段序末尾)
+    pub plan_mode_section: Option<PromptSection>,
 }
 
 /// 组装 system prompt:段依序拼接,Markdown 分段(XML-ish 标题风格)。
@@ -50,11 +47,8 @@ pub fn assemble(ctx: &AssembleContext) -> String {
             body: ctx.env_info.clone(),
         });
     }
-    if let Some(active) = ctx.active_plan.as_ref().filter(|s| !s.is_empty()) {
-        sections.push(PromptSection {
-            title: "active-plan".into(),
-            body: format!("The user approved this plan. Implement it; track progress with the todo tool.\n\n{active}"),
-        });
+    if let Some(sec) = ctx.active_plan_section.clone() {
+        sections.push(sec);
     }
     if let Some(extra) = ctx.append.as_ref().filter(|s| !s.is_empty()) {
         sections.push(PromptSection {
@@ -77,8 +71,8 @@ pub fn assemble(ctx: &AssembleContext) -> String {
             });
         }
     }
-    if ctx.plan_mode {
-        sections.push(render_plan(ctx.plan.as_ref()));
+    if let Some(sec) = ctx.plan_mode_section.clone() {
+        sections.push(sec);
     }
     render(&sections)
 }
@@ -96,23 +90,6 @@ pub fn render(sections: &[PromptSection]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// plan-mode 折叠:研究约束 + 经 exit_plan_mode 提交计划的通道
-/// (工具目录跨模式不变,request-cache 稳定;
-/// 禁止变更由本段约束,不撤目录)
-fn render_plan(plan: Option<&Value>) -> PromptSection {
-    let body = match plan {
-        Some(p) => format!(
-            "You are in plan mode. Stay in plan mode until the user approves a plan through exit_plan_mode. Imperative language means plan the change, not execute it.\n\nDraft context so far:\n{}",
-            serde_json::to_string_pretty(p).unwrap_or_default()
-        ),
-        None => "You are in plan mode. Explore first with non-mutating tools (file_read, file_search, read-only commands). Do not edit files or run mutating commands; imperative language means plan the change, not execute it. When ready, call exit_plan_mode with the complete plan as markdown (goal, steps grouped by subsystem, tests, risks). exit_plan_mode must be the only tool call in that response.".to_string(),
-    };
-    PromptSection {
-        title: "plan-mode".into(),
-        body,
-    }
 }
 
 /// compaction 策略接口(骨架,compaction 语义定稿时扩展)
@@ -136,24 +113,21 @@ impl CompactionPolicy for ThresholdPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn assembles_sections_in_order() {
         let ctx = AssembleContext {
             identity: "You are dsh.".into(),
             env_info: "cwd=/tmp".into(),
-            plan_mode: false,
-            plan: None,
-            active_plan: None,
+            active_plan_section: None,
             append: None,
             file_reference: None,
             tool_sections: vec![],
+            plan_mode_section: None,
         };
         let out = assemble(&ctx);
         assert!(out.contains("# identity\n\nYou are dsh."));
         assert!(out.contains("# environment\n\ncwd=/tmp"));
-        assert!(!out.contains("plan-mode"));
     }
 
     #[test]
@@ -161,12 +135,11 @@ mod tests {
         let ctx = AssembleContext {
             identity: "id".into(),
             env_info: String::new(),
-            plan_mode: false,
-            plan: None,
-            active_plan: None,
+            active_plan_section: None,
             append: Some("always answer in Chinese".into()),
             file_reference: None,
             tool_sections: vec![],
+            plan_mode_section: None,
         };
         let out = assemble(&ctx);
         assert!(out.contains("# additional"));
@@ -180,42 +153,42 @@ mod tests {
     }
 
     #[test]
-    fn active_plan_section_renders() {
+    fn plan_sections_pass_through_at_fixed_slots() {
+        // 段位:active-plan 在环境段后、plan-mode 在末尾(段文本由
+        // dsh-plan 产出,此层只管槽位)
         let ctx = AssembleContext {
             identity: "id".into(),
-            env_info: String::new(),
-            plan_mode: false,
-            plan: None,
-            active_plan: Some("1. do the thing".into()),
+            env_info: "env".into(),
+            active_plan_section: Some(PromptSection {
+                title: "active-plan".into(),
+                body: "approved plan body".into(),
+            }),
             append: None,
             file_reference: None,
-            tool_sections: vec![],
+            tool_sections: vec!["tool guide".into()],
+            plan_mode_section: Some(PromptSection {
+                title: "plan-mode".into(),
+                body: "plan policy body".into(),
+            }),
         };
         let out = assemble(&ctx);
-        assert!(out.contains("# active-plan"));
-        assert!(out.contains("1. do the thing"));
+        assert!(out.contains("# active-plan\n\napproved plan body"));
+        assert!(out.contains("# plan-mode\n\nplan policy body"));
+        let active_at = out.find("# active-plan").expect("在场");
+        let tool_at = out.find("tool guide").expect("在场");
+        let plan_at = out.find("# plan-mode").expect("在场");
+        assert!(
+            active_at < tool_at && tool_at < plan_at,
+            "段序:active-plan→工具节→plan-mode"
+        );
+
         let none = assemble(&AssembleContext {
-            active_plan: None,
+            active_plan_section: None,
+            plan_mode_section: None,
             ..ctx
         });
-        assert!(!none.contains("# active-plan"));
-    }
-
-    #[test]
-    fn plan_mode_folds_in() {
-        let ctx = AssembleContext {
-            identity: "id".into(),
-            env_info: String::new(),
-            plan_mode: true,
-            plan: Some(json!({ "steps": ["a", "b"] })),
-            active_plan: None,
-            append: None,
-            file_reference: None,
-            tool_sections: vec![],
-        };
-        let out = assemble(&ctx);
-        assert!(out.contains("# plan-mode"));
-        assert!(out.contains("\"steps\""));
+        assert!(!none.contains("active-plan"));
+        assert!(!none.contains("plan-mode"));
     }
 
     #[test]

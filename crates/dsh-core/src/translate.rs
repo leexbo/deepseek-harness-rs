@@ -339,9 +339,9 @@ impl Translator {
             }
             // todo/write:整表快照已与客方同形({todos:[{content,status}]})——透传
             "todo/write" => session_event(ev, ev.data.clone(), None, None, None),
-            // 计划归档三件(计划正文/批准/取消)——原样透传,桌面投影成
-            // 聊天流计划卡(状态随 approved/cancelled 更新)
-            "plan/submitted" | "plan/approved" | "plan/cancelled" => {
+            // 计划归档四件(提交/批准/取消/拒绝)——原样透传,桌面投影成
+            // 聊天流计划卡(状态随 approved/cancelled/declined 更新)
+            "plan/submitted" | "plan/approved" | "plan/cancelled" | "plan/declined" => {
                 session_event(ev, ev.data.clone(), None, None, None)
             }
             // 压缩结果对(summary 落档成功 / error 手动压缩失败)——原样

@@ -213,38 +213,21 @@ Use the read tool when their contents are needed; do not claim to have inspected
     }
 }
 
-/// 从日志读 plan 态(最近一条 session/mode 与 plan/approved)。
-/// 模式与活跃计划影响模型可见 prompt → 必须来自日志(重放一致)
-pub fn plan_state(log: &EventLog) -> (bool, Option<String>) {
-    let mode = log
-        .iter()
-        .rev()
-        .find(|e| e.r#type == "session/mode")
-        .and_then(|e| e.data["mode"].as_str())
-        .unwrap_or("standard");
-    let active = log
-        .iter()
-        .rev()
-        .find(|e| e.r#type == "plan/approved")
-        .and_then(|e| e.data["plan"].as_str().map(String::from));
-    (mode == "plan", active)
-}
-
-/// 组装请求 header(每 turn 重建:plan 态来自共享日志)
+/// 组装请求 header(每 turn 重建:plan 态来自共享日志)。
+/// plan 段(active-plan/plan-mode)由 dsh-plan 折叠日志产出,此层不解析。
 pub fn build_header(parts: &PromptParts, log: &EventLog) -> RequestHeader {
-    let (plan_mode, active_plan) = plan_state(log);
+    let sections = dsh_plan::header_sections(log);
     // AGENTS.md 不进 system prompt:4a 完整溯源模型下,它作为 user/message
     // + source.kind=agent-instructions 注入模型可见消息流(attach 基线 +
     // driver_loop 每步重扫,见 registry)。
     let ctx = dsh_prompt::AssembleContext {
         identity: parts.identity.clone(),
         env_info: parts.env_info.clone(),
-        plan_mode,
-        plan: None,
-        active_plan,
+        active_plan_section: sections.active,
         append: parts.append.clone(),
         file_reference: parts.file_reference_hint.clone(),
         tool_sections: parts.tool_sections.clone(),
+        plan_mode_section: sections.mode,
     };
     RequestHeader {
         model: parts.model.clone(),
@@ -310,6 +293,7 @@ pub fn build_tools(
     approval_port: Option<std::sync::Arc<dyn dsh_tools::ApprovalPort>>,
     query_port: Option<std::sync::Arc<dyn dsh_tools::session_query::SessionQueryPort>>,
     ask_port: Option<std::sync::Arc<dyn dsh_tools::AskQuestionPort>>,
+    plan_review_port: Option<std::sync::Arc<dyn dsh_plan::PlanReviewPort>>,
     session_factory: Option<std::sync::Arc<dyn dsh_tools::subagent::SessionFactory>>,
     notify_port: Option<std::sync::Arc<dyn dsh_tools::subagent::SettlementNotificationPort>>,
     current_session: Option<&str>,
@@ -328,6 +312,7 @@ pub fn build_tools(
         approval_port,
         query_port,
         ask_port,
+        plan_review_port,
         session_factory,
         notify_port,
         current_session,
@@ -369,6 +354,10 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
         Self {
             engine: {
                 let mut e = LoopEngine::new(header, log);
+                // 每 step 重建 header(照源 per-request 组装):turn 中途落档的
+                // 状态事件(计划批准切 standard)立即生效于下一步提示词段。
+                // 状态面(prompt 段)来自日志,工具面由引擎重注
+                e.set_header_rebuilder(header_rebuilder(parts.clone()));
                 e.set_cancel(cancel.clone());
                 e
             },
@@ -444,22 +433,20 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
         &self.session_path
     }
 
-    /// 待批准计划:最近一条 plan/submitted 且其后无 plan/approved
+    /// 待批准计划:最近一条 plan/submitted 且其后无终局
+    /// (approved/declined/cancelled)。折叠逻辑在 dsh-plan(单一语义源)。
     pub fn pending_plan(&self) -> Option<String> {
         let log = self.engine.log();
         let l = log.lock().ok()?;
-        let submitted = l.iter().rev().find(|e| e.r#type == "plan/submitted")?;
-        let plan = submitted.data["plan"].as_str()?.to_string();
-        let resolved_after = l.iter().any(|e| {
-            (e.r#type == "plan/approved" || e.r#type == "plan/cancelled") && e.seq > submitted.seq
-        });
-        if resolved_after { None } else { Some(plan) }
+        dsh_plan::pending_plan(&l)
     }
 
     /// 追加会话级事件(mode 切换/计划批准;经 engine 唯一写入口)。
     /// 返回落档 seq——回声广播按 seq 定向,避免「只翻最后一条」被并发
-    /// append 插队丢帧(见 registry broadcast_event 注释)
+    /// append 插队丢帧(见 registry broadcast_event 注释)。
+    /// plan 族载荷形状在此 chokepoint 校验(镜像源 invariant 插件)。
     pub fn session_event(&mut self, ty: &str, data: Value) -> Result<u64> {
+        dsh_plan::invariant::validate_payload(ty, &data).map_err(|e| anyhow::anyhow!("{e}"))?;
         let Session {
             engine, backend, ..
         } = self;

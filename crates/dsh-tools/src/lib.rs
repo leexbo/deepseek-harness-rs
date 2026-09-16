@@ -21,7 +21,6 @@ pub mod ask_question;
 pub mod file;
 pub mod goal;
 pub mod jobs;
-pub mod plan;
 pub mod session_query;
 pub mod subagent;
 pub mod todo;
@@ -77,7 +76,6 @@ pub use ask_question::{AskQuestionPort, AskQuestionTool, QuestionItem, QuestionO
 pub use file::FileTools;
 pub use goal::GoalTool;
 pub use jobs::{JobRecord, JobTool, JobsRegistry, next_job_id};
-pub use plan::PlanTool;
 pub use subagent::{SubagentControlTool, SubagentRecord, SubagentRegistry, SubagentTool};
 pub use todo::TodoWriteTool;
 pub use workflow::{RALPH_DONE, RalphTool, WorkflowTool};

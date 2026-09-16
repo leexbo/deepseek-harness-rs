@@ -6,10 +6,11 @@
 //! 在首次 `history` / `prompt` 时懒装配——装配配方与
 //! `dsh chat` 同源(`Resolved::resolve` → `InvariantGate` →
 //! `build_tools` → [`dsh_app::Session`])。每个附着会话一个 worker
-//! 任务:启动时若日志已有待审计划(重启/重连恢复)先发问,然后串行
-//! 驱动 turn(队列模式);turn 结束若有待审计划则发 `question/requested`
-//! 并等待 `respond` 应答。所有会话写入(turn/session_event)都
-//! 发生在 worker 内——唯一写入者,无跨任务锁竞争。
+//! 任务:启动时若日志已有未收口的待审计划(崩溃时 turn 内评审被打断)
+//! 先 re-ask,然后串行驱动 turn(队列模式);计划评审在 turn 内经
+//! exit_plan_mode → [`AppHost::review_plan`] 阻塞完成,应答走
+//! `respond`。所有会话写入(turn/session_event)都发生在 worker 内
+//! ——唯一写入者,无跨任务锁竞争。
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -2496,7 +2497,7 @@ impl AppHost {
                 "argsSummary": args_summary,
             }),
         ));
-        if !asked {
+        if asked.is_none() {
             // 落账失败绝不返回决定(照源审计原子性)
             return ToolApprovalOutcome::Unavailable;
         }
@@ -3625,9 +3626,10 @@ impl AppHost {
             }
             let gate = InvariantGate::new(provider, log);
             let l = gate.log();
-            // fake 工具面 = MCP 池(所有会话共享)+ skill 工具(非子代理;
-            // 子会话不挂——与真实会话同门控,目录只在工具在场时发布)。
-            // 池/技能名空间互异,无重名冲突
+            // fake 工具面 = MCP 池(所有会话共享)+ skill 工具 + plan 工具
+            // (非子代理;子会话不挂——与真实会话同门控,目录只在工具在场时
+            // 发布)。fake 与真实同构:in-turn 评审(exit_plan_mode)在 fake
+            // 会话同样可驱动。池/技能名空间互异,无重名冲突
             // 不变式:fake 工具集只含已知内置工具,重名失败不可能发生
             #[allow(clippy::expect_used)]
             let fake_tools = if subagent_session {
@@ -3640,6 +3642,11 @@ impl AppHost {
                     Box::new(dsh_skill::SkillTool::new(
                         Arc::clone(&self_arc.skills),
                         ws_root.clone(),
+                    )) as Box<dyn dsh_agent_loop::tools::ToolPortObj>,
+                    Box::new(dsh_plan::PlanTool::new(
+                        Arc::clone(&l),
+                        Some(Arc::new(PlanReviewPortImpl(self_arc.clone()))),
+                        id,
                     )) as Box<dyn dsh_agent_loop::tools::ToolPortObj>,
                 ])
             }
@@ -3716,6 +3723,7 @@ impl AppHost {
                 }),
                 Some(Arc::new(SessionQueryPortImpl(self_arc.clone()))),
                 Some(Arc::new(AskQuestionPortImpl(self_arc.clone()))),
+                Some(Arc::new(PlanReviewPortImpl(self_arc.clone()))),
                 Some(Arc::new(SessionFactoryImpl(self_arc.clone()))),
                 Some(Arc::new(SettlementNoticeImpl(self_arc.clone()))),
                 Some(id),
@@ -4432,6 +4440,157 @@ impl AppHost {
         }
     }
 
+    /// 计划评审(turn 内阻塞——exit_plan_mode 工具经 PlanReviewPort 直呼;
+    /// 与冷恢复 re-ask 共用 [`plan_question_frame`] 问询形状):
+    /// 落 plan/submitted + seq 定向回声 → 广播 question/requested →
+    /// 等待应答(与取消令牌竞速,对齐 ask 通道)→ 落终局事件 → 返回决定。
+    ///
+    /// 终局语义(照源):
+    /// - 批准:`plan/approved` + `session/mode{standard}`(chip 随回声熄灭;
+    ///   每 step header 重建使下一步立即失去 plan 段,实现即刻开始)
+    /// - 拒绝:`plan/declined`(带可选 feedback),**留在 plan 模式**——
+    ///   反馈经工具错误结果回传模型修订重提
+    /// - 关闭/停止/通道死:`plan/cancelled`,Err = 「等待用户说话」文案
+    pub async fn review_plan(
+        self: &Arc<Self>,
+        session_id: &str,
+        plan: &str,
+    ) -> Result<dsh_plan::PlanReviewDecision, String> {
+        let provider_info = self.provider_info();
+        let (log, backend) = {
+            let slots = self.sessions.read_recover();
+            let Some(slot) = slots.get(session_id) else {
+                return Err("计划评审:会话不存在".into());
+            };
+            let Ok(inner) = slot.inner() else {
+                return Err("计划评审:会话未完成装配".into());
+            };
+            (Arc::clone(&inner.log), inner.backend.clone())
+        };
+        // plan/submitted 先落档(评审打开期间聊天流即有计划卡);
+        // 落档失败不放评审(照源审计原子性)
+        let submitted_seq = splice_event(
+            &log,
+            &backend,
+            dsh_plan::plan_envelope("plan/submitted", plan, None, now_ms() as i64),
+        )
+        .ok_or_else(|| "计划评审:计划提交落档失败".to_string())?;
+        broadcast_event(
+            &provider_info,
+            &log,
+            session_id,
+            &self.mux,
+            Some(submitted_seq),
+        );
+
+        let rpc_id = Uuid::now_v7().to_string();
+        let request_frame = plan_question_frame(session_id, &rpc_id, plan);
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock_recover().insert(
+            rpc_id.clone(),
+            PendingInteraction {
+                kind: PendingKind::Plan {
+                    approve_label: PLAN_APPROVE_LABEL.into(),
+                    tx,
+                },
+                frame: request_frame.clone(),
+            },
+        );
+        let _ = self.mux.send(request_frame);
+
+        // drop 守卫:port future 被丢弃(turn 硬中断)→ 清 pending +
+        // plan/cancelled 收口 + resolved 帧(评审不留悬挂;正常路径 disarm)
+        let mut guard = PlanReviewGuard {
+            host: Arc::clone(self),
+            session_id: session_id.into(),
+            rpc_id: rpc_id.clone(),
+            plan: plan.to_string(),
+            log: Arc::clone(&log),
+            backend: backend.clone(),
+            provider: provider_info.clone(),
+            disarmed: false,
+        };
+
+        // 取消竞速:会话软取消令牌与应答 oneshot 并行等待(工具执行是
+        // 引擎裸 await,不竞速则「停止」只置令牌无法唤醒;取消即清 pending、
+        // 广播 resolved 收卡)
+        let answer = match self.session_cancel(session_id) {
+            Some(cancel) => tokio::select! {
+                res = rx => res.map_err(|_| "评审通道已关闭".to_string()),
+                _ = cancel.cancelled() => Err("__session_cancelled__".to_string()),
+            },
+            None => rx.await.map_err(|_| "评审通道已关闭".to_string()),
+        };
+        guard.disarmed = true;
+        self.pending.lock_recover().remove(&rpc_id);
+
+        // 终局事件 + 回声 + resolved(拒绝留 plan 模式 = 与 live/cold 一致)
+        let (result, frame_outcome) = match answer {
+            Ok(QuestionAnswer::Approve) => {
+                let seqs = [
+                    splice_event(
+                        &log,
+                        &backend,
+                        dsh_plan::plan_envelope("plan/approved", plan, None, now_ms() as i64),
+                    ),
+                    splice_event(
+                        &log,
+                        &backend,
+                        dsh_plan::mode_envelope("standard", now_ms() as i64),
+                    ),
+                ];
+                for seq in seqs.into_iter().flatten() {
+                    broadcast_event(&provider_info, &log, session_id, &self.mux, Some(seq));
+                }
+                (Ok(dsh_plan::PlanReviewDecision::Approve), "approved")
+            }
+            Ok(QuestionAnswer::Decline { feedback }) => {
+                let seq = splice_event(
+                    &log,
+                    &backend,
+                    dsh_plan::plan_envelope(
+                        "plan/declined",
+                        plan,
+                        feedback.as_deref(),
+                        now_ms() as i64,
+                    ),
+                );
+                if let Some(seq) = seq {
+                    broadcast_event(&provider_info, &log, session_id, &self.mux, Some(seq));
+                }
+                (
+                    Ok(dsh_plan::PlanReviewDecision::Decline { feedback }),
+                    "declined",
+                )
+            }
+            // 用户关闭评审(Err 应答)/通道死/停止键:统一「等待用户说话」
+            Ok(QuestionAnswer::Cancel) | Err(_) => {
+                let seq = splice_event(
+                    &log,
+                    &backend,
+                    dsh_plan::plan_envelope("plan/cancelled", plan, None, now_ms() as i64),
+                );
+                if let Some(seq) = seq {
+                    broadcast_event(&provider_info, &log, session_id, &self.mux, Some(seq));
+                }
+                (
+                    Err(dsh_plan::DISMISSED_REVIEW_ERROR.to_string()),
+                    "cancelled",
+                )
+            }
+        };
+        let _ = self.mux.send(frame(
+            "question/resolved",
+            serde_json::to_value(QuestionResolvedFrame {
+                session_id: session_id.into(),
+                question_rpc_id: rpc_id,
+                outcome: frame_outcome.into(),
+            })
+            .unwrap_or(Value::Null),
+        ));
+        result
+    }
+
     /// 沙箱升级审批(闸门宿主面):审计对 splice 直写(asked → 问询 →
     /// decided,时序先于其所批准的执行);approval=never 入口即拒
     /// (不问任何应答方,照源不可绕过);闲时调用拒绝不落档(照源:
@@ -4478,8 +4637,8 @@ impl AppHost {
                 "reason": reason,
             }),
         ));
-        eprintln!("P3b: asked={asked}");
-        if !asked {
+        eprintln!("P3b: asked={:?}", asked);
+        if asked.is_none() {
             // 落账失败绝不返回决定(照源审计原子性)
             return ApprovalOutcome::Unavailable;
         }
@@ -5371,7 +5530,45 @@ impl AppHost {
     }
 }
 
-/// 计划审批问题生命周期:发问 → 等待应答 → 批准/拒绝 → resolved。
+/// plan 评审问询的批准选项 label(应答判别键;桌面审批卡回带同值)
+const PLAN_APPROVE_LABEL: &str = "批准";
+
+/// 计划评审问询帧(live in-turn 与冷恢复 re-ask 同一形状)。
+/// 桌面按 intent.kind=plan-review 窄化成计划审批卡(两步制)。
+fn plan_question_frame(session_id: &str, rpc_id: &str, plan: &str) -> ServerRequest {
+    let request = QuestionRequestedFrame {
+        session_id: session_id.into(),
+        questions: vec![Question {
+            id: "plan".into(),
+            question: "批准该计划并退出计划模式?".into(),
+            header: Some("计划待审".into()),
+            detail: Some(plan.to_string()),
+            options: Some(vec![
+                QuestionOption {
+                    label: PLAN_APPROVE_LABEL.into(),
+                    description: Some("离开计划模式;计划从下一步开始执行".into()),
+                },
+                QuestionOption {
+                    label: "拒绝".into(),
+                    description: Some("留在计划模式;反馈会回传给模型".into()),
+                },
+            ]),
+            multi_select: Some(false),
+            intent: Some(json!({ "kind": "plan-review", "approve": PLAN_APPROVE_LABEL })),
+            data: None,
+        }],
+    };
+    ServerRequest {
+        r#type: "server-request".into(),
+        rpc_id: rpc_id.into(),
+        method: "question/requested".into(),
+        payload: serde_json::to_value(&request).unwrap_or(Value::Null),
+    }
+}
+
+/// 计划审批问题生命周期(冷恢复 re-ask):发问 → 等待应答 → 批准/拒绝 →
+/// resolved。live 路径在 turn 内经 [`AppHost::review_plan`] 阻塞评审,
+/// 此函数只服务驱动启动时的「崩溃时评审未收口」恢复。
 /// session 由 worker 持有并借用——所有写入同任务。
 async fn plan_question(
     host: &Arc<AppHost>,
@@ -5379,42 +5576,14 @@ async fn plan_question(
     session_id: &str,
     plan: String,
 ) -> PlanReviewOutcome {
-    const APPROVE: &str = "批准";
     let rpc_id = Uuid::new_v4().to_string();
-    let request = QuestionRequestedFrame {
-        session_id: session_id.into(),
-        questions: vec![Question {
-            id: "plan".into(),
-            question: "批准该计划?".into(),
-            header: Some("计划待批准".into()),
-            detail: Some(plan.clone()),
-            options: Some(vec![
-                QuestionOption {
-                    label: APPROVE.into(),
-                    description: None,
-                },
-                QuestionOption {
-                    label: "拒绝".into(),
-                    description: None,
-                },
-            ]),
-            multi_select: Some(false),
-            intent: Some(json!({ "kind": "plan-review", "approve": APPROVE })),
-            data: None,
-        }],
-    };
-    let request_frame = ServerRequest {
-        r#type: "server-request".into(),
-        rpc_id: rpc_id.clone(),
-        method: "question/requested".into(),
-        payload: serde_json::to_value(&request).unwrap_or(Value::Null),
-    };
+    let request_frame = plan_question_frame(session_id, &rpc_id, &plan);
     let (tx, rx) = oneshot::channel();
     host.pending.lock_recover().insert(
         rpc_id.clone(),
         PendingInteraction {
             kind: PendingKind::Plan {
-                approve_label: APPROVE.into(),
+                approve_label: PLAN_APPROVE_LABEL.into(),
                 tx,
             },
             frame: request_frame.clone(),
@@ -5430,12 +5599,18 @@ async fn plan_question(
             (PlanReviewOutcome::Approved, "approved")
         }
         Ok(QuestionAnswer::Decline { feedback }) => {
-            let _ = session.session_event("session/mode", json!({ "mode": "standard" }));
+            // 拒绝留在 plan 模式(照源):反馈经引导轮直送模型修订重提,
+            // 不切 standard(空白反馈不入档——与 plan_envelope 语义一致)
+            let mut data = json!({ "plan": plan });
+            if let Some(fb) = feedback.as_deref().filter(|t| !t.trim().is_empty()) {
+                data["feedback"] = json!(fb);
+            }
+            let _ = session.session_event("plan/declined", data);
             (PlanReviewOutcome::Declined { feedback }, "declined")
         }
         Ok(QuestionAnswer::Cancel) | Err(_) => {
-            // 落取消事件:pending_plan() 判定依赖「submitted 后无
-            // approved」——不落事件则取消后仍视为待批,驱动会重复发问
+            // 落取消事件:pending_plan() 判定依赖「submitted 后无终局」
+            // ——不落事件则取消后仍视为待批,驱动会重复发问
             let _ = session.session_event("plan/cancelled", json!({ "plan": plan }));
             (PlanReviewOutcome::Cancelled, "cancelled")
         }
@@ -5453,21 +5628,72 @@ async fn plan_question(
     outcome
 }
 
-/// 「去聊天里说」引导轮文案(取消审批;宿主注入,非用户原文)
+/// 评审 pending 守卫:port future 被丢弃(turn 硬中断)→ 清 pending +
+/// plan/cancelled 收口 + resolved 帧——live 评审路径不复制 ask 通道的
+/// 悬挂缺陷(照 ApprovalGuard 形态)
+struct PlanReviewGuard {
+    host: Arc<AppHost>,
+    session_id: String,
+    rpc_id: String,
+    plan: String,
+    log: Arc<Mutex<EventLog>>,
+    backend: dsh_host::JsonlBackend,
+    provider: ProviderInfo,
+    /// 正常路径置 true(drop 不再收口)
+    disarmed: bool,
+}
+
+impl Drop for PlanReviewGuard {
+    fn drop(&mut self) {
+        if self.disarmed {
+            return;
+        }
+        self.host.pending.lock_recover().remove(&self.rpc_id);
+        let seq = splice_event(
+            &self.log,
+            &self.backend,
+            dsh_plan::plan_envelope("plan/cancelled", &self.plan, None, now_ms() as i64),
+        );
+        if let Some(seq) = seq {
+            broadcast_event(
+                &self.provider,
+                &self.log,
+                &self.session_id,
+                &self.host.mux,
+                Some(seq),
+            );
+        }
+        let _ = self.host.mux.send(frame(
+            "question/resolved",
+            serde_json::to_value(QuestionResolvedFrame {
+                session_id: self.session_id.clone(),
+                question_rpc_id: self.rpc_id.clone(),
+                outcome: "cancelled".into(),
+            })
+            .unwrap_or(Value::Null),
+        ));
+    }
+}
+
+/// 「去聊天里说」引导轮文案(冷恢复取消审批;宿主注入,非用户原文)
 const PLAN_CANCEL_GUIDE: &str = "用户取消了计划审批,想在聊天里继续讨论。请简短确认已停止执行该计划,并邀请用户直接说明要调整的方向;不要重复输出计划全文。";
 
-/// 批准引导轮文案(修复「批准后没有后续动作」:批准此前
-/// 只切回 standard 模式不启动任何 turn;现经引导轮驱动模型即刻开工)
+/// 批准引导轮文案(冷恢复批准:原 turn 已死,无工具结果可回填,经队列
+/// 注入驱动模型即刻开工)
 const PLAN_APPROVED_GUIDE: &str =
     "用户已批准该计划。请开始执行:按计划逐步实施,边做边简要汇报进展。";
 
-/// 拒绝带反馈的引导轮文案:修改意见直送模型(审批是 turn 后流程,
-/// 模型无工具结果可读——队列注入是唯一送达通道)
+/// 拒绝带反馈的引导轮文案:修改意见直送模型(冷恢复路径;live 路径
+/// 反馈经工具错误结果回传,不走引导轮)
 fn plan_decline_guide(feedback: &str) -> String {
     format!(
         "用户拒绝了该计划,并说明了希望的不同做法:{feedback}\n请根据该反馈调整方案继续;不要重复输出计划全文。"
     )
 }
+
+/// 拒绝无反馈的引导轮文案(冷恢复:用户仅点「拒绝」未留话)
+const PLAN_DECLINE_NO_FEEDBACK_GUIDE: &str =
+    "用户拒绝了该计划,留在计划模式。请修订方案后重新提交审批;不要重复输出计划全文。";
 
 /// 审批终局引导轮注入(队列 pending 追加,泵 splice 落档 + 唤醒驱动):
 /// 取消与「拒绝+反馈」共用同一机制
@@ -6164,6 +6390,23 @@ impl dsh_tools::AskQuestionPort for AskQuestionPortImpl {
     }
 }
 
+/// 计划评审 port 真身:转发宿主面 review_plan(turn 内阻塞评审)
+struct PlanReviewPortImpl(Arc<AppHost>);
+impl dsh_plan::PlanReviewPort for PlanReviewPortImpl {
+    fn review(
+        &self,
+        session_id: &str,
+        plan: &str,
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Result<dsh_plan::PlanReviewDecision, String>> + Send>,
+    > {
+        let host = Arc::clone(&self.0);
+        let session_id = session_id.to_string();
+        let plan = plan.to_string();
+        Box::pin(async move { host.review_plan(&session_id, &plan).await })
+    }
+}
+
 /// 沙箱升级审批闸门(宿主面实现;attach 时按会话注入 bash 工具)
 struct ApprovalPortImpl {
     host: Arc<AppHost>,
@@ -6217,23 +6460,24 @@ impl Drop for ApprovalGuard {
     }
 }
 
-/// log-only 事件落档(turn 运行中;锁内定 seq + 落盘;泵侧 splice 同款)
+/// log-only 事件落档(turn 运行中;锁内定 seq + 落盘;泵侧 splice 同款)。
+/// 返回落档 seq(调用方回声广播按 seq 定向,防并发 append 插队丢帧)
 fn splice_event(
     log: &Arc<Mutex<EventLog>>,
     backend: &dsh_host::JsonlBackend,
     ev: EventEnvelope,
-) -> bool {
+) -> Option<u64> {
     let committed = log.lock().ok().and_then(|mut l| {
         let seq = l.append(ev).ok()?;
-        l.get(seq).cloned()
+        l.get(seq).cloned().map(|ev| (seq, ev))
     });
     let ok = committed.is_some();
-    if let Some(ev) = committed
+    if let Some((_, ev)) = committed.clone()
         && let Err(e) = backend.append(&ev)
     {
         eprintln!("[dsh-core] 审批事件落盘失败: {e}");
     }
-    ok
+    ok.then_some(committed.map(|(seq, _)| seq).unwrap_or_default())
 }
 
 fn decided_envelope(audit_id: &str, outcome: &str) -> EventEnvelope {
@@ -6515,23 +6759,30 @@ async fn driver_loop(
     let qs = Arc::clone(&inner.qs);
     let wake = Arc::clone(&inner.wake);
 
-    // 重启/重连恢复:日志已有待审计划 → 先发问
+    // 重启/重连恢复:日志已有待审计划(崩溃时 turn 内评审未收口)→ re-ask。
+    // live 路径的评审在 turn 内经 review_plan 阻塞完成,不再走到这里;
+    // 应答终局经引导轮送达模型(原 turn 已随进程死亡,无工具结果可回填)
     if let Some(plan) = session.pending_plan() {
         let outcome = plan_question(&host0, &mut session, &session_id, plan).await;
         broadcast_event(&provider_info, &inner.log, &session_id, &host0.mux, None);
         match outcome {
             PlanReviewOutcome::Cancelled => {
-                // 与 turn 后一致:取消后注入引导轮(见下「待审计划」注释)
+                // 取消后注入引导轮:用户拿回轮次,模型停手等待
                 inject_plan_guide_turn(&session_id, inner, &host0, PLAN_CANCEL_GUIDE);
             }
-            PlanReviewOutcome::Declined { feedback: Some(fb) } => {
-                inject_plan_guide_turn(&session_id, inner, &host0, &plan_decline_guide(&fb));
+            PlanReviewOutcome::Declined { feedback } => {
+                // 拒绝留在 plan 模式(照源):反馈(或无反馈的修订指令)
+                // 经引导轮直送模型修订重提
+                let guide = match feedback.filter(|t| !t.trim().is_empty()) {
+                    Some(fb) => plan_decline_guide(&fb),
+                    None => PLAN_DECLINE_NO_FEEDBACK_GUIDE.to_string(),
+                };
+                inject_plan_guide_turn(&session_id, inner, &host0, &guide);
             }
             PlanReviewOutcome::Approved => {
-                // 冷恢复同样补「开工」引导轮(与 turn 后批准路径一致)
+                // 冷恢复同样补「开工」引导轮
                 inject_plan_guide_turn(&session_id, inner, &host0, PLAN_APPROVED_GUIDE);
             }
-            _ => {}
         }
     }
 
@@ -6950,28 +7201,10 @@ async fn driver_loop(
             }
         }
 
-        // 待审计划:发问并等待(队列暂停 = 审批优先)
-        if let Some(plan) = session.pending_plan() {
-            let outcome = plan_question(&host0, &mut session, &session_id, plan).await;
-            broadcast_event(&provider_info, &inner.log, &session_id, &host0.mux, None);
-            // 「去聊天里说」:取消后注入引导轮,让模型接管并邀请用户在
-            // 聊天中给出修改方向(用户点「去聊天里说」后期待 AI 引导);
-            // 「否,并告诉它应该如何做不同」:反馈经同一注入直送模型
-            match outcome {
-                PlanReviewOutcome::Cancelled => {
-                    inject_plan_guide_turn(&session_id, inner, &host0, PLAN_CANCEL_GUIDE);
-                }
-                PlanReviewOutcome::Declined { feedback: Some(fb) } => {
-                    inject_plan_guide_turn(&session_id, inner, &host0, &plan_decline_guide(&fb));
-                }
-                // 批准 = 模式已切回 standard + 注入「开工」引导轮:
-                // 模型即刻按计划开始实施(否则批准后无任何后续动作)
-                PlanReviewOutcome::Approved => {
-                    inject_plan_guide_turn(&session_id, inner, &host0, PLAN_APPROVED_GUIDE);
-                }
-                _ => {}
-            }
-        }
+        // turn 后不再发计划审批问询:live 评审在 turn 内经 exit_plan_mode
+        // → review_plan 阻塞完成(批准/拒绝/取消的结果即工具结果,模型
+        // 同 turn 继续);此处若仍见待审计划,属崩溃残留,由驱动启动时的
+        // re-ask 路径覆盖。
     }
 }
 
@@ -8597,7 +8830,8 @@ mod tests {
         assert!(text.contains("\"standard\""));
     }
 
-    /// 拒绝路径:不产生 plan/approved,仅回 standard
+    /// 拒绝路径(冷恢复 re-ask):留在 plan 模式(照源),落 plan/declined,
+    /// 不产生 plan/approved 也不切 standard
     #[tokio::test]
     async fn plan_question_decline_flow() {
         let host = temp_host("decline");
@@ -8635,7 +8869,10 @@ mod tests {
         )
         .unwrap();
         assert!(!text.contains("plan/approved"));
-        assert!(text.contains("\"standard\""));
+        // 拒绝留在 plan 模式:不切 standard、落 plan/declined(回归锁:
+        // 旧实现拒绝即切回 standard,与源「keep planning」语义相反)
+        assert!(!text.contains("\"standard\""), "拒绝不得切回 standard");
+        assert!(text.contains("plan/declined"));
     }
 
     /// 「否,并告诉它应该如何做不同」(选项②是卡内
@@ -8685,6 +8922,236 @@ mod tests {
         assert!(
             text.contains("agent/inbox/spliced") && text.contains("把登录改成 OAuth,不要自研"),
             "反馈应经引导轮落档送达模型"
+        );
+    }
+
+    /// turn 内评审全弧·批准(fake 工具面与真实同构):模型调
+    /// exit_plan_mode → **turn 进行中**发出 question/requested → 应答批准 →
+    /// 工具结果成功携带「carry out」指令 → 事件序 submitted → tool/result →
+    /// plan/approved → session/mode{standard}。回归锁:live 评审不再走
+    /// turn 后发问 + 引导轮(旧实现批准后无工具结果,模型靠 splice 督工)。
+    #[tokio::test]
+    async fn plan_review_in_turn_approve_arc() {
+        let host = temp_host("plan-live");
+        host.set_fake_script(vec![
+            vec![LlmEvent::AssistantMessage(json!({
+                "content": "",
+                "tool_calls": [
+                    { "name": "exit_plan_mode", "arguments": { "plan": "# 计划\n1. 步骤" } }
+                ],
+            }))],
+            vec![LlmEvent::AssistantMessage(
+                json!({ "content": "implementing" }),
+            )],
+        ]);
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+        let _ = host.history(&id, None, 50).await.unwrap();
+        host.set_mode(&id, "plan").await.unwrap();
+        recv_until(&mut mux, |f| {
+            f.method == "session/event"
+                && f.payload["event"]["type"] == "plan/mode"
+                && f.payload["event"]["data"]["active"] == true
+        })
+        .await
+        .expect("plan/mode 回声");
+
+        host.prompt(
+            &id,
+            &[json!({ "type": "text", "text": "做个计划" })],
+            "queue",
+        )
+        .await
+        .unwrap();
+        let question = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("turn 内评审发问");
+        assert_eq!(
+            question.payload["questions"][0]["intent"]["kind"],
+            "plan-review"
+        );
+
+        let receipt = host.respond(
+            &question.rpc_id,
+            &RpcResult::Ok(json!({
+                "sessionId": &id,
+                "answer": { "answers": [ { "id": "plan", "selected": ["批准"] } ] }
+            })),
+        );
+        assert!(receipt.accepted);
+        let resolved = recv_until(&mut mux, |f| f.method == "question/resolved")
+            .await
+            .expect("resolved");
+        assert_eq!(resolved.payload["outcome"], "approved");
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await
+        .expect("turn 结束");
+
+        // 落档断言:工具结果 = 批准指令(照源逐字);事件序 submitted →
+        // tool/result → approved → standard
+        let text = std::fs::read_to_string(host.session_log_path(&id)).unwrap();
+        assert!(
+            text.contains("carry out the plan starting with your next step"),
+            "批准结果即开工指令:{text}"
+        );
+        let seq_of = |ty: &str, pred: Box<dyn Fn(&Value) -> bool>| -> Option<u64> {
+            text.lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .find_map(|ev| {
+                    (ev["type"] == ty && pred(&ev)).then(|| ev["seq"].as_u64().unwrap_or_default())
+                })
+        };
+        let submitted = seq_of("plan/submitted", Box::new(|_| true)).expect("submitted");
+        let tool_result = seq_of(
+            "tool/result",
+            Box::new(|e| {
+                e["data"]["output"]
+                    .as_str()
+                    .is_some_and(|o| o.contains("carry out"))
+            }),
+        )
+        .expect("批准 tool/result");
+        let approved = seq_of("plan/approved", Box::new(|_| true)).expect("approved");
+        let standard = seq_of(
+            "session/mode",
+            Box::new(|e| e["data"]["mode"] == "standard"),
+        )
+        .expect("mode standard");
+        // 事件序:submitted → approved → standard → tool/result(port 在
+        // await 期间落档,工具结果在 execute 返回后由引擎提交)
+        assert!(submitted < tool_result, "submitted 先于工具结果");
+        assert!(
+            approved < standard && standard < tool_result,
+            "批准终局在 await 中落档:{submitted}/{approved}/{standard}/{tool_result}"
+        );
+        // live 批准不再注入引导轮
+        assert!(!text.contains("s-guide-"));
+    }
+
+    /// turn 内评审·拒绝:留在 plan 模式(回归锁:旧实现拒绝切回 standard,
+    /// 与源「keep planning」相反),反馈经工具错误结果回传,落 plan/declined
+    #[tokio::test]
+    async fn plan_review_in_turn_decline_stays_in_plan_mode() {
+        let host = temp_host("plan-dec");
+        host.set_fake_script(vec![
+            vec![LlmEvent::AssistantMessage(json!({
+                "content": "",
+                "tool_calls": [
+                    { "name": "exit_plan_mode", "arguments": { "plan": "# 方案" } }
+                ],
+            }))],
+            vec![LlmEvent::AssistantMessage(json!({ "content": "修订中" }))],
+        ]);
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+        let _ = host.history(&id, None, 50).await.unwrap();
+        host.set_mode(&id, "plan").await.unwrap();
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "plan/mode"
+        })
+        .await
+        .expect("plan/mode 回声");
+
+        host.prompt(
+            &id,
+            &[json!({ "type": "text", "text": "做个计划" })],
+            "queue",
+        )
+        .await
+        .unwrap();
+        let question = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("评审发问");
+        let receipt = host.respond(
+            &question.rpc_id,
+            &RpcResult::Ok(json!({
+                "sessionId": &id,
+                "answer": { "answers": [ { "id": "plan", "selected": ["拒绝"], "custom": "改用 OAuth" } ] }
+            })),
+        );
+        assert!(receipt.accepted);
+        let resolved = recv_until(&mut mux, |f| f.method == "question/resolved")
+            .await
+            .expect("resolved");
+        assert_eq!(resolved.payload["outcome"], "declined");
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await
+        .expect("turn 结束(模型修订收尾)");
+
+        let text = std::fs::read_to_string(host.session_log_path(&id)).unwrap();
+        assert!(
+            text.contains("keep planning") && text.contains("改用 OAuth"),
+            "反馈经工具错误结果回传:{text}"
+        );
+        assert!(text.contains("plan/declined"), "拒绝落 plan/declined");
+        // 拒绝后不得再出现 session/mode standard(回归锁:旧实现切回)
+        let flipped_back = text.lines().any(|l| {
+            serde_json::from_str::<Value>(l)
+                .is_ok_and(|e| e["type"] == "session/mode" && e["data"]["mode"] == "standard")
+        });
+        assert!(!flipped_back, "拒绝留在 plan 模式:{text}");
+    }
+
+    /// turn 内评审·停止:评审等待期间点「停止」(cancel_session)→ 收卡
+    /// (question/resolved cancelled)+ plan/cancelled 落档 + 工具错误结果
+    /// 「等待用户说话」。回归锁:plan_question 旧实现无取消竞速,等待期间
+    /// 点停止卡片残留(与 ask 通道的已知缺口同型)。
+    #[tokio::test]
+    async fn plan_review_stop_cancels_open_review() {
+        let host = temp_host("plan-stop");
+        host.set_fake_script(vec![
+            vec![LlmEvent::AssistantMessage(json!({
+                "content": "",
+                "tool_calls": [
+                    { "name": "exit_plan_mode", "arguments": { "plan": "# 方案" } }
+                ],
+            }))],
+            vec![LlmEvent::AssistantMessage(json!({ "content": "待命" }))],
+        ]);
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+        let _ = host.history(&id, None, 50).await.unwrap();
+        host.set_mode(&id, "plan").await.unwrap();
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "plan/mode"
+        })
+        .await
+        .expect("plan/mode 回声");
+
+        host.prompt(
+            &id,
+            &[json!({ "type": "text", "text": "做个计划" })],
+            "queue",
+        )
+        .await
+        .unwrap();
+        let _question = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("评审发问");
+
+        // 评审打开期间点停止
+        assert!(host.cancel_session(&id));
+        let resolved = recv_until(&mut mux, |f| {
+            f.method == "question/resolved" && f.payload["outcome"] == "cancelled"
+        })
+        .await
+        .expect("停止应收卡(question/resolved cancelled)");
+        let _ = resolved;
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await
+        .expect("turn 温和收尾");
+
+        let text = std::fs::read_to_string(host.session_log_path(&id)).unwrap();
+        assert!(text.contains("plan/cancelled"), "取消落 plan/cancelled");
+        assert!(
+            text.contains("stay in plan mode"),
+            "工具错误结果 = 等待用户说话:{text}"
         );
     }
 

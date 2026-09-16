@@ -68,6 +68,190 @@ impl JsonRpcError {
 /// header 重建器:每 turn 前按日志态(plan 模式/活跃计划)重建 prompt
 pub type HeaderRebuilder = Box<dyn Fn(&EventLog) -> RequestHeader + Send>;
 
+/// Gateway 计划评审通道:exit_plan_mode 的 turn 内阻塞评审(port 侧)
+/// + `approve`/`decline` RPC 直答。
+///
+/// turn RPC 后台执行期间持有网关锁,经锁应答会死锁(评审等应答、应答等
+/// 锁)——通道自持状态(std 锁 + oneshot),serve 层绕网关锁直答(同
+/// `cancel` 的令牌直通形态)。plan 族事件由通道落档共享日志(信封构造在
+/// dsh-plan,与 dsh-core/CLI 同一语义源),状态变化经下行通道通知。
+#[derive(Clone)]
+pub struct PlanReviewChannel {
+    inner: Arc<ReviewInner>,
+}
+
+struct ReviewInner {
+    log: Arc<Mutex<EventLog>>,
+    backend: JsonlBackend,
+    /// 在审评审的应答通道(评审打开期间 Some)
+    tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<dsh_plan::PlanReviewDecision>>>,
+    /// 下行通知通道(serve 层注入;None = 不通知)
+    downlink: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Value>>>,
+    /// 软取消令牌(serve 层注入;评审等待与取消竞速)
+    cancel: std::sync::Mutex<Option<CancelToken>>,
+}
+
+impl PlanReviewChannel {
+    /// 以共享日志与持久化后端构建(log/backend 须与 engine 同一视图)
+    pub fn new(log: Arc<Mutex<EventLog>>, backend: JsonlBackend) -> Self {
+        Self {
+            inner: Arc::new(ReviewInner {
+                log,
+                backend,
+                tx: std::sync::Mutex::new(None),
+                downlink: std::sync::Mutex::new(None),
+                cancel: std::sync::Mutex::new(None),
+            }),
+        }
+    }
+
+    /// serve 层注入下行通知通道
+    pub fn set_downlink(&self, tx: tokio::sync::mpsc::UnboundedSender<Value>) {
+        *self
+            .inner
+            .downlink
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(tx);
+    }
+
+    /// serve 层注入软取消令牌(评审等待与取消竞速)
+    pub fn set_cancel(&self, cancel: CancelToken) {
+        *self.inner.cancel.lock().unwrap_or_else(|p| p.into_inner()) = Some(cancel);
+    }
+
+    /// 下行 JSON-RPC 通知
+    fn notify(&self, method: &str, params: Value) {
+        let guard = self
+            .inner
+            .downlink
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(json!({ "jsonrpc": "2.0", "method": method, "params": params }));
+        }
+    }
+
+    /// log-only 事件落档(锁内定 seq + 落盘;失败记日志不阻断评审)
+    fn append(&self, ev: EventEnvelope) {
+        let committed = self
+            .inner
+            .log
+            .lock()
+            .ok()
+            .and_then(|mut l| l.append(ev).ok().and_then(|seq| l.get(seq).cloned()));
+        if let Some(ev) = committed
+            && let Err(e) = self.inner.backend.append(&ev)
+        {
+            eprintln!("[dsh-host] plan 事件落盘失败: {e}");
+        }
+    }
+
+    /// 直答一次决定(Approve/Decline);false = 无在审评审
+    fn answer(&self, decision: dsh_plan::PlanReviewDecision) -> bool {
+        let mut guard = self.inner.tx.lock().unwrap_or_else(|p| p.into_inner());
+        match guard.take() {
+            Some(tx) => tx.send(decision).is_ok(),
+            None => false,
+        }
+    }
+
+    /// `approve` RPC:批准在审评审
+    pub fn approve(&self) -> bool {
+        self.answer(dsh_plan::PlanReviewDecision::Approve)
+    }
+
+    /// `decline` RPC:拒绝在审评审(带可选反馈;留在 plan 模式)
+    pub fn decline(&self, feedback: Option<String>) -> bool {
+        self.answer(dsh_plan::PlanReviewDecision::Decline { feedback })
+    }
+
+    /// 评审是否在审(serve 层/测试探针)
+    pub fn is_open(&self) -> bool {
+        self.inner
+            .tx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+    }
+
+    /// 阻塞评审主体:submitted 落档 + 下行通知 → 等应答(与取消竞速)→
+    /// 终局事件 + 通知
+    async fn run(&self, plan: &str) -> Result<dsh_plan::PlanReviewDecision, String> {
+        let now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+        };
+        self.append(dsh_plan::plan_envelope("plan/submitted", plan, None, now()));
+        self.notify("plan/review", json!({ "state": "submitted", "plan": plan }));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.inner.tx.lock().unwrap_or_else(|p| p.into_inner()) = Some(tx);
+        let cancel = self
+            .inner
+            .cancel
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let answer = match cancel {
+            Some(cancel) => {
+                tokio::select! {
+                    res = rx => res.map_err(Some),
+                    _ = cancel.cancelled() => Err(None),
+                }
+            }
+            None => rx.await.map_err(Some),
+        };
+        self.inner
+            .tx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        match answer {
+            Ok(decision) => {
+                let outcome = match &decision {
+                    dsh_plan::PlanReviewDecision::Approve => {
+                        self.append(dsh_plan::plan_envelope("plan/approved", plan, None, now()));
+                        self.append(dsh_plan::mode_envelope("standard", now()));
+                        "approved"
+                    }
+                    dsh_plan::PlanReviewDecision::Decline { feedback } => {
+                        self.append(dsh_plan::plan_envelope(
+                            "plan/declined",
+                            plan,
+                            feedback.as_deref(),
+                            now(),
+                        ));
+                        "declined"
+                    }
+                };
+                self.notify("plan/review", json!({ "state": outcome }));
+                Ok(decision)
+            }
+            // 通道死(None)/取消:统一关闭评审(等待用户说话)
+            Err(_) => {
+                self.append(dsh_plan::plan_envelope("plan/cancelled", plan, None, now()));
+                self.notify("plan/review", json!({ "state": "cancelled" }));
+                Err(dsh_plan::DISMISSED_REVIEW_ERROR.to_string())
+            }
+        }
+    }
+}
+
+impl dsh_plan::PlanReviewPort for PlanReviewChannel {
+    fn review(
+        &self,
+        _session_id: &str,
+        plan: &str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<dsh_plan::PlanReviewDecision, String>> + Send>,
+    > {
+        let channel = self.clone();
+        let plan = plan.to_string();
+        Box::pin(async move { channel.run(&plan).await })
+    }
+}
+
 /// JSON-RPC 网关:engine + transport + 持久化 + 工具的装配单元。
 ///
 /// 泛型:`T` 出网传输(经不变式闸门包裹),`TOOLS` 工具集
@@ -78,13 +262,13 @@ pub struct Gateway<T, TOOLS = NoTools> {
     tools: TOOLS,
     backend: JsonlBackend,
     log: Arc<Mutex<EventLog>>,
-    /// header 重建器(每 turn 前按日志态重建 prompt;None = 固定 header)
-    header_rebuilder: Option<HeaderRebuilder>,
     /// 软取消令牌(turn 执行中可被 `cancel` 方法/外部触发打断)
     cancel: CancelToken,
     /// 实时下行通道(serve 层注入;直连 handle 调用时为 None,
     /// 通知以返回值聚合)
     downlink: Option<tokio::sync::mpsc::UnboundedSender<Value>>,
+    /// 计划评审通道(None = 工具面无 plan;serve 层绕锁直答用)
+    plan_review: Option<PlanReviewChannel>,
 }
 
 impl<T, TOOLS> Gateway<T, TOOLS> {
@@ -119,7 +303,7 @@ impl<T, TOOLS> Gateway<T, TOOLS> {
             log,
             cancel,
             downlink: None,
-            header_rebuilder: None,
+            plan_review: None,
         }
     }
 
@@ -154,6 +338,17 @@ impl<T, TOOLS> Gateway<T, TOOLS> {
     /// 下行通道句柄(None = 未注入,直连 handle 形态)
     pub fn downlink_tx(&self) -> Option<tokio::sync::mpsc::UnboundedSender<Value>> {
         self.downlink.clone()
+    }
+
+    /// 装配计划评审通道(工具面含 plan 时;serve 层绕锁直答与
+    /// exit_plan_mode 的 turn 内评审共用)
+    pub fn set_plan_review(&mut self, channel: PlanReviewChannel) {
+        self.plan_review = Some(channel);
+    }
+
+    /// 评审通道句柄(serve 层绕网关锁直答 approve/decline;None = 无 plan)
+    pub fn plan_review_channel(&self) -> Option<PlanReviewChannel> {
+        self.plan_review.clone()
     }
 }
 
@@ -217,30 +412,31 @@ impl<T: LlmTransport + Summarizer + Send, TOOLS: ToolPort + Send> Gateway<T, TOO
                 let seq = self.append_session_event("session/mode", json!({ "mode": mode }))?;
                 Ok((json!({ "mode": mode, "seq": seq }), Vec::new()))
             }
-            "approve" => {
-                // 批准最近一次提交的计划:plan/approved + 回标准态
-                let plan = {
-                    let log = self
-                        .log
-                        .lock()
-                        .map_err(|_| JsonRpcError::internal("log 锁中毒"))?;
-                    let submitted = log
-                        .iter()
-                        .rev()
-                        .find(|e| e.r#type == "plan/submitted")
-                        .ok_or_else(|| JsonRpcError::invalid_params("没有待批准的计划"))?;
-                    let approved_after = log
-                        .iter()
-                        .any(|e| e.r#type == "plan/approved" && e.seq > submitted.seq);
-                    if approved_after {
-                        return Err(JsonRpcError::invalid_params("没有待批准的计划"));
-                    }
-                    submitted.data["plan"].clone()
+            "approve" | "decline" => {
+                // 应答在审评审(turn 内阻塞评审;经评审通道直答——serve 层
+                // 绕网关锁调用,直连 handle 形态也能走通)。事件落档在通道
+                // 内(批准切 standard;拒绝留 plan 模式)。
+                let Some(channel) = self.plan_review.clone() else {
+                    return Err(JsonRpcError::invalid_params(
+                        "没有计划评审通道(工具面无 plan 组件)",
+                    ));
                 };
-                self.append_session_event("plan/approved", plan.clone())?;
-                let seq =
-                    self.append_session_event("session/mode", json!({ "mode": "standard" }))?;
-                Ok((json!({ "approved": true, "seq": seq }), Vec::new()))
+                let answered = if method == "approve" {
+                    channel.approve()
+                } else {
+                    let feedback = params["feedback"]
+                        .as_str()
+                        .map(str::to_string)
+                        .filter(|t| !t.trim().is_empty());
+                    channel.decline(feedback)
+                };
+                if !answered {
+                    return Err(JsonRpcError::invalid_params("没有在审的计划"));
+                }
+                Ok((
+                    json!({ "answered": true, "decision": if method == "approve" { "approved" } else { "declined" } }),
+                    Vec::new(),
+                ))
             }
             "shutdown" => Ok((json!({ "stopping": true }), Vec::new())),
             other => Err(JsonRpcError::method_not_found(other)),
@@ -277,10 +473,11 @@ impl<T: LlmTransport + Summarizer + Send, TOOLS: ToolPort + Send> Gateway<T, TOO
             })
     }
 
-    /// 注入 header 重建器:每 turn 前按日志态(plan 模式/活跃计划)
-    /// 重建 prompt——装配层持有 prompt 组装,网关不感知具体策略
+    /// 注入 header 重建器:每 step 按日志态(plan 模式/活跃计划)重建
+    /// prompt(引擎内逐 step 生效——装配层持有 prompt 组装,网关不感知
+    /// 具体策略;turn 中途落档的状态变化立即反映到下一步)
     pub fn set_header_rebuilder(&mut self, rebuild: HeaderRebuilder) {
-        self.header_rebuilder = Some(rebuild);
+        self.engine.set_header_rebuilder(rebuild);
     }
 
     async fn do_turn(&mut self, params: &Value) -> Result<(Value, Vec<Value>), JsonRpcError> {
@@ -289,17 +486,8 @@ impl<T: LlmTransport + Summarizer + Send, TOOLS: ToolPort + Send> Gateway<T, TOO
             .ok_or_else(|| JsonRpcError::invalid_params("turn 需要 string 参数 input"))?;
         // 每 turn 复位令牌(上一回合的取消不泄漏到本回合)
         self.cancel.reset();
-        // header 重建器注入时按日志态(plan 模式/活跃计划)重建 prompt
-        if let Some(rebuild) = &self.header_rebuilder {
-            let header = {
-                let log = self
-                    .log
-                    .lock()
-                    .map_err(|_| JsonRpcError::internal("log 锁中毒"))?;
-                rebuild(&log)
-            };
-            self.engine.set_header(header);
-        }
+        // header 重建器已注入引擎(每 step 重建:turn 中途落档的模式/计划
+        // 态——如评审批准切 standard——立即生效于下一步 prompt)
 
         let clock = || {
             std::time::SystemTime::now()
@@ -374,7 +562,14 @@ where
     let gateway = std::sync::Arc::new(tokio::sync::Mutex::new(gateway));
     let cancel = gateway.lock().await.cancel_token();
     let (down_tx, mut down_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    gateway.lock().await.set_downlink(down_tx);
+    gateway.lock().await.set_downlink(down_tx.clone());
+    // 评审通道接线(下行通知 + 取消竞速);approve/decline 经它绕网关锁
+    // 直答(turn 后台任务持有网关锁,经锁应答会与阻塞评审互等)
+    let plan_review = gateway.lock().await.plan_review_channel();
+    if let Some(ch) = &plan_review {
+        ch.set_downlink(down_tx);
+        ch.set_cancel(cancel.clone());
+    }
 
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
@@ -452,6 +647,34 @@ where
                             .await?;
                             writer.flush().await?;
                         }
+                    }
+                    "approve" | "decline" => {
+                        // 不经网关锁:评审通道直答(在审的 turn 内评审正持有
+                        // 网关锁等待应答,经锁应答 = 死锁)
+                        let message = match (&plan_review, method.as_str()) {
+                            (Some(ch), "approve") if ch.approve() => {
+                                json!({ "jsonrpc": "2.0", "id": id, "result": { "answered": true, "decision": "approved" } })
+                            }
+                            (Some(ch), "decline") => {
+                                let feedback = params["feedback"]
+                                    .as_str()
+                                    .map(str::to_string)
+                                    .filter(|t| !t.trim().is_empty());
+                                if ch.decline(feedback) {
+                                    json!({ "jsonrpc": "2.0", "id": id, "result": { "answered": true, "decision": "declined" } })
+                                } else {
+                                    json!({ "jsonrpc": "2.0", "id": id, "error": JsonRpcError::invalid_params("没有在审的计划").to_json() })
+                                }
+                            }
+                            (Some(_), _) => {
+                                json!({ "jsonrpc": "2.0", "id": id, "error": JsonRpcError::invalid_params("没有在审的计划").to_json() })
+                            }
+                            (None, _) => {
+                                json!({ "jsonrpc": "2.0", "id": id, "error": JsonRpcError::invalid_params("没有计划评审通道(工具面无 plan 组件)").to_json() })
+                            }
+                        };
+                        write_line(&mut writer, message).await?;
+                        writer.flush().await?;
                     }
                     _ => {
                         let outcome = gateway.lock().await.handle(&method, &params).await;

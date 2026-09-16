@@ -234,6 +234,8 @@ pub enum PlanStatus {
     Pending,
     /// 已批准
     Approved,
+    /// 已拒绝(留在 plan 模式;反馈已回传模型修订重提)
+    Declined,
     /// 已取消/驳回
     Cancelled,
 }
@@ -539,8 +541,8 @@ impl ChatState {
                     }
                 }
             }
-            // 计划归档三件:submitted 落归档卡节点;approved/cancelled
-            // 更新最后一个待批节点的状态(事件序保证配对)
+            // 计划归档四件:submitted 落归档卡节点;approved/declined/
+            // cancelled 更新最后一个待批节点的状态(事件序保证配对)
             "plan/submitted" => {
                 let plan = ev.data["plan"].as_str().unwrap_or_default().to_string();
                 self.nodes.push(ChatNode::Plan {
@@ -567,11 +569,11 @@ impl ChatState {
                     text: format!("压缩:{msg}"),
                 });
             }
-            "plan/approved" | "plan/cancelled" => {
-                let status = if ev.ty == "plan/approved" {
-                    PlanStatus::Approved
-                } else {
-                    PlanStatus::Cancelled
+            "plan/approved" | "plan/declined" | "plan/cancelled" => {
+                let status = match ev.ty.as_str() {
+                    "plan/approved" => PlanStatus::Approved,
+                    "plan/declined" => PlanStatus::Declined,
+                    _ => PlanStatus::Cancelled,
                 };
                 // 事件序保证配对:更新最后一个待批计划节点 →
                 // 归档卡状态徽标随之变化(拒绝/取消的界面反馈)
@@ -1518,6 +1520,48 @@ mod tests {
         assert_eq!(st.todos[0].status, "completed");
         st.apply(&ev("plan/mode", 3, json!({ "active": true })));
         assert!(st.plan_mode);
+    }
+
+    /// 计划归档卡状态流转:submitted 落 Pending;declined → Declined
+    /// (拒绝留在 plan 模式,徽标「已拒绝」);再次提交 → 新 Pending
+    #[test]
+    fn plan_archive_status_flips_with_terminal_events() {
+        let mut st = ChatState::default();
+        st.apply(&ev("plan/submitted", 1, json!({ "plan": "# 方案" })));
+        match st.nodes.last() {
+            Some(ChatNode::Plan { status, .. }) => {
+                assert_eq!(*status, PlanStatus::Pending);
+            }
+            other => panic!("应落计划卡:{other:?}"),
+        }
+        st.apply(&ev(
+            "plan/declined",
+            2,
+            json!({ "plan": "# 方案", "feedback": "改用 OAuth" }),
+        ));
+        match st.nodes.last() {
+            Some(ChatNode::Plan { status, .. }) => assert_eq!(*status, PlanStatus::Declined),
+            other => panic!("计划卡应在场:{other:?}"),
+        }
+        // 拒绝后再提交 → 新的待批卡
+        st.apply(&ev("plan/submitted", 3, json!({ "plan": "# 方案 v2" })));
+        assert!(
+            st.nodes
+                .iter()
+                .filter(|n| matches!(n, ChatNode::Plan { .. }))
+                .count()
+                == 2,
+            "两次提交两张卡"
+        );
+        match st.nodes.last() {
+            Some(ChatNode::Plan { status, .. }) => assert_eq!(*status, PlanStatus::Pending),
+            other => panic!("新卡应为待批:{other:?}"),
+        }
+        st.apply(&ev("plan/approved", 4, json!({ "plan": "# 方案 v2" })));
+        match st.nodes.last() {
+            Some(ChatNode::Plan { status, .. }) => assert_eq!(*status, PlanStatus::Approved),
+            other => panic!("终态应为已批准:{other:?}"),
+        }
     }
 
     #[test]

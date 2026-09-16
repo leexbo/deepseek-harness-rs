@@ -46,6 +46,17 @@ pub fn render(
         .header
         .clone()
         .unwrap_or_else(|| plan.question.question.clone());
+    // 选项说明(宿主 question 携带;缺席回落到与宿主同文的定稿文案)
+    let option_desc = |ix: usize, fallback: &str| -> String {
+        plan.question
+            .options
+            .as_ref()
+            .and_then(|opts| opts.get(ix))
+            .and_then(|o| o.description.clone())
+            .unwrap_or_else(|| fallback.to_string())
+    };
+    let approve_desc = option_desc(0, "离开计划模式;计划从下一步开始执行");
+    let decline_desc = option_desc(1, "留在计划模式;反馈会回传给模型");
     Some(
         div()
             .id("plan-review")
@@ -113,7 +124,8 @@ pub fn render(
                             }),
                     ),
             )
-            // 选项 1:是,实施此计划(点击=选择,不提交;选中高亮)
+            // 选项 1:是,实施此计划(点击=选择,不提交;选中高亮;
+            // 说明行 = 宿主选项描述)
             .child(
                 div()
                     .id("plan-approve")
@@ -121,7 +133,8 @@ pub fn render(
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .h(px(38.))
+                    .min_h(px(38.))
+                    .py(px(6.))
                     .px(px(10.))
                     .rounded(px(8.))
                     .border_1()
@@ -153,9 +166,24 @@ pub fn render(
                     )
                     .child(
                         div()
-                            .text_size(px(13.))
-                            .text_color(theme::LABEL())
-                            .child("是,实施此计划"),
+                            .flex_1()
+                            .min_w(px(0.))
+                            .v_flex()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(theme::LABEL())
+                                    .child("是,实施此计划"),
+                            )
+                            .child(
+                                div()
+                                    .id("plan-approve-desc")
+                                    .debug_selector(|| "plan-approve-desc".to_string())
+                                    .text_size(px(11.))
+                                    .text_color(theme::CAPTION())
+                                    .child(approve_desc),
+                            ),
                     )
                     .on_click(move |_, _, cx| {
                         choose_approve.update(cx, |st, cx| st.select_plan_option(true, cx));
@@ -191,9 +219,22 @@ pub fn render(
                         div()
                             .flex_1()
                             .min_w(px(0.))
-                            .text_size(px(13.))
-                            .text_color(theme::LABEL())
-                            .child("否,并告诉它应该如何做不同"),
+                            .v_flex()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(theme::LABEL())
+                                    .child("否,并告诉它应该如何做不同"),
+                            )
+                            .child(
+                                div()
+                                    .id("plan-decline-desc")
+                                    .debug_selector(|| "plan-decline-desc".to_string())
+                                    .text_size(px(11.))
+                                    .text_color(theme::CAPTION())
+                                    .child(decline_desc),
+                            ),
                     )
                     .on_click(move |_, _, cx| {
                         choose_decline.update(cx, |st, cx| st.select_plan_option(false, cx));

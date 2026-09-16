@@ -15,6 +15,7 @@ dsh-attachment.workspace = true
 dsh-compaction.workspace = true
 dsh-host.workspace = true
 dsh-llm.workspace = true
+dsh-plan.workspace = true
 dsh-prompt.workspace = true
 dsh-sandbox.workspace = true
 dsh-session.workspace = true

@@ -194,6 +194,17 @@ pub struct PlanApproved {
     pub plan: String,
 }
 
+/// plan/declined 载荷:用户拒绝计划(留在 plan 模式;反馈回传模型修订重提)。
+/// 非 surface;计划归档状态用(「已拒绝」徽标)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanDeclined {
+    /// 计划正文(markdown)
+    pub plan: String,
+    /// 用户反馈(缺省 = 仅「继续规划」)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<String>,
+}
+
 /// 单条目标
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GoalItem {
@@ -346,6 +357,9 @@ pub enum SessionEventData {
     /// 用户取消/驳回计划(非 surface;计划归档状态用)
     #[serde(rename = "plan/cancelled", rename_all = "camelCase")]
     PlanCancelled(PlanSubmitted),
+    /// 用户拒绝计划(非 surface;留在 plan 模式,反馈回传模型)
+    #[serde(rename = "plan/declined", rename_all = "camelCase")]
+    PlanDeclined(PlanDeclined),
     /// 目标列表全量快照(非 surface)
     #[serde(rename = "goal/state", rename_all = "camelCase")]
     GoalState(GoalState),
@@ -385,6 +399,8 @@ pub const KNOWN_EVENT_TYPES: &[&str] = &[
     "plan/submitted",
     "plan/approved",
     "plan/cancelled",
+    // 拒绝(留在 plan 模式;新增类型对旧日志安全)
+    "plan/declined",
     "goal/state",
     // 队列/steer 认领(web 宿主;engine 在 step 边界落档,UI 据 removed
     // ids 分类 steering 节点)——漏登记会导致含 splice
@@ -452,6 +468,7 @@ impl SessionEventData {
             Self::PlanSubmitted(_) => "plan/submitted",
             Self::PlanApproved(_) => "plan/approved",
             Self::PlanCancelled(_) => "plan/cancelled",
+            Self::PlanDeclined(_) => "plan/declined",
             Self::GoalState(_) => "goal/state",
             Self::LlmRetry(_) => "llm/retry",
             Self::LlmRetryStarted(_) => "llm/retry-started",

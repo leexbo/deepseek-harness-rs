@@ -524,11 +524,12 @@ async fn todo_write_events_flow_through_engine_and_restore() {
 }
 
 #[tokio::test]
-async fn plan_mode_submit_and_approval_flow() {
-    // 计划模式状态机。plan 态 exit_plan_mode 成功并落 plan/submitted;
+async fn plan_mode_in_turn_review_flow() {
+    // 计划模式 in-turn 评审状态机(turn 内阻塞:结果作为 tool/result 回传)。
+    // 标准态拒绝;plan 态经评审 port 批准/拒绝/关闭三种终局文本照源;
     // 批准(plan/approved + 回标准态)后再提交被拒;全程事件入日志可重放
     use dsh_agent_loop::ToolSet;
-    use dsh_tools::PlanTool;
+    use dsh_plan::{PlanReviewDecision, PlanReviewPort, PlanTool};
 
     let dir = std::env::temp_dir().join(format!("dsh-plan-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -550,6 +551,22 @@ async fn plan_mode_submit_and_approval_flow() {
     };
     let clock = || 0_i64;
 
+    /// 脚本化评审 port(终局事件落档是宿主面职责,在 dsh-core 锁;此处只回决定)
+    struct ReviewPort(Option<Result<PlanReviewDecision, String>>);
+    impl PlanReviewPort for ReviewPort {
+        fn review(
+            &self,
+            _session_id: &str,
+            _plan: &str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<PlanReviewDecision, String>> + Send>,
+        > {
+            let result = self.0.clone().unwrap_or(Err("no script".into()));
+            Box::pin(async move { result })
+        }
+    }
+    let port = |r| Some(Arc::new(ReviewPort(Some(r))) as Arc<dyn PlanReviewPort>);
+
     // 标准态:exit_plan_mode 被拒
     let mut provider = FakeProvider::new();
     provider.then(vec![LlmEvent::AssistantMessage(json!({
@@ -559,7 +576,12 @@ async fn plan_mode_submit_and_approval_flow() {
     provider.then(vec![LlmEvent::AssistantMessage(
         json!({ "content": "done0" }),
     )]);
-    let mut tools = ToolSet::new(vec![Box::new(PlanTool::new(Arc::clone(&log)))]).unwrap();
+    let mut tools = ToolSet::new(vec![Box::new(PlanTool::new(
+        Arc::clone(&log),
+        port(Ok(PlanReviewDecision::Approve)),
+        "s",
+    ))])
+    .unwrap();
     let mut gate = InvariantGate::new(provider, Arc::clone(&log));
     engine
         .run_turn(
@@ -584,7 +606,7 @@ async fn plan_mode_submit_and_approval_flow() {
         assert_eq!(result.data["success"], false, "标准态不得提交计划");
     }
 
-    // 进入 plan 态:提交成功,plan/submitted 在 tool/result 后
+    // 进入 plan 态:批准终局 = 成功结果携带「carry out」指令(照源逐字)
     engine
         .commit_session_event("session/mode", json!({ "mode": "plan" }), &clock, &mut sink)
         .unwrap();
@@ -594,9 +616,14 @@ async fn plan_mode_submit_and_approval_flow() {
             { "name": "exit_plan_mode", "arguments": { "plan": "# fix\n1. step" } } ],
     }))]);
     provider.then(vec![LlmEvent::AssistantMessage(
-        json!({ "content": "submitted" }),
+        json!({ "content": "carry out" }),
     )]);
-    let mut tools = ToolSet::new(vec![Box::new(PlanTool::new(Arc::clone(&log)))]).unwrap();
+    let mut tools = ToolSet::new(vec![Box::new(PlanTool::new(
+        Arc::clone(&log),
+        port(Ok(PlanReviewDecision::Approve)),
+        "s",
+    ))])
+    .unwrap();
     let mut gate = InvariantGate::new(provider, Arc::clone(&log));
     engine
         .run_turn(
@@ -620,14 +647,116 @@ async fn plan_mode_submit_and_approval_flow() {
             .find(|e| e.r#type == "tool/result")
             .expect("tool/result");
         assert_eq!(result.data["success"], true);
-        let submitted = l
-            .iter()
-            .find(|e| e.r#type == "plan/submitted")
-            .expect("plan/submitted");
-        assert!(submitted.data["plan"].as_str().unwrap().contains("# fix"));
+        assert!(
+            result.data["output"]
+                .as_str()
+                .is_some_and(|t| t.contains("carry out the plan starting with your next step")),
+            "批准结果即开工指令"
+        );
     }
 
-    // 批准:plan/approved + 回标准态;此后再提交被拒(读日志态)
+    // 拒绝终局:错误结果携带反馈(留在 plan 模式;模型修订重提)
+    let mut provider = FakeProvider::new();
+    provider.then(vec![LlmEvent::AssistantMessage(json!({
+        "content": "", "tool_calls": [
+            { "name": "exit_plan_mode", "arguments": { "plan": "# v2" } } ],
+    }))]);
+    provider.then(vec![LlmEvent::AssistantMessage(
+        json!({ "content": "revise" }),
+    )]);
+    let mut tools = ToolSet::new(vec![Box::new(PlanTool::new(
+        Arc::clone(&log),
+        port(Ok(PlanReviewDecision::Decline {
+            feedback: Some("use OAuth".into()),
+        })),
+        "s",
+    ))])
+    .unwrap();
+    let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+    engine
+        .run_turn(
+            "revise",
+            None,
+            &[],
+            &[],
+            &[],
+            &mut gate,
+            &mut tools,
+            &clock,
+            &mut sink,
+        )
+        .await
+        .expect("turn");
+    {
+        let l = log.lock().unwrap();
+        let result = l
+            .iter()
+            .rev()
+            .find(|e| e.r#type == "tool/result")
+            .expect("tool/result");
+        assert_eq!(result.data["success"], false);
+        assert!(
+            result.data["output"]
+                .as_str()
+                .is_some_and(|t| t.contains("keep planning") && t.contains("use OAuth")),
+            "反馈经工具错误结果回传"
+        );
+        // 拒绝不切模式:仍是 plan 态
+        let mode = l
+            .iter()
+            .rev()
+            .find(|e| e.r#type == "session/mode")
+            .expect("session/mode");
+        assert_eq!(mode.data["mode"], "plan", "拒绝留在 plan 模式(照源)");
+    }
+
+    // 关闭评审终局:错误结果 = 「等待用户说话」(照源逐字)
+    let mut provider = FakeProvider::new();
+    provider.then(vec![LlmEvent::AssistantMessage(json!({
+        "content": "", "tool_calls": [
+            { "name": "exit_plan_mode", "arguments": { "plan": "# v3" } } ],
+    }))]);
+    provider.then(vec![LlmEvent::AssistantMessage(
+        json!({ "content": "wait" }),
+    )]);
+    let mut tools = ToolSet::new(vec![Box::new(PlanTool::new(
+        Arc::clone(&log),
+        port(Err(dsh_plan::DISMISSED_REVIEW_ERROR.to_string())),
+        "s",
+    ))])
+    .unwrap();
+    let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+    engine
+        .run_turn(
+            "dismiss",
+            None,
+            &[],
+            &[],
+            &[],
+            &mut gate,
+            &mut tools,
+            &clock,
+            &mut sink,
+        )
+        .await
+        .expect("turn");
+    {
+        let l = log.lock().unwrap();
+        let result = l
+            .iter()
+            .rev()
+            .find(|e| e.r#type == "tool/result")
+            .expect("tool/result");
+        assert_eq!(result.data["success"], false);
+        assert!(
+            result.data["output"]
+                .as_str()
+                .is_some_and(|t| t.contains("stay in plan mode")),
+            "关闭评审 = 停在原地等待用户消息"
+        );
+    }
+
+    // 批准:plan/approved + 回标准态(宿主面落档);此后再提交被拒(读日志态)
     engine
         .commit_session_event(
             "plan/approved",
@@ -652,7 +781,12 @@ async fn plan_mode_submit_and_approval_flow() {
     provider.then(vec![LlmEvent::AssistantMessage(
         json!({ "content": "done2" }),
     )]);
-    let mut tools = ToolSet::new(vec![Box::new(PlanTool::new(Arc::clone(&log)))]).unwrap();
+    let mut tools = ToolSet::new(vec![Box::new(PlanTool::new(
+        Arc::clone(&log),
+        port(Ok(PlanReviewDecision::Approve)),
+        "s",
+    ))])
+    .unwrap();
     let mut gate = InvariantGate::new(provider, Arc::clone(&log));
     engine
         .run_turn(

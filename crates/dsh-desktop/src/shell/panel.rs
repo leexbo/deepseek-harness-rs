@@ -512,6 +512,7 @@ fn panel_plan_content(latest: Option<(String, PlanStatus)>) -> impl IntoElement 
             let (status_text, status_color) = match status {
                 PlanStatus::Pending => ("待批准", theme::WARN()),
                 PlanStatus::Approved => ("已批准", theme::SUCCESS()),
+                PlanStatus::Declined => ("已拒绝", theme::CAPTION()),
                 PlanStatus::Cancelled => ("已取消", theme::CAPTION()),
             };
             col = col
