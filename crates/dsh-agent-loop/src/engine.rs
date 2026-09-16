@@ -1031,7 +1031,15 @@ impl LoopEngine {
                 )
                 .await;
                 let llm_duration_ms = clock() - llm_t0;
-                // 安全点:出网返回后(取消在等待期间触发的常见窗口)
+                // Cancelled 直通必须先于下方取消安全点:consume_stream 的
+                // 取消臂已温和收尾(turn/end 已落档),安全点若对同一次取消
+                // 再收一次 = 日志相邻两条 turn/end(同毫秒同数据),桌面
+                // 「已中断」行重复显示
+                if matches!(consumed, Err(LoopError::Cancelled)) {
+                    return Err(LoopError::Cancelled);
+                }
+                // 安全点:出网返回后(取消在等待期间触发、流恰好正常结束
+                // 的窗口;内层未收尾时由这里收)
                 if self.cancel.is_cancelled() {
                     return Self::stop_cancelled(&self.log, clock, sink);
                 }
@@ -2296,6 +2304,11 @@ mod streaming_tests {
                 .any(|ev| ev.r#type == "turn/end" && ev.data.get("cancelled").is_some())
         );
         assert_eq!(engine.phase(), Phase::Idle, "取消后相位复位");
+        // 回归锁:同一次取消只收一次尾——内层取消臂与「出网返回后」安全点
+        // 对同次取消各收一次 = 日志双 turn/end,桌面「已中断」行重复显示
+        // (借用已持守卫计数;count_events 会再锁同一线程即自死锁)
+        let ends = l.iter().filter(|ev| ev.r#type == "turn/end").count();
+        assert_eq!(ends, 1, "取消收尾必须恰好一条 turn/end");
     }
 
     /// 流中**停顿**(无事件到达)时取消:provider/网络卡住、「卡住了?」
@@ -2346,6 +2359,9 @@ mod streaming_tests {
                 .any(|ev| ev.r#type == "turn/end" && ev.data.get("cancelled").is_some())
         );
         assert_eq!(engine.phase(), Phase::Idle, "取消后相位复位");
+        // 同上:单次取消恰好一条 turn/end(经已持守卫计数,防自死锁)
+        let ends = l.iter().filter(|ev| ev.r#type == "turn/end").count();
+        assert_eq!(ends, 1, "取消收尾必须恰好一条 turn/end");
     }
 
     // ---- 失败自动重试(策略注入 1ms 级短延迟)----
@@ -2806,5 +2822,8 @@ mod streaming_tests {
             l.iter()
                 .any(|ev| ev.r#type == "turn/end" && ev.data.get("cancelled").is_some())
         );
+        // 经已持守卫计数(再锁同一线程即自死锁)
+        let ends = l.iter().filter(|ev| ev.r#type == "turn/end").count();
+        assert_eq!(ends, 1, "取消收尾必须恰好一条 turn/end");
     }
 }
