@@ -2622,6 +2622,188 @@ fn trajectory_ledger_rows_inspector_and_tabs(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 轨迹增量帧应用(trajectory/delta → apply_trajectory_delta):
+/// records 按 index upsert(追加保序/同序覆盖)、requests 按 number
+/// upsert、total/has_older 演进、版本推进驱动跟随;他帧会话失配丢弃。
+/// 回归锁:直播增量取代 turn/end 门控的整页重拉(trajectory_live 已删)
+#[gpui_kit::test]
+fn trajectory_delta_applies_upsert_and_drops_foreign_session(cx: &mut TestAppContext) {
+    use crate::features::trajectory::TrajectoryView;
+    use dsh_core::trajectory::{TrajectoryRecord, TrajectoryRequest};
+
+    let (store, _wcx, root) = menu_harness(cx, "trajd");
+    let rec = |index: u64, kind: &str| TrajectoryRecord {
+        index,
+        seq: index,
+        kind: kind.into(),
+        turn: Some(1),
+        group: "Message".into(),
+        turn_start: index == 2,
+        text: format!("记录 {index}"),
+        result: None,
+        is_error: false,
+        time_seconds: None,
+        started_at: Some(1000 + index as i64 * 100),
+        request_number: None,
+        input: None,
+        output: None,
+        think: None,
+        ttft_ms: None,
+        payload: None,
+        output_detail: None,
+        thinking_detail: None,
+        system_prompt: None,
+        tools_catalog: None,
+        schema_detail: None,
+        source: None,
+    };
+    let req = |number: u64, tool_calls: u64| TrajectoryRequest {
+        number,
+        turn: 1,
+        step: 1,
+        model: "m".into(),
+        provider: "p".into(),
+        reasoning_effort: None,
+        status: "complete".into(),
+        started_at: 1000,
+        completed_at: 1100,
+        duration_ms: 100,
+        ttft_ms: None,
+        usage: None,
+        cumulative: Default::default(),
+        tool_calls,
+    };
+
+    // 基线:records 1..=3 + request #1,total 3
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            st.trajectory.trajectory = TrajectoryView {
+                records: vec![rec(1, "user"), rec(2, "message"), rec(3, "tool")],
+                requests: vec![req(1, 0)],
+                has_older: false,
+                total: 3,
+                loading: false,
+                loading_older: false,
+            };
+            st.trajectory.trajectory_session = Some(id.clone());
+        });
+    });
+    let sid = cx.update(|app| store.read(app).state.current_id.clone().expect("当前会话"));
+
+    // delta:追加 record 4 + 覆盖 request #1(tool_calls 回填)+ total 4
+    let payload = serde_json::json!({
+        "sessionId": sid,
+        "records": [serde_json::to_value(rec(4, "tool")).unwrap()],
+        "requests": [serde_json::to_value(req(1, 1)).unwrap()],
+        "total": 4,
+        "lastSeq": 42,
+    });
+    let (before_version, deltas_before) = cx.update(|app| {
+        store.update(app, |st, _| {
+            (
+                st.trajectory.trajectory_version,
+                st.trajectory.trajectory_deltas,
+            )
+        })
+    });
+    cx.update(|app| {
+        store.update(app, |st, cx| st.apply_trajectory_delta(&payload, cx));
+    });
+    cx.update(|app| {
+        let t = &store.read(app).trajectory.trajectory;
+        assert_eq!(t.records.len(), 4, "追加一条");
+        assert_eq!(t.records[3].index, 4, "保序追加在尾");
+        assert_eq!(t.total, 4, "total 随帧演进");
+        assert!(!t.has_older, "最左 index=1 无更早");
+        assert_eq!(t.requests[0].tool_calls, 1, "请求按 number 覆盖");
+    });
+    cx.update(|app| {
+        let st = store.read(app);
+        assert_eq!(
+            st.trajectory.trajectory_version,
+            before_version + 1,
+            "版本推进"
+        );
+        assert_eq!(
+            st.trajectory.trajectory_deltas,
+            deltas_before + 1,
+            "增量计数"
+        );
+    });
+
+    // 洞插入:index 2 缺失场景不可能(基线完整),锁同序覆盖即可——
+    // 重复应用同帧幂等(upsert 语义)
+    cx.update(|app| {
+        store.update(app, |st, cx| st.apply_trajectory_delta(&payload, cx));
+    });
+    cx.update(|app| {
+        let t = &store.read(app).trajectory.trajectory;
+        assert_eq!(t.records.len(), 4, "幂等:不重复追加");
+    });
+
+    // 他帧会话失配:丢弃
+    let foreign = serde_json::json!({
+        "sessionId": "s-other",
+        "records": [serde_json::to_value(rec(5, "tool")).unwrap()],
+        "total": 5,
+    });
+    cx.update(|app| {
+        store.update(app, |st, cx| st.apply_trajectory_delta(&foreign, cx));
+    });
+    cx.update(|app| {
+        let t = &store.read(app).trajectory.trajectory;
+        assert_eq!(t.records.len(), 4, "失配帧不落库");
+        assert_eq!(t.total, 4);
+    });
+
+    // 路由锁:同一载荷经 apply_frame(宿主 mux 流的真实入口)同样生效
+    let frame = dsh_core::proto::ServerRequest {
+        r#type: "server-request".into(),
+        rpc_id: String::new(),
+        method: "trajectory/delta".into(),
+        payload: serde_json::json!({
+            "sessionId": sid,
+            "records": [serde_json::to_value(rec(5, "message")).unwrap()],
+            "total": 5,
+        }),
+    };
+    cx.update(|app| {
+        store.update(app, |st, cx| st.apply_frame(frame, cx));
+    });
+    cx.update(|app| {
+        let t = &store.read(app).trajectory.trajectory;
+        assert_eq!(t.records.len(), 5, "apply_frame 路由生效");
+        assert_eq!(t.total, 5);
+    });
+
+    // has_older 推导:最左 index > 1 时(模拟翻页后只载更早窗,
+    // 直播在尾部追加不误报「无更早」)
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            st.trajectory.trajectory.records = vec![rec(2, "user"), rec(3, "message")];
+            st.trajectory.trajectory.has_older = true;
+            st.trajectory.trajectory_session = Some(id);
+        });
+    });
+    let payload2 = serde_json::json!({
+        "sessionId": sid,
+        "records": [serde_json::to_value(rec(4, "tool")).unwrap()],
+        "total": 4,
+    });
+    cx.update(|app| {
+        store.update(app, |st, cx| st.apply_trajectory_delta(&payload2, cx));
+    });
+    cx.update(|app| {
+        let t = &store.read(app).trajectory.trajectory;
+        assert!(t.has_older, "最左 index=2 > 1 应保留 has_older");
+        assert_eq!(t.records.first().map(|r| r.index), Some(2), "最左不动");
+    });
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 回归锁:轨迹拖拽/拖宽态曾在 render(Prepaint 相位)直接注册窗口级
 /// on_mouse_event,debug 断言炸「this method can only be called during
 /// paint」(点时间线即崩);现经 canvas.paint(Paint 相位)注册——

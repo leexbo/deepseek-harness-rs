@@ -1,14 +1,14 @@
 //! 轨迹视图折叠(台账 UI 的服务侧数据源)。
 //!
-//! 纯函数:输入 = 会话日志事件切片,输出 = 台账记录 + 请求清单。
+//! 增量内核 [`TrajectoryFolder`]:逐事件 feed 驻留台账终态,宿主直播
+//! 经其变更缓冲推 trajectory/delta;批量折叠 [`fold_trajectory`] 是
+//! 「新建 folder + 逐条 feed」的包装——直播与冷会话重放同源同代码。
 //! 语义:
 //! - 记录分类 SYSTEM / USER / COMPACTED / ASSISTANT(message)/ TOOL,
 //!   左列 Request #N 边界、Turn 标签、文本摘要(`(tool call only)` /
 //!   `No output` / `Initial System Prompt` 等);
 //! - 每个 LLM 请求一条 `TrajectoryRequest`(usage/ttft/时长/累计),
 //!   工具记录与 tool/result 按 call seq 配对,时长取审计完成记录。
-//!
-//! 直播与冷会话重放同源。
 
 use serde::Serialize;
 use serde_json::Value;
@@ -16,7 +16,7 @@ use serde_json::Value;
 use dsh_session::EventEnvelope;
 
 /// 请求用量(prompt 侧三桶 + 输出两桶;Usage 面板 Input/Cached/Other/Output/Reasoning)
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct TrajectoryUsage {
     /// 输入 tok(input_tokens)
     pub input: u64,
@@ -60,7 +60,7 @@ impl TrajectoryUsage {
 }
 
 /// 一次 LLM 请求(台账 Request #N 边界 + 详情面板数据)
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrajectoryRequest {
     /// 全局请求序号(#N)
@@ -94,7 +94,7 @@ pub struct TrajectoryRequest {
 }
 
 /// 一条台账记录(表格一行)
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrajectoryRecord {
     /// 全局记录序号(#N)
@@ -175,7 +175,7 @@ fn content_text_of(content: &Value) -> String {
 
 /// 当前信封工具目录按名取 spec(OpenAI function 形状优先,扁平兜底;
 /// pretty 序列化 → TOOL 记录 Schema 页数据)
-fn tool_schema(st: &FoldState, name: &str) -> Option<String> {
+fn tool_schema(st: &TrajectoryFolder, name: &str) -> Option<String> {
     let spec = st.current_tools.iter().find(|t| {
         t["function"]["name"].as_str() == Some(name) || t["name"].as_str() == Some(name)
     })?;
@@ -233,8 +233,37 @@ enum Envelope {
     Chars(String, u64, u64),
 }
 
-struct FoldState {
-    index: u64,
+/// 一批台账变更(upsert 语义:records 按 index 定位,requests 按 number)。
+/// 宿主 trajectory/delta 帧的载荷来源;同键重复出现取末次(全量对象覆盖)
+#[derive(Debug, Default, Clone)]
+pub struct TrajectoryChanges {
+    /// 新增/更新的记录(全量对象)
+    pub records: Vec<TrajectoryRecord>,
+    /// 新增/更新的请求(全量对象)
+    pub requests: Vec<TrajectoryRequest>,
+}
+
+impl TrajectoryChanges {
+    /// 是否无待取变更
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty() && self.requests.is_empty()
+    }
+}
+
+/// 增量轨迹折叠器:逐事件 `feed`,驻留台账终态(`records`/`requests`),
+/// 快照与直播增量同一份状态——批量折叠 [`fold_trajectory`] 即「新建
+/// folder + 逐条 feed + data」的包装,两条路径输出必然一致。
+///
+/// 批量折叠尾部后处理的增量等价:
+/// - Initial System Prompt 置顶:创建时插队首 + 全量重编号(仅一次);
+/// - 无结果调用冲刷:tool/call 缓冲,turn/end 冲刷(旧批量在日志尽头,
+///   按 seq 插回事件序位置,两者同序);
+/// - 每请求 tool_calls:tool/call 到达时就地更新(旧批量尾部回填);
+/// - 工具时长:result 配对时附着;晚到的审计完成事件就地补写。
+#[derive(Default)]
+pub struct TrajectoryFolder {
+    /// 最近喂入事件的 seq(宿主增量补喂的连续性判据)
+    last_seq: u64,
     turn: u64,
     step: u64,
     /// 本轮是否已出记录(turn_start 归属)
@@ -252,11 +281,17 @@ struct FoldState {
     step_reasoning: String,
     /// call seq → (时长 ms)来自审计完成记录
     tool_duration: std::collections::HashMap<u64, i64>,
-    /// call seq → 工具名(配对结果用)
+    /// 等待结果的调用(seq,记录;index 占位 0,入表时定)
     pending_calls: Vec<(u64, TrajectoryRecord)>,
     /// (turn, step) → 工具记录条数
     tools_by_step: std::collections::HashMap<(u64, u64), u64>,
     cumulative: TrajectoryUsage,
+    /// 台账记录(显示序);不变式:records[i].index == i+1
+    records: Vec<TrajectoryRecord>,
+    /// 已完成请求(number 升序)
+    requests: Vec<TrajectoryRequest>,
+    /// 上次 take_changes 以来的变更积压
+    dirty: TrajectoryChanges,
 }
 
 struct OpenRequest {
@@ -274,46 +309,195 @@ struct RequestMetrics {
     usage: Option<TrajectoryUsage>,
 }
 
-/// 折叠日志为轨迹数据。
+/// 批量折叠日志为轨迹数据(增量包装:新建 folder 逐条 feed 后取终态,
+/// 与直播增量同一份代码,输出必然一致)。
 pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
-    let mut st = FoldState {
-        index: 0,
-        turn: 0,
-        step: 0,
-        turn_has_record: false,
-        request_no: 0,
-        last_envelope: None,
-        current_tools: Vec::new(),
-        open_request: None,
-        pending_metrics: None,
-        step_reasoning: String::new(),
-        tool_duration: std::collections::HashMap::new(),
-        pending_calls: Vec::new(),
-        tools_by_step: std::collections::HashMap::new(),
-        cumulative: TrajectoryUsage::default(),
-    };
-    let mut records: Vec<TrajectoryRecord> = Vec::new();
-    let mut requests: Vec<TrajectoryRequest> = Vec::new();
-
-    // 预扫:审计完成记录的 call → duration(结果配对时取)
+    let mut folder = TrajectoryFolder::new();
     for ev in events {
-        if ev.r#type == "audit/call"
-            && ev.data["boundary"].as_str() == Some("tool")
-            && let Some(call) = ev.data["detail"]["call"].as_u64()
-            && let Some(ms) = ev.data["detail"]["durationMs"].as_i64()
-        {
-            st.tool_duration.insert(call, ms);
+        folder.feed(ev);
+    }
+    folder.data()
+}
+
+/// 全量数据裁窗为分页视图(窗口语义唯一实现;快照与冷读路径共用):
+/// before_index 给定时保留更早记录仍取尾窗;total 不受窗口影响
+pub fn page_of(
+    data: TrajectoryData,
+    max_records: usize,
+    before_index: Option<u64>,
+) -> TrajectoryPage {
+    let total = data.records.len() as u64;
+    let max_records = max_records.clamp(1, 2000);
+    let mut records = data.records;
+    if let Some(before) = before_index {
+        records.retain(|r| r.index < before);
+    }
+    let has_older = records.len() > max_records;
+    if has_older {
+        let start = records.len() - max_records;
+        records.drain(..start);
+    }
+    TrajectoryPage {
+        records,
+        requests: data.requests,
+        has_older,
+        total,
+    }
+}
+
+/// 在显示序记录表中按 seq(事件序)插入并修复 index 不变式(纯克隆版;
+/// 驻留态版本见 [`TrajectoryFolder::insert_record_ordered`])
+fn insert_ordered(records: &mut Vec<TrajectoryRecord>, mut rec: TrajectoryRecord) {
+    let pos = records
+        .iter()
+        .position(|r| r.seq > rec.seq)
+        .unwrap_or(records.len());
+    rec.index = pos as u64 + 1;
+    records.insert(pos, rec);
+    for r in &mut records[pos + 1..] {
+        r.index += 1;
+    }
+}
+
+impl TrajectoryFolder {
+    /// 新建空折叠器
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 最近喂入事件的 seq
+    pub fn last_seq(&self) -> u64 {
+        self.last_seq
+    }
+
+    /// 台账记录总数(驻留 + 等冲刷;turn/end 后与快照 total 一致)
+    pub fn total(&self) -> u64 {
+        (self.records.len() + self.pending_calls.len()) as u64
+    }
+
+    /// 喂入一个事件;返回台账是否有对外可见变更。变更积压在内部
+    /// 缓冲,经 [`Self::take_changes`] 取走排空
+    pub fn feed(&mut self, ev: &EventEnvelope) -> bool {
+        self.last_seq = ev.seq;
+        self.feed_inner(ev);
+        !self.dirty.is_empty()
+    }
+
+    /// 取走并排空积压变更(upsert 载荷)
+    pub fn take_changes(&mut self) -> TrajectoryChanges {
+        std::mem::take(&mut self.dirty)
+    }
+
+    /// 台账终态(尾冲刷 + 占位补全;不分页)
+    pub fn data(&self) -> TrajectoryData {
+        let mut records = self.records.clone();
+        // 冷尾冲刷:无 turn/end 收尾的日志(崩溃/截断)——未配对调用
+        // 按事件序插回(时长从审计表补读),在途请求补 error 占位
+        // (与批量折叠尾部同构)
+        for (seq, rec) in &self.pending_calls {
+            let mut rec = rec.clone();
+            rec.time_seconds = self.tool_duration.get(seq).map(|ms| *ms as f64 / 1000.0);
+            insert_ordered(&mut records, rec);
+        }
+        let mut requests = self.requests.clone();
+        if let Some(open) = &self.open_request {
+            requests.push(self.error_request(open));
+        }
+        TrajectoryData { records, requests }
+    }
+
+    /// 分页快照(桌面出口;语义与批量折叠后裁窗一致)
+    pub fn snapshot(&self, max_records: usize, before_index: Option<u64>) -> TrajectoryPage {
+        page_of(self.data(), max_records, before_index)
+    }
+
+    /// 在途请求 → error 占位(批量折叠尾部同构)
+    fn error_request(&self, open: &OpenRequest) -> TrajectoryRequest {
+        TrajectoryRequest {
+            number: open.number,
+            turn: self.turn,
+            step: self.step,
+            model: open.model.clone(),
+            provider: String::new(),
+            reasoning_effort: open.reasoning_effort.clone(),
+            status: "error".into(),
+            started_at: open.start_ts,
+            completed_at: 0,
+            duration_ms: 0,
+            ttft_ms: None,
+            usage: None,
+            cumulative: self.cumulative,
+            tool_calls: self
+                .tools_by_step
+                .get(&(self.turn, self.step))
+                .copied()
+                .unwrap_or(0),
         }
     }
 
-    for ev in events {
+    /// 追加一条已完成请求
+    fn push_request(&mut self, req: TrajectoryRequest) {
+        self.dirty.requests.push(req.clone());
+        self.requests.push(req);
+    }
+
+    /// 追加一条记录(显示序尾;index = 行序不变式)
+    fn stage_record(&mut self, mut rec: TrajectoryRecord) {
+        rec.index = self.records.len() as u64 + 1;
+        self.dirty.records.push(rec.clone());
+        self.records.push(rec);
+    }
+
+    /// 按 seq(事件序)插入记录并修复 index 不变式。非纯追加(中途
+    /// 插入)时后段整体重编号 → 脏缓冲全量重发(桌面按 index upsert
+    /// 收敛);常态追加只重发自身
+    fn insert_record_ordered(&mut self, mut rec: TrajectoryRecord) {
+        let pos = self
+            .records
+            .iter()
+            .position(|r| r.seq > rec.seq)
+            .unwrap_or(self.records.len());
+        let appended = pos == self.records.len();
+        rec.index = pos as u64 + 1;
+        self.records.insert(pos, rec);
+        if !appended {
+            for r in &mut self.records[pos + 1..] {
+                r.index += 1;
+            }
+            self.dirty.records = self.records.clone();
+        } else if let Some(rec) = self.records.last().cloned() {
+            self.dirty.records.push(rec);
+        }
+    }
+
+    /// 冲刷等待结果的调用(取消/中断;无结果列)。时长从审计表补读
+    /// (完成事件已到的取消场景)
+    fn flush_pending_calls(&mut self) {
+        let pendings = std::mem::take(&mut self.pending_calls);
+        for (seq, mut rec) in pendings {
+            rec.time_seconds = self.tool_duration.get(&seq).map(|ms| *ms as f64 / 1000.0);
+            self.insert_record_ordered(rec);
+        }
+    }
+
+    fn feed_inner(&mut self, ev: &EventEnvelope) {
         match ev.r#type.as_str() {
             "turn/start" => {
-                st.turn += 1;
-                st.step = 0;
-                st.turn_has_record = false;
+                self.turn += 1;
+                self.step = 0;
+                self.turn_has_record = false;
             }
-            "step/start" => st.step += 1,
+            "step/start" => self.step += 1,
+            "turn/end" => {
+                // 无结果调用冲刷 + 在途请求收口(取消/中断;旧批量在
+                // 日志尽头冲刷,按 seq 插回事件序位置两者同序)。
+                // take 后快照不再重复发占位
+                self.flush_pending_calls();
+                if let Some(open) = self.open_request.take() {
+                    let req = self.error_request(&open);
+                    self.push_request(req);
+                }
+            }
             "user/message" => {
                 // 分流(trajectory-message-definitions 的
                 // `source.kind !== 'user'` → kind:'context'):真实用户消息
@@ -327,14 +511,13 @@ pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
                 } else {
                     ev.data["content"].as_str().unwrap_or_default().to_string()
                 };
-                st.index += 1;
-                records.push(TrajectoryRecord {
-                    index: st.index,
+                self.stage_record(TrajectoryRecord {
+                    index: 0,
                     seq: ev.seq,
                     kind: if inject { "context" } else { "user" }.into(),
-                    turn: Some(st.turn),
+                    turn: Some(self.turn),
                     group: "Message".into(),
-                    turn_start: !inject && !st.turn_has_record && st.turn > 0,
+                    turn_start: !inject && !self.turn_has_record && self.turn > 0,
                     text: one_line(&text, 200),
                     result: None,
                     is_error: false,
@@ -355,29 +538,46 @@ pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
                     source: inject.then(|| ev.data["source"].clone()),
                 });
                 if !inject {
-                    st.turn_has_record = true;
+                    self.turn_has_record = true;
                 }
             }
             "assistant/reasoning" => {
                 if let Some(text) = ev.data["text"].as_str() {
-                    st.step_reasoning.push_str(text);
+                    self.step_reasoning.push_str(text);
                 }
             }
             "audit/call" => {
                 let boundary = ev.data["boundary"].as_str().unwrap_or_default();
                 let operation = ev.data["operation"].as_str().unwrap_or_default();
                 let detail = &ev.data["detail"];
+                // 审计完成记录:时长键值入表;若对应工具记录已入表
+                // (result 先于审计完成的罕见序),就地补写时长
+                if boundary == "tool"
+                    && let Some(call) = detail["call"].as_u64()
+                    && let Some(ms) = detail["durationMs"].as_i64()
+                {
+                    self.tool_duration.insert(call, ms);
+                    if let Some(rec) = self
+                        .records
+                        .iter_mut()
+                        .find(|r| r.kind == "tool" && r.seq == call)
+                    {
+                        rec.time_seconds = Some(ms as f64 / 1000.0);
+                        let rec = rec.clone();
+                        self.dirty.records.push(rec);
+                    }
+                }
                 if boundary == "llm" && operation == "request" {
                     // 新请求:#N + 信封变更检测(SYSTEM 记录)。
                     // 全量快照在场 → 深比对;否则退化字符数比对(老日志)
-                    st.request_no += 1;
+                    self.request_no += 1;
                     let model = detail["model"].as_str().unwrap_or_default().to_string();
                     let system_chars = detail["systemChars"].as_u64().unwrap_or(0);
                     let tools_chars = detail["toolsChars"].as_u64().unwrap_or(0);
                     let full_system = detail["systemPrompt"].as_str().map(String::from);
                     let full_tools = detail["tools"].as_array().cloned();
                     let full = full_system.clone().zip(full_tools.clone());
-                    let (system_changed, tools_changed) = match (&st.last_envelope, &full) {
+                    let (system_changed, tools_changed) = match (&self.last_envelope, &full) {
                         (Some(Envelope::Full(pm, ps, pt)), Some((s, t))) => {
                             (pm != &model || ps != s, pt != t)
                         }
@@ -390,7 +590,7 @@ pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
                         // 形态混用(升级前后事件同日志):保守视为变更
                         (Some(Envelope::Chars(_, _, _)), Some(_)) => (true, true),
                     };
-                    let label = match &st.last_envelope {
+                    let label = match &self.last_envelope {
                         None => "Initial System Prompt",
                         Some(_) if system_changed || tools_changed => {
                             match (system_changed, tools_changed) {
@@ -402,12 +602,15 @@ pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
                         Some(_) => "",
                     };
                     if !label.is_empty() {
-                        st.index += 1;
-                        records.push(TrajectoryRecord {
-                            index: st.index,
+                        let rec = TrajectoryRecord {
+                            index: 0,
                             seq: ev.seq,
                             kind: "system".into(),
-                            turn: if st.turn == 0 { None } else { Some(st.turn) },
+                            turn: if self.turn == 0 {
+                                None
+                            } else {
+                                Some(self.turn)
+                            },
                             group: "Message".into(),
                             turn_start: false,
                             text: label.into(),
@@ -429,29 +632,44 @@ pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
                             tools_catalog: full_tools.clone(),
                             schema_detail: None,
                             source: None,
-                        });
-                        if st.turn > 0 {
-                            st.turn_has_record = true;
+                        };
+                        if label == "Initial System Prompt" {
+                            // 置顶(源 layoutEntryOrder 对 initial 给
+                            // NEGATIVE_INFINITY:事件时序上晚于首条用户消息,
+                            // 显示层钉在台账首位;Turn 标签仍归属用户行)。
+                            // 插队首 + 全量重编号,脏缓冲全量重发
+                            self.records.insert(0, rec);
+                            for (i, r) in self.records.iter_mut().enumerate() {
+                                r.index = i as u64 + 1;
+                            }
+                            self.dirty.records = self.records.clone();
+                        } else {
+                            self.stage_record(rec);
+                        }
+                        if self.turn > 0 {
+                            self.turn_has_record = true;
                         }
                     }
                     if let Some((s, t)) = &full {
-                        st.last_envelope =
+                        self.last_envelope =
                             Some(Envelope::Full(model.clone(), s.clone(), t.clone()));
-                        st.current_tools = t.clone();
+                        self.current_tools = t.clone();
                     } else {
-                        st.last_envelope =
+                        self.last_envelope =
                             Some(Envelope::Chars(model.clone(), system_chars, tools_chars));
                     }
-                    st.open_request = Some(OpenRequest {
-                        number: st.request_no,
+                    self.open_request = Some(OpenRequest {
+                        number: self.request_no,
                         start_ts: ev.time,
                         reasoning_effort: detail["reasoningEffort"].as_str().map(String::from),
                         model,
                     });
                 } else if boundary == "llm" && operation == "request-done" {
-                    // 完成请求:usage + 时长,附着到本步 assistant/message
-                    let Some(open) = st.open_request.take() else {
-                        continue;
+                    // 完成请求:usage + 时长,附着到本步 assistant/message。
+                    // 工具数读当前步计数(本步工具调用晚于 request-done,
+                    // 到达时经 tool/call 臂就地回填)
+                    let Some(open) = self.open_request.take() else {
+                        return;
                     };
                     let duration_ms = detail["durationMs"].as_i64().unwrap_or(0);
                     let usage = if detail["usage"].is_null() {
@@ -461,13 +679,13 @@ pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
                     };
                     let ttft_ms = detail["usage"]["ttftMs"].as_i64();
                     if let Some(u) = &usage {
-                        st.cumulative.add(u);
+                        self.cumulative.add(u);
                     }
-                    let cumulative = st.cumulative;
-                    requests.push(TrajectoryRequest {
+                    let cumulative = self.cumulative;
+                    let req = TrajectoryRequest {
                         number: open.number,
-                        turn: st.turn,
-                        step: st.step,
+                        turn: self.turn,
+                        step: self.step,
                         model: open.model,
                         provider: String::new(),
                         reasoning_effort: open.reasoning_effort,
@@ -478,9 +696,14 @@ pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
                         ttft_ms,
                         usage,
                         cumulative,
-                        tool_calls: 0,
-                    });
-                    st.pending_metrics = Some(RequestMetrics {
+                        tool_calls: self
+                            .tools_by_step
+                            .get(&(self.turn, self.step))
+                            .copied()
+                            .unwrap_or(0),
+                    };
+                    self.push_request(req);
+                    self.pending_metrics = Some(RequestMetrics {
                         number: open.number,
                         start_ts: open.start_ts,
                         duration_ms,
@@ -495,21 +718,24 @@ pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
                     .as_array()
                     .cloned()
                     .unwrap_or_default();
-                let m = st.pending_metrics.take();
-                let reasoning = std::mem::take(&mut st.step_reasoning);
-                st.index += 1;
+                let m = self.pending_metrics.take();
+                let reasoning = std::mem::take(&mut self.step_reasoning);
                 let text = if content.trim().is_empty() && !tool_calls.is_empty() {
                     "(tool call only)".to_string()
                 } else {
                     one_line(content, 200)
                 };
-                records.push(TrajectoryRecord {
-                    index: st.index,
+                self.stage_record(TrajectoryRecord {
+                    index: 0,
                     seq: ev.seq,
                     kind: "message".into(),
-                    turn: if st.turn == 0 { None } else { Some(st.turn) },
-                    group: format!("Step {}", st.step.max(1)),
-                    turn_start: !st.turn_has_record && st.turn > 0,
+                    turn: if self.turn == 0 {
+                        None
+                    } else {
+                        Some(self.turn)
+                    },
+                    group: format!("Step {}", self.step.max(1)),
+                    turn_start: !self.turn_has_record && self.turn > 0,
                     text,
                     result: None,
                     is_error: false,
@@ -536,25 +762,30 @@ pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
                     schema_detail: None,
                     source: None,
                 });
-                if st.turn > 0 {
-                    st.turn_has_record = true;
+                if self.turn > 0 {
+                    self.turn_has_record = true;
                 }
             }
             "tool/call" => {
                 let name = ev.data["name"].as_str().unwrap_or_default().to_string();
                 let (args_json, args_pretty) = normalize_tool_args(&ev.data["arguments"]);
-                st.index += 1;
                 let record = TrajectoryRecord {
-                    index: st.index,
+                    // index 占位:配对入表时按事件序定(显示序不变式)
+                    index: 0,
                     seq: ev.seq,
                     kind: "tool".into(),
-                    turn: if st.turn == 0 { None } else { Some(st.turn) },
-                    group: format!("Step {}", st.step.max(1)),
+                    turn: if self.turn == 0 {
+                        None
+                    } else {
+                        Some(self.turn)
+                    },
+                    group: format!("Step {}", self.step.max(1)),
                     turn_start: false,
                     text: format!("{name} {args_json}"),
                     result: None,
                     is_error: false,
-                    time_seconds: st.tool_duration.get(&ev.seq).map(|ms| *ms as f64 / 1000.0),
+                    // 时长在 result 配对时附着(晚到的审计完成就地补写)
+                    time_seconds: None,
                     started_at: Some(ev.time),
                     request_number: None,
                     input: None,
@@ -566,20 +797,37 @@ pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
                     thinking_detail: None,
                     system_prompt: None,
                     tools_catalog: None,
-                    schema_detail: tool_schema(&st, &name),
+                    schema_detail: tool_schema(self, &name),
                     source: None,
                 };
-                *st.tools_by_step.entry((st.turn, st.step)).or_insert(0) += 1;
-                st.pending_calls.push((ev.seq, record));
-                if st.turn > 0 {
-                    st.turn_has_record = true;
+                *self
+                    .tools_by_step
+                    .entry((self.turn, self.step))
+                    .or_insert(0) += 1;
+                // 每请求工具数就地回填(旧批量尾部回填;事件序保证本步
+                // 请求已入表,重试同 (turn,step) 的多个请求一并更新)
+                let calls = self
+                    .tools_by_step
+                    .get(&(self.turn, self.step))
+                    .copied()
+                    .unwrap_or(0);
+                for req in self.requests.iter_mut() {
+                    if req.turn == self.turn && req.step == self.step {
+                        req.tool_calls = calls;
+                        let req = req.clone();
+                        self.dirty.requests.push(req);
+                    }
+                }
+                self.pending_calls.push((ev.seq, record));
+                if self.turn > 0 {
+                    self.turn_has_record = true;
                 }
             }
             "tool/result" => {
                 // 配对:等待中的 tool/call(同 seq)→ 补结果与失败态
                 let call_seq = ev.data["call"].as_u64().unwrap_or(0);
-                if let Some(pos) = st.pending_calls.iter().position(|(s, _)| *s == call_seq) {
-                    let (_, mut record) = st.pending_calls.remove(pos);
+                if let Some(pos) = self.pending_calls.iter().position(|(s, _)| *s == call_seq) {
+                    let (_, mut record) = self.pending_calls.remove(pos);
                     let output = ev.data["output"].as_str().unwrap_or_default();
                     record.result = Some(if output.trim().is_empty() {
                         "No output".into()
@@ -592,19 +840,27 @@ pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
                     } else {
                         Some(output.to_string())
                     };
-                    records.push(record);
+                    // 时长配对附着(审计完成事件通常先于 result)
+                    record.time_seconds = self
+                        .tool_duration
+                        .get(&call_seq)
+                        .map(|ms| *ms as f64 / 1000.0);
+                    self.insert_record_ordered(record);
                 }
             }
             "compaction/summary" => {
                 let summary = ev.data["summary"].as_str().unwrap_or_default();
-                st.index += 1;
-                records.push(TrajectoryRecord {
-                    index: st.index,
+                self.stage_record(TrajectoryRecord {
+                    index: 0,
                     seq: ev.seq,
                     kind: "compacted".into(),
-                    turn: if st.turn == 0 { None } else { Some(st.turn) },
+                    turn: if self.turn == 0 {
+                        None
+                    } else {
+                        Some(self.turn)
+                    },
                     group: "Message".into(),
-                    turn_start: !st.turn_has_record && st.turn > 0,
+                    turn_start: !self.turn_has_record && self.turn > 0,
                     text: if summary.trim().is_empty() {
                         "Context compacted".into()
                     } else {
@@ -631,66 +887,13 @@ pub fn fold_trajectory(events: &[EventEnvelope]) -> TrajectoryData {
                     schema_detail: None,
                     source: None,
                 });
-                if st.turn > 0 {
-                    st.turn_has_record = true;
+                if self.turn > 0 {
+                    self.turn_has_record = true;
                 }
             }
             _ => {}
         }
     }
-
-    // 无结果的等待中调用(取消/中断):原样落表(无结果列)
-    for (_, record) in st.pending_calls {
-        records.push(record);
-    }
-    records.sort_by_key(|r| r.index);
-
-    // Initial System Prompt 置顶(源 layoutEntryOrder 对 initial 给
-    // NEGATIVE_INFINITY:事件时序上晚于首条用户消息,显示层钉在台账
-    // 首位;Turn 标签仍归属用户行)
-    if let Some(pos) = records
-        .iter()
-        .position(|r| r.kind == "system" && r.text == "Initial System Prompt")
-        && pos > 0
-    {
-        let head = records.remove(pos);
-        records.insert(0, head);
-    }
-    // 置顶后统一重编号(index = 台账行序,分页/选中以此为键)
-    for (i, r) in records.iter_mut().enumerate() {
-        r.index = i as u64 + 1;
-    }
-
-    // 未完成的请求(audit request 无 request-done)→ error 占位
-    if let Some(open) = &st.open_request {
-        requests.push(TrajectoryRequest {
-            number: open.number,
-            turn: st.turn,
-            step: st.step,
-            model: open.model.clone(),
-            provider: String::new(),
-            reasoning_effort: open.reasoning_effort.clone(),
-            status: "error".into(),
-            started_at: open.start_ts,
-            completed_at: 0,
-            duration_ms: 0,
-            ttft_ms: None,
-            usage: None,
-            cumulative: st.cumulative,
-            tool_calls: 0,
-        });
-    }
-
-    // 补每请求的工具调用数(按 step 归属)
-    for req in &mut requests {
-        req.tool_calls = st
-            .tools_by_step
-            .get(&(req.turn, req.step))
-            .copied()
-            .unwrap_or(0);
-    }
-
-    TrajectoryData { records, requests }
 }
 
 #[cfg(test)]
@@ -1136,5 +1339,389 @@ mod tests {
         let t = &data.records[0];
         assert_eq!(t.time_seconds, None);
         assert!(t.is_error, "success=false → 失败态");
+    }
+
+    // ----- 增量内核差分锁 -----
+
+    /// 跨回合富夹具:信封全量快照深比对、工具成败、字符串 arguments、
+    /// 上下文注入、压缩、取消轮(未配对调用 + 在途请求)
+    fn rich_fixture() -> Vec<EventEnvelope> {
+        vec![
+            ev_seq("turn/start", 1, 1000, json!({})),
+            ev_seq(
+                "user/message",
+                2,
+                1010,
+                json!({
+                    "content": [{ "type": "text", "text": "AGENTS.md 注入" }],
+                    "source": { "kind": "agent-instructions" },
+                }),
+            ),
+            ev_seq("user/message", 3, 1020, json!({ "content": "第一问" })),
+            ev_seq("step/start", 4, 1030, json!({})),
+            ev_seq(
+                "audit/call",
+                5,
+                1040,
+                json!({
+                    "boundary": "llm",
+                    "operation": "request",
+                    "detail": {
+                        "model": "m1",
+                        "systemChars": 10,
+                        "toolsChars": 20,
+                        "systemPrompt": "prompt-a",
+                        "tools": [{ "name": "t1" }],
+                    },
+                }),
+            ),
+            ev_seq("assistant/reasoning", 6, 1050, json!({ "text": "想一下" })),
+            ev_seq(
+                "audit/call",
+                7,
+                1060,
+                json!({ "boundary": "llm", "operation": "request-done",
+                        "detail": { "durationMs": 100,
+                                    "usage": { "input_tokens": 5, "output_tokens": 2 } } }),
+            ),
+            ev_seq(
+                "assistant/message",
+                8,
+                1070,
+                json!({ "content": "答一", "tool_calls": [] }),
+            ),
+            // 第二轮:等长不同内容的 system(深比对路径)
+            ev_seq("turn/start", 9, 2000, json!({})),
+            ev_seq("user/message", 10, 2010, json!({ "content": "第二问" })),
+            ev_seq("step/start", 11, 2020, json!({})),
+            ev_seq(
+                "audit/call",
+                12,
+                2030,
+                json!({
+                    "boundary": "llm",
+                    "operation": "request",
+                    "detail": {
+                        "model": "m1",
+                        "systemChars": 10,
+                        "toolsChars": 20,
+                        "systemPrompt": "prompt-b",
+                        "tools": [{ "name": "t1" }],
+                    },
+                }),
+            ),
+            ev_seq(
+                "audit/call",
+                13,
+                2040,
+                json!({ "boundary": "llm", "operation": "request-done",
+                        "detail": { "durationMs": 50, "usage": {} } }),
+            ),
+            ev_seq(
+                "assistant/message",
+                14,
+                2050,
+                json!({ "content": "", "tool_calls": [{ "id": "c1", "name": "t1" }] }),
+            ),
+            ev_seq(
+                "tool/call",
+                15,
+                2060,
+                json!({ "name": "t1", "arguments": { "p": 1 } }),
+            ),
+            ev_seq(
+                "audit/call",
+                16,
+                2070,
+                json!({ "boundary": "tool", "operation": "t1",
+                        "detail": { "call": 15, "durationMs": 30 } }),
+            ),
+            ev_seq(
+                "tool/result",
+                17,
+                2080,
+                json!({ "call": 15, "output": "ok", "success": true }),
+            ),
+            ev_seq(
+                "tool/call",
+                18,
+                2090,
+                json!({ "name": "t2", "arguments": "not-json" }),
+            ),
+            ev_seq(
+                "tool/result",
+                19,
+                2100,
+                json!({ "call": 18, "output": "", "success": false }),
+            ),
+            ev_seq("step/start", 20, 2110, json!({})),
+            ev_seq("turn/end", 21, 2200, json!({})),
+            // 第三轮:取消——未配对调用 + 在途请求,turn/end 冲刷
+            ev_seq("turn/start", 22, 3000, json!({})),
+            ev_seq("user/message", 23, 3010, json!({ "content": "第三问" })),
+            ev_seq("step/start", 24, 3020, json!({})),
+            ev_seq(
+                "audit/call",
+                25,
+                3030,
+                json!({ "boundary": "llm", "operation": "request",
+                        "detail": { "model": "m1", "systemChars": 10, "toolsChars": 20 } }),
+            ),
+            ev_seq(
+                "tool/call",
+                26,
+                3040,
+                json!({ "name": "t3", "arguments": {} }),
+            ),
+            ev_seq(
+                "audit/call",
+                27,
+                3050,
+                json!({ "boundary": "tool", "operation": "t3",
+                        "detail": { "call": 26, "durationMs": 70 } }),
+            ),
+            ev_seq("turn/end", 28, 3100, json!({ "cancelled": "token" })),
+            ev_seq(
+                "compaction/summary",
+                29,
+                3200,
+                json!({ "summary": "折叠摘要" }),
+            ),
+        ]
+    }
+
+    /// 差分基石:同一 folder 逐事件喂入后,任意前缀的快照必须与
+    /// 「新建 folder 批量折叠同一前缀」逐字段一致(增量应用无跨事件
+    /// 状态泄漏)
+    #[test]
+    fn incremental_feed_matches_batch_fold_on_every_prefix() {
+        let events = rich_fixture();
+        let mut folder = TrajectoryFolder::new();
+        for (i, ev) in events.iter().enumerate() {
+            folder.feed(ev);
+            let page = folder.snapshot(usize::MAX, None);
+            let batch = fold_trajectory(&events[..=i]);
+            assert_eq!(page.records, batch.records, "前缀 {i} records");
+            assert_eq!(page.requests, batch.requests, "前缀 {i} requests");
+        }
+    }
+
+    /// turn/end 冲刷:取消轮的未配对调用照常落表(时长从审计表补读)、
+    /// 在途请求收口为 error——粒度从日志尽头缩到回合
+    #[test]
+    fn turn_end_flushes_pending_calls_and_open_request() {
+        let events = vec![
+            ev_seq("turn/start", 1, 0, json!({})),
+            ev_seq("step/start", 2, 0, json!({})),
+            ev_seq(
+                "audit/call",
+                3,
+                0,
+                json!({ "boundary": "llm", "operation": "request",
+                        "detail": { "model": "m", "systemChars": 0, "toolsChars": 0 } }),
+            ),
+            ev_seq(
+                "tool/call",
+                4,
+                0,
+                json!({ "name": "bash", "arguments": {} }),
+            ),
+            ev_seq(
+                "audit/call",
+                5,
+                0,
+                json!({ "boundary": "tool", "operation": "bash",
+                        "detail": { "call": 4, "durationMs": 40 } }),
+            ),
+            ev_seq("turn/end", 6, 0, json!({ "cancelled": "token" })),
+        ];
+        let data = fold_trajectory(&events);
+        let kinds: Vec<&str> = data.records.iter().map(|r| r.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["system", "tool"]);
+        let tool = &data.records[1];
+        assert_eq!(tool.result, None, "取消调用无结果列");
+        assert_eq!(tool.time_seconds, Some(0.04), "已到的审计时长补附着");
+        assert_eq!(data.requests.len(), 1);
+        assert_eq!(data.requests[0].status, "error", "在途请求收口");
+        // 冲刷发生在 turn/end:之后的快照(data 路径)不得重复出占位
+        let mut folder = TrajectoryFolder::new();
+        for ev in &events {
+            folder.feed(ev);
+        }
+        assert_eq!(folder.data().requests.len(), 1);
+    }
+
+    /// 裁窗语义与宿主旧实现一致:before_index 保留更早记录仍取尾窗;
+    /// total 恒为全会话记录数;max_records clamp 1..=2000
+    #[test]
+    fn snapshot_windowing_matches_registry_semantics() {
+        let mut folder = TrajectoryFolder::new();
+        for i in 0..30u64 {
+            folder.feed(&ev_seq(
+                "tool/call",
+                i + 1,
+                (i * 10) as i64,
+                json!({ "name": "t", "arguments": {} }),
+            ));
+            folder.feed(&ev_seq(
+                "tool/result",
+                100 + i,
+                (i * 10 + 5) as i64,
+                json!({ "call": i + 1, "output": "x", "success": true }),
+            ));
+        }
+        let page = folder.snapshot(10, None);
+        assert_eq!(page.total, 30, "total 不受窗口影响");
+        assert!(page.has_older);
+        assert_eq!(page.records.len(), 10);
+        assert_eq!(page.records[0].index, 21, "尾窗从更早一侧起");
+        assert_eq!(page.records[9].index, 30);
+        let page = folder.snapshot(10, Some(11));
+        assert_eq!(page.records[0].index, 1, "before_index 保留更早记录");
+        assert_eq!(page.records[9].index, 10);
+        assert!(!page.has_older);
+        assert_eq!(page.total, 30);
+    }
+
+    /// 增量流语义锁(桌面 apply 原型):records 按 index / requests 按
+    /// number upsert,从空台账重放全量变更流必须收敛到**驻留台账**——
+    /// 含置顶重编号/冲刷插入引发的 index 整段位移(全量重发覆盖)。
+    /// 快照的冷尾补全(无 turn/end 的未配对调用/在途请求占位)是
+    /// view-time 补全,不进变更流:崩溃会话无直播;有直播时 turn/end
+    /// 已把两者收口进流
+    #[test]
+    fn delta_stream_replays_to_full_state() {
+        let events = rich_fixture();
+        let mut folder = TrajectoryFolder::new();
+        let mut recs: std::collections::BTreeMap<u64, TrajectoryRecord> = Default::default();
+        let mut reqs: std::collections::BTreeMap<u64, TrajectoryRequest> = Default::default();
+        for ev in &events {
+            folder.feed(ev);
+            let changes = folder.take_changes();
+            for r in changes.records {
+                recs.insert(r.index, r);
+            }
+            for q in changes.requests {
+                reqs.insert(q.number, q);
+            }
+        }
+        let replayed: Vec<TrajectoryRecord> = recs.into_values().collect();
+        assert_eq!(replayed, folder.records, "增量流重放 ≡ 驻留 records");
+        let replayed: Vec<TrajectoryRequest> = reqs.into_values().collect();
+        assert_eq!(replayed, folder.requests, "增量流重放 ≡ 驻留 requests");
+    }
+
+    /// 确定性伪随机事件序列(xorshift64,不引 rand):增量喂入不 panic、
+    /// index 连续不变式成立、变更流重放收敛
+    #[test]
+    fn random_event_sequences_hold_invariants() {
+        let mut s: u64 = 88172645463325252;
+        let mut rnd = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for _case in 0..24 {
+            let mut events = Vec::new();
+            let mut seq = 0u64;
+            let mut last_call = 1u64;
+            for _ in 0..(rnd() % 80 + 20) {
+                seq += 1;
+                let ev = match rnd() % 12 {
+                    0 => ev_seq("turn/start", seq, 0, json!({})),
+                    1 => ev_seq("step/start", seq, 0, json!({})),
+                    2 => ev_seq(
+                        "user/message",
+                        seq,
+                        0,
+                        json!({ "content": format!("u{seq}") }),
+                    ),
+                    3 => ev_seq(
+                        "audit/call",
+                        seq,
+                        0,
+                        json!({ "boundary": "llm", "operation": "request",
+                                "detail": { "model": "m", "systemChars": rnd() % 100,
+                                            "toolsChars": rnd() % 100 } }),
+                    ),
+                    4 => ev_seq(
+                        "audit/call",
+                        seq,
+                        0,
+                        json!({ "boundary": "llm", "operation": "request",
+                                "detail": { "model": "m", "systemChars": 7, "toolsChars": 9,
+                                            "systemPrompt": "p", "tools": [{ "name": "t" }] } }),
+                    ),
+                    5 => ev_seq(
+                        "audit/call",
+                        seq,
+                        0,
+                        json!({ "boundary": "llm", "operation": "request-done",
+                                "detail": { "durationMs": (rnd() % 1000) as i64,
+                                            "usage": { "input_tokens": rnd() % 50,
+                                                       "output_tokens": rnd() % 50 } } }),
+                    ),
+                    6 => ev_seq(
+                        "assistant/message",
+                        seq,
+                        0,
+                        json!({ "content": format!("a{seq}"), "tool_calls": [] }),
+                    ),
+                    7 => {
+                        last_call = seq;
+                        ev_seq(
+                            "tool/call",
+                            seq,
+                            0,
+                            json!({ "name": "t", "arguments": { "i": seq } }),
+                        )
+                    }
+                    8 => ev_seq(
+                        "tool/result",
+                        seq,
+                        0,
+                        json!({ "call": last_call, "output": "o", "success": true }),
+                    ),
+                    9 => ev_seq(
+                        "audit/call",
+                        seq,
+                        0,
+                        json!({ "boundary": "tool", "operation": "t",
+                                "detail": { "call": last_call,
+                                            "durationMs": (rnd() % 500) as i64 } }),
+                    ),
+                    10 => ev_seq(
+                        "compaction/summary",
+                        seq,
+                        0,
+                        json!({ "summary": format!("s{seq}") }),
+                    ),
+                    _ => ev_seq("assistant/reasoning", seq, 0, json!({ "text": "r" })),
+                };
+                events.push(ev);
+            }
+            let mut folder = TrajectoryFolder::new();
+            let mut recs: std::collections::BTreeMap<u64, TrajectoryRecord> = Default::default();
+            let mut reqs: std::collections::BTreeMap<u64, TrajectoryRequest> = Default::default();
+            for ev in &events {
+                folder.feed(ev);
+                let changes = folder.take_changes();
+                for r in changes.records {
+                    recs.insert(r.index, r);
+                }
+                for q in changes.requests {
+                    reqs.insert(q.number, q);
+                }
+            }
+            let page = folder.snapshot(usize::MAX, None);
+            for (i, r) in page.records.iter().enumerate() {
+                assert_eq!(r.index, i as u64 + 1, "case index 连续不变式");
+            }
+            let replayed: Vec<TrajectoryRecord> = recs.into_values().collect();
+            assert_eq!(replayed, folder.records, "case 变更流重放 ≡ 驻留 records");
+            let replayed: Vec<TrajectoryRequest> = reqs.into_values().collect();
+            assert_eq!(replayed, folder.requests, "case 变更流重放 ≡ 驻留 requests");
+        }
     }
 }

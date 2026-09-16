@@ -358,6 +358,12 @@ impl AppStore {
             }
             return;
         }
+        // 轨迹增量帧:直接应用 upsert(不论面板是否可见,切回即见新;
+        // 会话失配在 apply_trajectory_delta 内丢弃)
+        if frame.method.as_str() == "trajectory/delta" {
+            self.apply_trajectory_delta(&frame.payload, cx);
+            return;
+        }
         let touches_current_chat = frame.method.as_str() == "session/event"
             && frame.payload["sessionId"]
                 .as_str()
@@ -365,11 +371,6 @@ impl AppStore {
         if touches_current_chat {
             self.chat.pinned = self.at_bottom();
         }
-        // 轨迹直播(回合粒度):当前会话 turn 结束且轨迹面板可见 → 重拉
-        // (桌面全量重折叠上 tokio,回合粒度足够)
-        let trajectory_live = touches_current_chat
-            && self.trajectory_visible()
-            && frame.payload["event"]["type"].as_str() == Some("turn/end");
         // 额度就近补查:turn 消耗完 → default provider 静默刷新(60s 防抖)
         let billing_due =
             touches_current_chat && frame.payload["event"]["type"].as_str() == Some("turn/end");
@@ -412,9 +413,6 @@ impl AppStore {
         }
         if touches_current_chat {
             self.chat.chat_version += 1;
-        }
-        if trajectory_live {
-            self.refresh_trajectory(cx);
         }
         if billing_due {
             self.auto_refresh_billing(cx);

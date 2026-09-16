@@ -54,6 +54,11 @@ pub(crate) struct TrajectoryStore {
     pub trajectory: TrajectoryView,
     /// 轨迹缓存归属会话(失配 = 需重拉)
     pub trajectory_session: Option<String>,
+    /// 已应用的增量帧计数(trajectory/delta;基线回包竞态守卫基准)
+    pub trajectory_deltas: u64,
+    /// 当前基线拉取发起时的增量计数(回包落库时计数已前进 = 拉取
+    /// 期间有增量到达,重拉一次收敛)
+    pub trajectory_refresh_basis: u64,
     /// 轨迹搜索输入态(挂窗后建;渲染期读值过滤)
     pub trajectory_search: Option<Entity<InputState>>,
     /// 台账滚动句柄(跟随尾部 / prepend 锚定)
@@ -104,12 +109,22 @@ pub(crate) struct TrajectoryStore {
     pub timeline_draft: Option<(f64, f64)>,
 }
 
+/// 已载子集按 index 升序的 upsert(新增插入保序;同 index 覆盖)
+fn upsert_record(records: &mut Vec<TrajectoryRecord>, rec: TrajectoryRecord) {
+    match records.binary_search_by_key(&rec.index, |r| r.index) {
+        Ok(i) => records[i] = rec,
+        Err(i) => records.insert(i, rec),
+    }
+}
+
 impl Default for TrajectoryStore {
     fn default() -> Self {
         Self {
             inspect_locate: None,
             trajectory: TrajectoryView::default(),
             trajectory_session: None,
+            trajectory_deltas: 0,
+            trajectory_refresh_basis: 0,
             trajectory_search: None,
             trajectory_scroll: gpui_kit::ScrollHandle::new(),
             trajectory_follow: true,
@@ -190,6 +205,68 @@ impl AppStore {
         self.trajectory.trajectory_session.as_deref() != self.state.current_id.as_deref()
     }
 
+    /// 应用轨迹增量帧(`trajectory/delta`;宿主折叠器变更缓冲):
+    /// records 按 index、requests 按 number upsert(全量对象覆盖)。
+    /// 会话失配丢弃(基线拉取自会覆盖);不论面板是否可见都应用——
+    /// upsert 极廉价,切回轨迹标签即见新数据。基线未载时照常正向
+    /// 建账(增量与批量同源,收敛点一致)
+    pub fn apply_trajectory_delta(&mut self, payload: &serde_json::Value, cx: &mut Context<Self>) {
+        let Some(sid) = payload["sessionId"].as_str() else {
+            return;
+        };
+        if self.state.current_id.as_deref() != Some(sid) {
+            return;
+        }
+        let mut touched = false;
+        if let Some(recs) = payload["records"].as_array() {
+            for r in recs {
+                let Ok(rec) = serde_json::from_value::<TrajectoryRecord>(r.clone()) else {
+                    continue;
+                };
+                upsert_record(&mut self.trajectory.trajectory.records, rec);
+                touched = true;
+            }
+        }
+        if let Some(reqs) = payload["requests"].as_array() {
+            for q in reqs {
+                let Ok(req) = serde_json::from_value::<TrajectoryRequest>(q.clone()) else {
+                    continue;
+                };
+                match self
+                    .trajectory
+                    .trajectory
+                    .requests
+                    .iter()
+                    .position(|x| x.number == req.number)
+                {
+                    Some(i) => self.trajectory.trajectory.requests[i] = req,
+                    None => self.trajectory.trajectory.requests.push(req),
+                }
+                touched = true;
+            }
+        }
+        if let Some(total) = payload["total"].as_u64() {
+            self.trajectory.trajectory.total = total;
+            touched = true;
+        }
+        if !touched {
+            return;
+        }
+        self.trajectory.trajectory_deltas += 1;
+        // has_older 由已载最左 index 推导(基线窗口/翻页语义保持)
+        self.trajectory.trajectory.has_older = self
+            .trajectory
+            .trajectory
+            .records
+            .first()
+            .is_some_and(|r| r.index > 1);
+        self.trajectory.trajectory_version += 1;
+        // 待定位(Inspect/检索跳转)的数据就绪收尾
+        self.locate_search_hit(cx);
+        self.locate_inspect(cx);
+        cx.notify();
+    }
+
     /// 轨迹台账是否钉在底部(2px 阈值,源 BOTTOM_FOLLOW_THRESHOLD_PX)
     pub fn trajectory_at_bottom(&self) -> bool {
         let h = &self.trajectory.trajectory_scroll;
@@ -208,6 +285,7 @@ impl AppStore {
         let session_changed = self.trajectory_stale();
         let follow = self.trajectory_at_bottom() || self.trajectory.trajectory.records.is_empty();
         self.trajectory.trajectory.loading = true;
+        self.trajectory.trajectory_refresh_basis = self.trajectory.trajectory_deltas;
         self.trajectory.trajectory_follow = follow;
         cx.notify();
         let host = self.bridge.host().clone();
@@ -267,6 +345,11 @@ impl AppStore {
                 s.trajectory.trajectory_version += 1;
                 s.locate_search_hit(cx);
                 s.locate_inspect(cx);
+                // 拉取期间有增量到达:回包是拉取时刻快照,已落后——
+                // 先落库再重拉一次收敛(delta 计数即守卫)
+                if s.trajectory.trajectory_deltas != s.trajectory.trajectory_refresh_basis {
+                    s.refresh_trajectory(cx);
+                }
                 cx.notify();
             });
             Ok::<(), anyhow::Error>(())
@@ -293,6 +376,7 @@ impl AppStore {
         let offset_y = f32::from(self.trajectory.trajectory_scroll.offset().y);
         let max_h = f32::from(self.trajectory.trajectory_scroll.max_offset().y);
         self.trajectory.trajectory.loading_older = true;
+        self.trajectory.trajectory_refresh_basis = self.trajectory.trajectory_deltas;
         cx.notify();
         let host = self.bridge.host().clone();
         let sid_for_call = sid.clone();
@@ -314,6 +398,13 @@ impl AppStore {
                     cx.notify();
                     return;
                 };
+                // 拉取期间有增量到达:prepend 会把落后页拼进已含增量的
+                // 窗口——放弃拼接,改走全量重拉收敛
+                if s.trajectory.trajectory_deltas != s.trajectory.trajectory_refresh_basis {
+                    s.trajectory.trajectory.loading_older = false;
+                    s.refresh_trajectory(cx);
+                    return;
+                }
                 let mut records = page.records;
                 records.extend(std::mem::take(&mut s.trajectory.trajectory.records));
                 s.trajectory.trajectory.records = records;

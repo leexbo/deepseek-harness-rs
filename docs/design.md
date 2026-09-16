@@ -189,7 +189,7 @@ JSONL 日志逐事件重放:信封校验(§7.1)通过即重建 EventLog,`derive_
 
 ### 6.5 场景:桌面会话(dsh-desktop)
 
-`dsh-desktop` 在自身进程内直接构造 `dsh-core` 的 `AppHost`(专任 tokio runtime):同步方法直调、异步方法经 runtime 派发,mux/host 广播帧经 futures channel 桥入 GPUI 事件循环——无 loopback HTTP/WS,无序列化往返。UI = 事件投影:GPUI reducer 与 Rust 翻译表(`dsh-core/src/translate.rs`)同仓同源;历史回填与直播共用 `session.history` 分页重放 + `session/subscribed` 基线;计划审批 = `question/requested` 帧接管 composer → `respond` → `question/resolved`。队列/steer:提交 mode=queue|steer,队列瞬态经 `session/queue` 帧整表下发(queued + steering 两种 placement,基线随 subscribed 重推),steer 认领落 `agent/inbox/spliced`(inserted+removed 双 splice,id 与 user/message 同源),`session.updateQueue` 变更 edit/remove/steer;`session.export` 返回原始会话 JSONL。
+`dsh-desktop` 在自身进程内直接构造 `dsh-core` 的 `AppHost`(专任 tokio runtime):同步方法直调、异步方法经 runtime 派发,mux/host 广播帧经 futures channel 桥入 GPUI 事件循环——无 loopback HTTP/WS,无序列化往返。UI = 事件投影:GPUI reducer 与 Rust 翻译表(`dsh-core/src/translate.rs`)同仓同源;历史回填与直播共用 `session.history` 分页重放 + `session/subscribed` 基线;计划审批 = `question/requested` 帧接管 composer → `respond` → `question/resolved`。队列/steer:提交 mode=queue|steer,队列瞬态经 `session/queue` 帧整表下发(queued + steering 两种 placement,基线随 subscribed 重推),steer 认领落 `agent/inbox/spliced`(inserted+removed 双 splice,id 与 user/message 同源),`session.updateQueue` 变更 edit/remove/steer;`session.export` 返回原始会话 JSONL。轨迹台账(`trajectory_page` 读取面)与直播(`trajectory/delta` 帧)同源:宿主槽位驻留增量折叠器(`TrajectoryFolder`,逐事件 feed,驱动 turn sink 单写,attach 暖机 + RPC 读前兜底补喂,seq 连续性自愈),批量折叠即其包装——`trajectory/delta` 载荷 = 变更缓冲(records 按 index、requests 按 number 的 upsert 全量对象 + total + lastSeq),桌面不管面板可见与否直接应用;基线拉取与增量的竞态以「拉取发起时记录增量计数、回包落库时已前进即重拉」收敛。
 
 
 ## 7. 横切概念

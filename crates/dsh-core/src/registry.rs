@@ -289,6 +289,9 @@ struct SlotInner {
     qs: Arc<Mutex<QueueState>>,
     cancel: CancelToken,
     log: Arc<Mutex<EventLog>>,
+    /// 轨迹增量折叠(驻留台账;驱动单写,RPC 只读快照。恢复式锁:
+    /// 后台 panic 不连坐,连续性由 seq 补喂守卫)
+    traj: Mutex<crate::trajectory::TrajectoryFolder>,
     /// 落盘句柄克隆(durable 队列:泵侧 splice 事件的持久化通道;
     /// 与驱动共享同一写者互斥,行完整性不破)
     backend: dsh_host::JsonlBackend,
@@ -949,6 +952,81 @@ fn mode_terminal_frame(
     let ev = target.and_then(|s| l.get(s))?;
     let event = tr.translate(ev)?;
     event_frame(session_id, event)
+}
+
+/// 组 trajectory/delta 帧(records/requests upsert + total + lastSeq;
+/// 桌面按 index/number 落库,lastSeq 供漂移守卫)
+fn trajectory_delta_frame(
+    session_id: &str,
+    changes: &crate::trajectory::TrajectoryChanges,
+    total: u64,
+    last_seq: u64,
+) -> ServerRequest {
+    frame(
+        "trajectory/delta",
+        json!({
+            "sessionId": session_id,
+            "records": changes.records,
+            "requests": changes.requests,
+            "total": total,
+            "lastSeq": last_seq,
+        }),
+    )
+}
+
+/// 直播热路径:喂入刚 COMMITTED 的事件(turn sink 顺序回调,seq 递增),
+/// 有台账变更即广播 delta。锁内只折叠与组帧,mux 发送在锁外
+fn feed_trajectory_delta(
+    session_id: &str,
+    traj: &Mutex<crate::trajectory::TrajectoryFolder>,
+    ev: &EventEnvelope,
+    mux: &broadcast::Sender<ServerRequest>,
+) {
+    let f = {
+        let mut t = traj.lock_recover();
+        if !t.feed(ev) {
+            return;
+        }
+        let changes = t.take_changes();
+        trajectory_delta_frame(session_id, &changes, t.total(), t.last_seq())
+    };
+    let _ = mux.send(f);
+}
+
+/// 补喂兜底:把 folder 缺的日志事件按 seq 喂齐(attach 暖机 / 驱动外
+/// 落档 / RPC 读快照前),有变更即广播 delta。低频路径;先取日志切片
+/// 再锁 folder,不嵌套持锁
+fn sync_trajectory_from_log(
+    session_id: &str,
+    log: &Mutex<EventLog>,
+    traj: &Mutex<crate::trajectory::TrajectoryFolder>,
+    mux: &broadcast::Sender<ServerRequest>,
+) {
+    let last = traj.lock_recover().last_seq();
+    let events: Vec<EventEnvelope> = log
+        .lock_recover()
+        .iter()
+        .filter(|e| e.seq > last)
+        .cloned()
+        .collect();
+    let mut out = Vec::new();
+    {
+        let mut t = traj.lock_recover();
+        for ev in &events {
+            if t.feed(ev) {
+                let changes = t.take_changes();
+                out.push(trajectory_delta_frame(
+                    session_id,
+                    &changes,
+                    t.total(),
+                    t.last_seq(),
+                ));
+            }
+        }
+    }
+    for f in out {
+        let _ = mux.send(f);
+    }
 }
 
 /// 迁移旧布局会话文件到 `~/.dshrs/sessions/<key>/<id>/session.jsonl`
@@ -1816,38 +1894,32 @@ impl AppHost {
     }
 
     /// 轨迹台账 typed 出口(桌面进程内直调;RPC 层走 [`Self::session_trajectory`]
-    /// 的 JSON 序列化)。max_records clamp 1..2000,before_index = 尾窗向前分页
+    /// 的 JSON 序列化)。max_records clamp 1..2000,before_index = 尾窗向前分页。
+    /// 热会话读驻留折叠器快照(免全量重折叠;读前兜底补喂,漏喂自愈),
+    /// 冷会话原样全量折叠
     pub fn trajectory_page(
         &self,
         id: &str,
         max_records: usize,
         before_index: Option<u64>,
     ) -> Result<crate::trajectory::TrajectoryPage, RpcError> {
-        let log = self.session_log(id)?;
-        let mut data = crate::trajectory::fold_trajectory(&log);
-        // provider 方言后填(fold 是纯函数,不接触装配态)
-        for req in &mut data.requests {
-            if req.provider.is_empty() {
-                req.provider = self.base.dialect.clone();
+        if let Some(slot) = self.get_slot(id)
+            && let Some(inner) = slot.inner.get()
+        {
+            sync_trajectory_from_log(id, &inner.log, &inner.traj, &self.mux);
+            let mut page = inner
+                .traj
+                .lock_recover()
+                .snapshot(max_records, before_index);
+            for req in &mut page.requests {
+                if req.provider.is_empty() {
+                    req.provider = self.base.dialect.clone();
+                }
             }
+            return Ok(page);
         }
-        let total = data.records.len() as u64;
-        let max_records = max_records.clamp(1, 2000);
-        let mut records = data.records;
-        if let Some(before) = before_index {
-            records.retain(|r| r.index < before);
-        }
-        let has_older = records.len() > max_records;
-        if has_older {
-            let start = records.len() - max_records;
-            records.drain(..start);
-        }
-        Ok(crate::trajectory::TrajectoryPage {
-            records,
-            requests: data.requests,
-            has_older,
-            total,
-        })
+        let data = crate::trajectory::fold_trajectory(&self.session_log(id)?);
+        Ok(crate::trajectory::page_of(data, max_records, before_index))
     }
 
     /// session.stats:轮/步/LLM 与工具时长/首 token/速率/缓存/tokens/上下文占用。
@@ -3786,6 +3858,7 @@ impl AppHost {
             qs,
             cancel: cancel.clone(),
             log: session_log,
+            traj: Mutex::new(crate::trajectory::TrajectoryFolder::new()),
             backend: backend_shared,
         };
         if slot.inner.set(inner).is_err() {
@@ -3811,6 +3884,9 @@ impl AppHost {
         if !queue_items(inner0).is_empty() {
             let _ = self.mux.send(queue_frame(id, inner0));
         }
+        // 轨迹暖机:装配即把既有日志喂入驻留折叠器(此后驱动 sink 直播
+        // 增量;漏喂由 RPC 读快照前的兜底 sync 自愈)
+        sync_trajectory_from_log(id, &inner0.log, &inner0.traj, &self.mux);
 
         tokio::spawn(pump_loop(Arc::downgrade(self), slot.clone(), queue_rx));
         tokio::spawn(driver_loop(
@@ -6742,6 +6818,8 @@ async fn handle_driver_cmd(
             }
         }
     }
+    // 驱动命令落档的事件(压缩 summary 等)补喂轨迹折叠器(有变更即广播)
+    sync_trajectory_from_log(session_id, &inner.log, &inner.traj, mux);
 }
 
 /// 驱动任务:拥有会话,串行驱动 turn。启动时检查待审计划(重启恢复);
@@ -7127,6 +7205,9 @@ async fn driver_loop(
                     {
                         let _ = mux.send(f);
                     }
+                    // 轨迹增量:落档即折叠出账,变更即推 delta(亚回合粒度;
+                    // 工具/消息/请求在轨迹面板落档即现)
+                    feed_trajectory_delta(&sid, &inner.traj, ev, &mux);
                     // 统计相关事件落档即推 session/stats(事件驱动,替代
                     // 客户端轮询;chunk 等高频非统计事件不推)。构成三段
                     // 为字符启发式线性扫,随推随算保鲜
@@ -8502,6 +8583,103 @@ mod tests {
         let head = host.trajectory_page(&id, 2000, Some(1)).expect("首页");
         assert!(!head.has_older);
         assert!(head.records.iter().all(|r| r.index < 1));
+    }
+
+    /// 轨迹 delta 直播:turn 内工具调用落档即出账(亚回合粒度;tool
+    /// 记录在 result 配对后才出现在流中),末态热路径快照 ≡ 冷路径
+    /// 全量折叠(同一折叠内核的接线锁)
+    #[tokio::test]
+    async fn trajectory_delta_frames_stream_and_converge_to_fold() {
+        let host = temp_host("traj-delta");
+        // 一步工具调用(fake 工具面无此工具 → isError result,配对语义
+        // 不依赖具体工具)+ 一步收尾
+        host.set_fake_script(vec![
+            vec![LlmEvent::AssistantMessage(json!({
+                "content": "",
+                "tool_calls": [ { "name": "no_such_tool", "arguments": { "p": 1 } } ],
+            }))],
+            vec![LlmEvent::AssistantMessage(json!({ "content": "完成" }))],
+        ]);
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+        host.prompt(&id, &[json!({ "type": "text", "text": "hi" })], "queue")
+            .await
+            .unwrap();
+        // 逐帧收:trajectory/delta 与 turn/end 同流,turn/end 后稍等
+        // 排空(sink 同事件先 session/event 后 delta)
+        let mut deltas: Vec<Value> = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "turn 未在预算内结束");
+            match mux.try_recv() {
+                Ok(f) => {
+                    if f.method == "trajectory/delta" {
+                        deltas.push(f.payload.clone());
+                    }
+                    if f.method == "session/event"
+                        && f.payload["event"]["type"] == "turn/end"
+                        && f.payload["sessionId"].as_str() == Some(id.as_str())
+                    {
+                        break;
+                    }
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                }
+                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(broadcast::error::TryRecvError::Closed) => panic!("mux 关闭"),
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        while let Ok(f) = mux.try_recv() {
+            if f.method == "trajectory/delta" {
+                deltas.push(f.payload.clone());
+            }
+        }
+        assert!(!deltas.is_empty(), "应有轨迹增量帧");
+        assert!(
+            deltas
+                .iter()
+                .all(|p| p["sessionId"].as_str() == Some(id.as_str())),
+            "帧必须标会话"
+        );
+        // 配对语义:流中的 tool 记录已带结果(失败工具);消息与请求在列
+        let records: Vec<Value> = deltas
+            .iter()
+            .flat_map(|p| p["records"].as_array().cloned().unwrap_or_default())
+            .collect();
+        let tool = records
+            .iter()
+            .find(|r| r["kind"] == "tool")
+            .expect("tool 记录应入流");
+        assert_eq!(tool["isError"], true, "未知工具失败态");
+        assert!(tool["result"].is_string(), "配对结果入流");
+        assert!(records.iter().any(|r| r["kind"] == "user"), "用户消息入流");
+        let requests: Vec<Value> = deltas
+            .iter()
+            .flat_map(|p| p["requests"].as_array().cloned().unwrap_or_default())
+            .collect();
+        assert!(
+            requests.iter().any(|r| r["status"] == "complete"),
+            "完成请求入流"
+        );
+
+        // 末态收敛:热路径(驻留快照)≡ 冷路径(全量折叠 + 同规 provider 后填)
+        let hot = host.trajectory_page(&id, 2000, None).expect("热页");
+        let mut cold = crate::trajectory::fold_trajectory(&host.session_log(&id).unwrap());
+        for req in &mut cold.requests {
+            if req.provider.is_empty() {
+                req.provider = host.base.dialect.clone();
+            }
+        }
+        assert_eq!(hot.records, cold.records, "末态 records 一致");
+        assert_eq!(hot.requests, cold.requests, "末态 requests 一致");
+        assert_eq!(hot.total as usize, hot.records.len());
+        // provider 后填只发生在热页(cold fold 是纯函数)
+        assert!(
+            hot.requests.iter().all(|r| !r.provider.is_empty()),
+            "热页 provider 方言后填"
+        );
     }
 
     /// 重开会话:日志含 agent/inbox/spliced(steer 认领)时新宿主必须能
