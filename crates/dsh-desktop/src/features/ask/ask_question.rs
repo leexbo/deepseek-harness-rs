@@ -63,6 +63,11 @@ pub fn render(
     store.update(cx, |st, cx| st.sync_ask_input(&call_id, index, window, cx));
     let multi = q.multi_select.unwrap_or(false);
     let options = q.options.clone().unwrap_or_default();
+    // 主按钮情境化(照源):非末页 = 「下一题」,末页 = 「提交」;
+    // 当前题未答时禁用(源 primary disabled = !answered)
+    let is_last = index + 1 >= total;
+    let answered_current = !selected.is_empty() || !custom.trim().is_empty();
+    let error_text = store.read(cx).ask.ask_state.as_ref().and_then(|s| s.error);
 
     let toggle = store.clone();
     let idx = index;
@@ -154,6 +159,8 @@ pub fn render(
     let cancel = store.clone();
     let prev = store.clone();
     let next = store.clone();
+    let skip = store.clone();
+    let advance = store.clone();
     Some(
         div()
             .id("ask-question")
@@ -265,6 +272,10 @@ pub fn render(
                             .unwrap_or_else(|| div().child(custom.clone()).into_any_element()),
                     ),
             )
+            // 卡内错误行(源 error.unanswered/incomplete;作答交互即清)
+            .when_some(error_text, |el, t| {
+                el.child(div().text_size(px(11.)).text_color(theme::WARN()).child(t))
+            })
             .child(
                 div()
                     .flex()
@@ -303,23 +314,46 @@ pub fn render(
                                 )),
                         )
                     })
+                    // 右侧动作组:跳过(显式跳过本题;源恒可点)+ 主按钮
+                    // (非末页「下一题」/ 末页「提交」;当前题未答 = 禁用态)
                     .child(
                         div()
-                            .id("ask-submit")
                             .flex()
-                            .h(px(28.))
                             .items_center()
-                            .justify_center()
-                            .rounded(px(14.))
-                            .bg(theme::BRAND())
-                            .px(px(16.))
-                            .cursor_pointer()
-                            .text_size(px(13.))
-                            .text_color(gpui_kit::white())
-                            .on_click(move |_, _, cx| {
-                                submit.update(cx, |st, cx| st.submit_ask(cx));
-                            })
-                            .child("提交"),
+                            .gap(px(8.))
+                            .child(nav_button("ask-skip", "跳过", true, move |_, _, cx| {
+                                skip.update(cx, |st, cx| st.skip_ask(cx));
+                            }))
+                            .child(
+                                div()
+                                    .id("ask-primary")
+                                    .debug_selector(|| "ask-primary".to_string())
+                                    .flex()
+                                    .h(px(28.))
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(14.))
+                                    .px(px(16.))
+                                    .text_size(px(13.))
+                                    .when(answered_current, |el| {
+                                        el.bg(theme::BRAND())
+                                            .cursor_pointer()
+                                            .text_color(gpui_kit::white())
+                                            .on_click(move |_, _, cx| {
+                                                if is_last {
+                                                    submit.update(cx, |st, cx| st.submit_ask(cx));
+                                                } else {
+                                                    advance.update(cx, |st, cx| st.advance_ask(cx));
+                                                }
+                                            })
+                                    })
+                                    .when(!answered_current, |el| {
+                                        el.border_1()
+                                            .border_color(theme::BORDER())
+                                            .text_color(theme::CAPTION())
+                                    })
+                                    .child(if is_last { "提交" } else { "下一题" }),
+                            ),
                     ),
             ),
     )

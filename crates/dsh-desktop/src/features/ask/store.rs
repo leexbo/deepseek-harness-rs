@@ -18,6 +18,18 @@ pub(crate) struct AskUiState {
     pub selected: Vec<Vec<String>>,
     /// 每题自定义文本(并行下标)
     pub custom: Vec<String>,
+    /// 每题显式跳过标记(源 skip:提交形状 = 空 selected;完成 = 作答或跳过)
+    pub skipped: Vec<bool>,
+    /// 卡内错误行(源 error.unanswered/incomplete;任意作答交互清空)
+    pub error: Option<&'static str>,
+}
+
+impl AskUiState {
+    /// 源 answered:选中非空或自定义文本非空白(自定义单独算作答)
+    fn answered(&self, i: usize) -> bool {
+        self.selected.get(i).is_some_and(|s| !s.is_empty())
+            || self.custom.get(i).is_some_and(|c| !c.trim().is_empty())
+    }
 }
 
 /// 问答/计划审批功能切片状态(问答卡交互态 + 「其他」输入)。
@@ -229,6 +241,8 @@ impl AppStore {
                 index: 0,
                 selected: vec![Vec::new(); ask.questions.len()],
                 custom: vec![String::new(); ask.questions.len()],
+                skipped: vec![false; ask.questions.len()],
+                error: None,
             });
         }
     }
@@ -263,6 +277,11 @@ impl AppStore {
                 c.clear();
             }
         }
+        // 作答交互:清跳过标记与错误行(源 choose 置 skipped=false)
+        if let Some(flag) = state.skipped.get_mut(i) {
+            *flag = false;
+        }
+        state.error = None;
         cx.notify();
     }
 
@@ -287,6 +306,13 @@ impl AppStore {
             }
             if let Some(c) = state.custom.get_mut(state.index) {
                 *c = text.to_string();
+            }
+            // 源 draftCustom:任何输入交互清跳过标记
+            if let Some(flag) = state.skipped.get_mut(state.index) {
+                *flag = false;
+            }
+            if !text.is_empty() {
+                state.error = None;
             }
         }
         cx.notify();
@@ -353,8 +379,8 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 跳过本题(下一题;最后一题则视为空答提交)
-    #[allow(dead_code)]
+    /// 跳过本题(源 skipQuestion:清空该题草稿、标记跳过、前进;
+    /// 最后一题跳过 = 立即整批提交)
     pub fn skip_ask(&mut self, cx: &mut Context<Self>) {
         self.ensure_ask_state();
         let total = self
@@ -363,18 +389,66 @@ impl AppStore {
             .as_ref()
             .map(|a| a.questions.len())
             .unwrap_or(0);
-        let idx = self.ask.ask_state.as_ref().map(|s| s.index).unwrap_or(0);
-        if idx + 1 < total {
-            self.set_ask_index(idx + 1, cx);
+        let Some(state) = self.ask.ask_state.as_mut() else {
+            return;
+        };
+        let i = state.index;
+        if let Some(cell) = state.selected.get_mut(i) {
+            cell.clear();
+        }
+        if let Some(c) = state.custom.get_mut(i) {
+            c.clear();
+        }
+        if let Some(flag) = state.skipped.get_mut(i) {
+            *flag = true;
+        }
+        state.error = None;
+        if i + 1 < total {
+            let idx = i + 1;
+            self.set_ask_index(idx, cx);
         } else {
-            // 最后一题:收集答案提交(跳过题为空 selected)
             self.submit_ask(cx);
         }
     }
 
-    /// 提交整组(收集每题的 selected/custom;空答也提交——源跳过语义)
+    /// 主按钮非末页(源 continueFlow):当前题未答 → 卡内报错不翻页;
+    /// 已答 → 前进下一题
+    pub fn advance_ask(&mut self, cx: &mut Context<Self>) {
+        self.ensure_ask_state();
+        let Some(state) = self.ask.ask_state.as_mut() else {
+            return;
+        };
+        if !state.answered(state.index) {
+            state.error = Some("请选择一个选项或填写自定义答案。");
+            cx.notify();
+            return;
+        }
+        state.error = None;
+        let idx = state.index + 1;
+        self.set_ask_index(idx, cx);
+    }
+
+    /// 提交整组(源 submitDrafts 门控:每题完成——作答或显式跳过——才
+    /// 提交;有缺口 → 跳到第一道缺口题报错,绝不静默代答。跳过题提交
+    /// 形状 = 空 selected,与源一致)
     pub fn submit_ask(&mut self, cx: &mut Context<Self>) {
         self.ensure_ask_state();
+        {
+            let Some(ask) = &self.state.pending_ask else {
+                return;
+            };
+            let Some(state) = self.ask.ask_state.as_mut() else {
+                return;
+            };
+            if let Some(missing) =
+                (0..ask.questions.len()).find(|&i| !state.answered(i) && !state.skipped[i])
+            {
+                state.index = missing;
+                state.error = Some("请先完成这道问题。");
+                cx.notify();
+                return;
+            }
+        }
         let answers: Vec<serde_json::Value> = {
             let Some(ask) = &self.state.pending_ask else {
                 return;
@@ -388,6 +462,8 @@ impl AppStore {
                     index: 0,
                     selected: vec![Vec::new(); ask.questions.len()],
                     custom: vec![String::new(); ask.questions.len()],
+                    skipped: vec![false; ask.questions.len()],
+                    error: None,
                 });
             ask.questions
                 .iter()
@@ -395,7 +471,12 @@ impl AppStore {
                 .map(|(i, q)| {
                     let mut item = serde_json::Map::new();
                     item.insert("id".into(), serde_json::json!(q.id));
-                    let selected = state.selected.get(i).cloned().unwrap_or_default();
+                    // 跳过题强制空 selected(源:wire 无 skipped 标记)
+                    let selected = if state.skipped.get(i).copied().unwrap_or(false) {
+                        Vec::new()
+                    } else {
+                        state.selected.get(i).cloned().unwrap_or_default()
+                    };
                     item.insert("selected".into(), serde_json::json!(selected));
                     let custom = state.custom.get(i).cloned().unwrap_or_default();
                     if !custom.is_empty() {

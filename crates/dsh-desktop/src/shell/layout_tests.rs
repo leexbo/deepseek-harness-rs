@@ -3964,6 +3964,111 @@ fn ask_custom_input_not_rewritten_each_frame(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 问答卡多页门控(照源 QuestionComposer):主按钮情境化——非末页
+/// 「下一题」(当前题未答 → 卡内报错不翻页),末页才是「提交」;提交
+/// 要求每题完成(作答或显式跳过),有缺口 → 跳回缺口题报错,绝不静默
+/// 代答。回归锁:旧实现任意页恒显可点的「提交」,未作答的后续题被
+/// 静默按空答提交(用户还没看到的问题就交了白卷)。
+#[gpui_kit::test]
+fn ask_card_multi_page_gating(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "ask-pager");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+    };
+    let sid = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("自动新建会话应在场");
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.entry(id).or_default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:seed".into(),
+                text: "先聊着".into(),
+                images: vec![],
+                files: Vec::new(),
+            });
+        });
+    });
+    let questions: Vec<serde_json::Value> = serde_json::from_value(serde_json::json!([
+        { "id": "q1", "question": "一?", "multi_select": false, "options": [ { "label": "a1" }, { "label": "a2" } ] },
+        { "id": "q2", "question": "二?", "multi_select": false, "options": [ { "label": "b1" } ] },
+        { "id": "q3", "question": "三?", "multi_select": false, "options": [ { "label": "c1" } ] },
+    ]))
+    .unwrap();
+    cx.update(|app| store.update(app, |st, cx| st.ask_questions_json(&sid, questions, cx)));
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        cx.run_until_parked();
+        if wcx.debug_bounds("ask-question").is_some() {
+            break;
+        }
+    }
+    assert!(wcx.debug_bounds("ask-question").is_some(), "问答卡未弹出");
+    let state = |cx: &mut TestAppContext| {
+        cx.update(|app| {
+            store
+                .read(app)
+                .ask
+                .ask_state
+                .as_ref()
+                .map(|s| (s.index, s.error.map(str::to_string), s.skipped.clone()))
+        })
+        .expect("ask_state 应在场")
+    };
+
+    // 第 1 页:主按钮在当前题未答时为禁用态(照源 disabled)——点击
+    // 惰性,不得提交(回归锁:旧「提交」任意页恒可点)
+    click_sel(&mut wcx, "ask-primary");
+    redraw(cx, &mut wcx);
+    cx.update(|app| {
+        assert!(
+            store.read(app).state.pending_ask.is_some(),
+            "未答时主按钮不得提交"
+        );
+    });
+
+    // 作答 q1 → 主按钮(下一题)翻到第 2 页
+    click_sel(&mut wcx, "ask-opt-a1");
+    redraw(cx, &mut wcx);
+    click_sel(&mut wcx, "ask-primary");
+    redraw(cx, &mut wcx);
+    let (idx, err, _) = state(cx);
+    assert_eq!(idx, 1, "已答应翻到第 2 题");
+    assert!(err.is_none());
+
+    // pager 自由翻到末页;作答 q3 后点「提交」→ q2 缺席,跳回 q2 报错
+    // (绝不静默代答)
+    click_sel(&mut wcx, "ask-next");
+    redraw(cx, &mut wcx);
+    let (idx, _, _) = state(cx);
+    assert_eq!(idx, 2, "pager 应到末页");
+    click_sel(&mut wcx, "ask-opt-c1");
+    redraw(cx, &mut wcx);
+    click_sel(&mut wcx, "ask-primary");
+    redraw(cx, &mut wcx);
+    let (idx, err, _) = state(cx);
+    assert_eq!(idx, 1, "提交应跳回第一道缺口题");
+    assert_eq!(err.as_deref(), Some("请先完成这道问题。"));
+
+    // 显式跳过 q2 → 前进末页;提交成功,整卡收口
+    click_sel(&mut wcx, "ask-skip");
+    redraw(cx, &mut wcx);
+    let (idx, _, skipped) = state(cx);
+    assert_eq!(idx, 2, "跳过应前进到末页");
+    assert!(skipped[1], "跳过应标记 q2");
+    click_sel(&mut wcx, "ask-primary");
+    redraw(cx, &mut wcx);
+    cx.update(|app| {
+        assert!(
+            store.read(app).state.pending_ask.is_none(),
+            "全部题完成后提交应收卡"
+        );
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 问答卡选项含长 ASCII 词元(不可断行)时不得撑破卡片:内容列
 /// min_w(0) 让文本换行,选项行右缘不超出卡右缘(此前 flex item
 /// 缺省最小宽 = max-content,整卡溢出弹窗)
