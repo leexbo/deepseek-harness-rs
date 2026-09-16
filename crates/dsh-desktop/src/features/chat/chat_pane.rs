@@ -92,6 +92,21 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
             })
     };
 
+    // 手动压缩状态行(/compact 受理 → 终局事件清位;瞬态不入节点):
+    // 排队(回合进行中受理,驱动等 turn 间隙)与进行两态
+    let (compact_queued, compact_running) = {
+        let st = store.read(cx);
+        match st
+            .state
+            .current_id
+            .as_deref()
+            .and_then(|id| st.state.chats.get(id))
+        {
+            Some(c) => (c.compact_queued, c.compact_running),
+            None => (false, false),
+        }
+    };
+
     // 逐项闭包持 store 实体:虚拟化下只有可视(+overdraw)项被
     // 渲染,每项单次 read 借用(与旧全量 to_vec 相比,流式重绘成本
     // 恒定于可视项数)。列 gap(16)由每项包裹容器 py(8) 承担。
@@ -275,6 +290,28 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 // 包裹层承担,见上方 justify_center)
                 .child(list.h_full().w_full().py(px(8.))),
         )
+        .when(compact_running || compact_queued, |el| {
+            // 槽位 padding 与 turn-status 同款(与列表容器同一中心线);
+            // 排队态静态,进行态 shimmer
+            let (message, selector) = if compact_running {
+                ("正在压缩…", "compact-running")
+            } else {
+                ("已排队,回合结束后压缩", "compact-queued")
+            };
+            el.child(
+                div()
+                    .pl(px(H_PAD + NAV_GUTTER_W))
+                    .pr(px(H_PAD + SCROLLBAR_GUTTER_W))
+                    .child(
+                        div()
+                            .mx_auto()
+                            .w(col_w)
+                            .px(px(4.))
+                            .pb(px(8.))
+                            .child(compact_row(message, compact_running, selector)),
+                    ),
+            )
+        })
         .when_some(run_status, |el, (dur, _sid)| {
             el.child(
                 div()
@@ -743,9 +780,63 @@ fn context_block(
         .into_any_element()
 }
 
-/// 压缩标记行(compaction/summary;照源 CompactionItem zh 文案):
-/// 折叠态 = Archive 图标 + 统计行(已压缩 N 条历史记录(约 X tokens),
-/// 无统计退「上下文已压缩」);点击展开渲染摘要全文(markdown)
+/// 压缩状态行(照源 GenericCommandCard 行格式):终端形图标 + `compact`
+/// 标题 + 2px 圆点分隔 + 消息,全部中性色(源仅错误态标红——红色走
+/// notice())。running = 透明度呼吸 shimmer(照源扫光态);排队态静态。
+/// 用于:进行中(compact-running)/ 排队(compact-queued)/ 空反馈
+/// (compact-row,kind=empty 照显宿主 settlement 原文)。
+fn compact_row(message: &str, running: bool, selector: &'static str) -> AnyElement {
+    let row = div()
+        .debug_selector(move || selector.to_string())
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .h(px(24.))
+        .child(fixed(IconName::SquareTerminal, 14.).text_color(theme::CAPTION()))
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(13.))
+                .text_color(theme::LABEL())
+                .child("compact"),
+        )
+        // 2px 圆点分隔(照源 .separator:label-caption 色)
+        .child(
+            div()
+                .flex_shrink_0()
+                .size(px(2.))
+                .rounded_full()
+                .bg(theme::CAPTION()),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex_1()
+                .truncate()
+                .text_size(px(13.))
+                .text_color(theme::CAPTION())
+                .child(message.to_string()),
+        );
+    if running {
+        row.with_animation(
+            "dsh-compact-running",
+            Animation::new(std::time::Duration::from_millis(1800))
+                .repeat()
+                .with_easing(gpui_kit::pulsating_between(0.45, 0.95)),
+            |el, delta| el.opacity(delta),
+        )
+        .into_any_element()
+    } else {
+        row.into_any_element()
+    }
+}
+
+/// 压缩标记行(compaction/summary;照源 CompactionItem quiet 行样式):
+/// 折叠态 = 终端图标 + `compact` + 圆点分隔 + 统计消息(hover 才显
+/// chevron),点击展开渲染摘要全文(markdown);展开态 chevron 常显。
+/// 消息文案 zh 逐字照源 locale:有统计 = 已压缩 N 条历史记录(约
+/// X tokens)(全角括号);有摘要无统计 = 点击查看压缩摘要;都无 =
+/// 压缩摘要不可用。
 fn compaction_block(
     store: &Entity<AppStore>,
     open_compactions: &std::collections::HashSet<String>,
@@ -759,33 +850,73 @@ fn compaction_block(
     let s = store.clone();
     let key_owned = key.to_string();
     let click_key = key.to_string();
-    // zh 逐字照源 locale:completed='已压缩 {items} 条历史记录(约
-    // {tokens} tokens)';title='上下文已压缩'
-    let title = match (items, tokens) {
-        (Some(n), Some(t)) => format!("已压缩 {n} 条历史记录(约 {t} tokens)"),
-        _ => "上下文已压缩".to_string(),
+    let message = match (items, tokens) {
+        (Some(n), Some(t)) => format!("已压缩 {n} 条历史记录（约 {t} tokens）"),
+        _ if !summary.is_empty() => "点击查看压缩摘要".to_string(),
+        _ => "压缩摘要不可用".to_string(),
     };
+    let sel = format!("compact-done-{ix}");
+    let grp = format!("cpt-group-{ix}");
     div()
         .id(("compaction", ix))
+        .debug_selector(move || sel.clone())
+        .group(grp.clone())
         .v_flex()
-        .rounded(px(8.))
-        .bg(theme::LAYER())
-        .px(px(10.))
         .cursor_pointer()
-        .when(open, |el| el.py(px(8.)))
-        .when(!open, |el| el.py(px(6.)))
-        .child(collapse_row_header(
-            fixed(DshIcon::Archive, 14.).into_any_element(),
-            &title,
-            None,
-            open,
-        ))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .h(px(24.))
+                .child(fixed(IconName::SquareTerminal, 14.).text_color(theme::CAPTION()))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(13.))
+                        .text_color(theme::LABEL())
+                        .child("compact"),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .size(px(2.))
+                        .rounded_full()
+                        .bg(theme::CAPTION()),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .flex_1()
+                        .truncate()
+                        .text_size(px(13.))
+                        .text_color(theme::CAPTION())
+                        .child(message),
+                )
+                // 折叠态 hover 才显 chevron(照源 hover/focus 淡入);
+                // 展开态常显向下
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .when(open, |el| {
+                            el.child(fixed(IconName::ChevronDown, 12.).text_color(theme::CAPTION()))
+                        })
+                        .when(!open, |el| {
+                            el.opacity(0.)
+                                .group_hover(grp, |style| style.opacity(1.))
+                                .child(
+                                    fixed(IconName::ChevronRight, 12.).text_color(theme::CAPTION()),
+                                )
+                        }),
+                ),
+        )
         .when(open, |el| {
             let order = crate::kits::markdown::CHAT_ORDER_BASE
                 + (1 + ix as u64) * crate::kits::markdown::ORDER_STRIDE;
             el.child(
                 div()
                     .mt(px(4.))
+                    .pl(px(20.))
                     .child(crate::kits::markdown::render_clickable(
                         &key_owned, summary, None, order,
                     )),
@@ -795,7 +926,6 @@ fn compaction_block(
             let key = click_key.clone();
             s.update(cx, |st, cx| st.toggle_compaction(&key, cx));
         })
-        .into_any_element()
 }
 
 /// 子代理通知卡:Bot 图标+状态标题+折叠摘要
@@ -1111,6 +1241,9 @@ fn render_node(
             tokens,
         } => compaction_block(store, open_compactions, ix, key, summary, *items, *tokens)
             .into_any_element(),
+        ChatNode::CompactStatus { message, .. } => {
+            compact_row(message, false, "compact-row").into_any_element()
+        }
         ChatNode::Plan { key, plan, status } => {
             plan_archive_card(store, cx, ix, key, plan, *status).into_any_element()
         }

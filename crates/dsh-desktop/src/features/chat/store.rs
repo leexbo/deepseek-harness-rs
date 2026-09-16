@@ -1684,10 +1684,20 @@ impl AppStore {
                             }
                         }
                     } else if v["kind"].as_str() == Some("compact") {
-                        // 受理即通告;完成/失败由 compaction/summary|error
-                        // 事件进聊天流(标记行/通告)
+                        // 受理即点亮状态行;回合进行中 = 排队态(驱动仅在
+                        // turn 间隙取压缩任务),turn/end 事件晋升为进行态,
+                        // 终局事件(compaction/summary|error)清位
                         store.update(cx, |s, cx| {
-                            s.push_local_notice("正在压缩…", cx);
+                            let turn_running = s.is_running(&sid);
+                            let chat = s.state.chats.entry(sid.clone()).or_default();
+                            if turn_running {
+                                chat.compact_queued = true;
+                            } else {
+                                chat.compact_running = true;
+                            }
+                            s.chat.pinned = true;
+                            s.chat.chat_version += 1;
+                            cx.notify();
                         });
                     } else if v.get("mode").is_some() || v.get("accepted").is_some() {
                         // 模式/开关切换:状态由 chip 与界面体现,不进聊天区

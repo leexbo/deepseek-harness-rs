@@ -116,6 +116,14 @@ pub enum ChatNode {
         /// 折叠前缀估算 token
         tokens: Option<u64>,
     },
+    /// 压缩空反馈行(compaction/error kind=empty;照源原样显示
+    /// 宿主英文 settlement 文本,中性别红)
+    CompactStatus {
+        /// 稳定 key(cpt-empty:<seq>)
+        key: String,
+        /// 宿主 settlement 文本(如 "No compactable history yet.")
+        message: String,
+    },
     /// 计划归档卡(plan/submitted 落档;批准/取消仅更新状态)
     Plan {
         /// 稳定 key(plan:<seq>)
@@ -165,6 +173,7 @@ impl ChatNode {
             | ChatNode::Context { key, .. }
             | ChatNode::Notice { key, .. }
             | ChatNode::Compaction { key, .. }
+            | ChatNode::CompactStatus { key, .. }
             | ChatNode::Plan { key, .. }
             | ChatNode::Retry { key, .. } => key,
         }
@@ -253,6 +262,12 @@ pub struct ChatState {
     pub queue: Vec<QueueEntry>,
     /// 计划模式(plan/mode)
     pub plan_mode: bool,
+    /// 手动压缩进行中(/compact RPC 受理置位;compaction/summary|error
+    /// 终局事件清位。瞬态不入节点:重放不重现进行态,只现终局行)
+    pub compact_running: bool,
+    /// 手动压缩排队中(回合进行时受理;驱动仅在 turn 间隙取压缩任务,
+    /// turn/end 事件晋升为进行态)
+    pub compact_queued: bool,
     /// 当前 turn 已产出的 diff/edit 路径(去重保序;turn/end 挂 TurnTail 产物行)
     pub turn_deliverables: Vec<String>,
     /// 节点出生时刻(入场动画年龄门控:超龄不包动画,gpui list 虚拟化
@@ -288,6 +303,8 @@ impl ChatState {
         }
         self.merging = false;
         self.running = false;
+        self.compact_running = false;
+        self.compact_queued = false;
         // 清孤儿 born(被折叠掉的头窗节点;防跨会话累积)
         let live: std::collections::HashSet<&str> = self.nodes.iter().map(ChatNode::key).collect();
         self.node_born.retain(|k, _| live.contains(k.as_str()));
@@ -306,6 +323,11 @@ impl ChatState {
             }
             "turn/end" => {
                 self.running = false;
+                // 排队中的压缩任务在回合结束后被驱动取走 → 晋升进行态
+                if self.compact_queued {
+                    self.compact_queued = false;
+                    self.compact_running = true;
+                }
                 let kind = ev.data["reason"]["kind"].as_str();
                 let aborted = kind == Some("aborted");
                 // 取消收尾:等待退避中的重试行翻转「已取消」
@@ -552,8 +574,10 @@ impl ChatState {
                 });
             }
             // 压缩标记行(历史折叠落档;照源 CompactionItem:标记行不
-            // 替换被折叠的转写行,展开看摘要)
+            // 替换被折叠的转写行,展开看摘要)。终局清进行/排队位
             "compaction/summary" => {
+                self.compact_running = false;
+                self.compact_queued = false;
                 self.nodes.push(ChatNode::Compaction {
                     key: format!("cpt:{}", ev.seq),
                     summary: ev.data["summary"].as_str().unwrap_or_default().to_string(),
@@ -561,13 +585,24 @@ impl ChatState {
                     tokens: ev.data["shadowedTokens"].as_u64(),
                 });
             }
-            // 手动压缩失败(留档通告;None=无可压缩 的空反馈同路)
+            // 压缩终局失败/空(kind 区分:empty=无历史可压 → 中性状态行
+            // 照显宿主 settlement 文本(照源英文原文);error=真实失败 →
+            // 红色告警行,文本=消息原文(对齐源错误态直显 settlement))
             "compaction/error" => {
+                self.compact_running = false;
+                self.compact_queued = false;
                 let msg = ev.data["message"].as_str().unwrap_or("未知错误");
-                self.push_node(ChatNode::Notice {
-                    key: format!("cpt-err:{}", ev.seq),
-                    text: format!("压缩:{msg}"),
-                });
+                if ev.data["kind"].as_str() == Some("empty") {
+                    self.push_node(ChatNode::CompactStatus {
+                        key: format!("cpt-empty:{}", ev.seq),
+                        message: msg.to_string(),
+                    });
+                } else {
+                    self.push_node(ChatNode::Notice {
+                        key: format!("cpt-err:{}", ev.seq),
+                        text: msg.to_string(),
+                    });
+                }
             }
             "plan/approved" | "plan/declined" | "plan/cancelled" => {
                 let status = match ev.ty.as_str() {
@@ -1264,12 +1299,17 @@ mod tests {
     /// Notice 通告(手动压缩失败/空反馈)
     #[test]
     fn compaction_events_project_marker_and_notice() {
-        let mut st = ChatState::default();
+        // 进行位由 /compact 受理置位(本地),终局事件清位
+        let mut st = ChatState {
+            compact_running: true,
+            ..Default::default()
+        };
         st.apply(&ev(
             "compaction/summary",
             2,
             json!({ "summary": "ckpt body", "items": 5, "shadowedTokens": 1234 }),
         ));
+        assert!(!st.compact_running, "summary 终局应清进行位");
         match &st.nodes[0] {
             ChatNode::Compaction {
                 key,
@@ -1284,18 +1324,59 @@ mod tests {
             }
             other => panic!("expected compaction marker, got {other:?}"),
         }
+        // kind=empty → 中性状态行,照显宿主 settlement 原文(照源英文)
+        st.compact_running = true;
         st.apply(&ev(
             "compaction/error",
             3,
-            json!({ "message": "暂无可压缩的历史" }),
+            json!({ "kind": "empty", "message": "No compactable history yet." }),
         ));
+        assert!(!st.compact_running, "empty 终局应清进行位");
         match &st.nodes[1] {
+            ChatNode::CompactStatus { key, message } => {
+                assert_eq!(key, "cpt-empty:3");
+                assert_eq!(message, "No compactable history yet.");
+            }
+            other => panic!("expected compact status, got {other:?}"),
+        }
+        // kind=error(真实失败)→ 红色通告,文本 = 消息原文(无「压缩:」前缀)
+        st.apply(&ev(
+            "compaction/error",
+            4,
+            json!({ "kind": "error", "message": "boom" }),
+        ));
+        match &st.nodes[2] {
             ChatNode::Notice { key, text } => {
-                assert_eq!(key, "cpt-err:3");
-                assert!(text.contains("暂无可压缩的历史"), "{text}");
+                assert_eq!(key, "cpt-err:4");
+                assert_eq!(text, "boom");
             }
             other => panic!("expected notice, got {other:?}"),
         }
+        // 旧日志无 kind(向后兼容):视作真实失败走红色通告
+        st.apply(&ev("compaction/error", 5, json!({ "message": "legacy" })));
+        match &st.nodes[3] {
+            ChatNode::Notice { text, .. } => assert_eq!(text, "legacy"),
+            other => panic!("expected notice, got {other:?}"),
+        }
+    }
+
+    /// 排队中的压缩任务在回合结束后晋升为进行态(turn/end;驱动仅在
+    /// turn 间隙取压缩任务),终局事件清位
+    #[test]
+    fn compact_queued_promotes_on_turn_end() {
+        let mut st = ChatState {
+            compact_queued: true,
+            ..Default::default()
+        };
+        st.apply(&ev("turn/end", 1, json!({ "reason": {} })));
+        assert!(!st.compact_queued, "回合结束应清排队位");
+        assert!(st.compact_running, "排队应晋升为进行态");
+        st.apply(&ev(
+            "compaction/error",
+            2,
+            json!({ "kind": "empty", "message": "No compactable history yet." }),
+        ));
+        assert!(!st.compact_running, "终局事件应清进行位");
     }
 
     /// 错误终止的回合:Notice 通告替代收尾行,running 复位

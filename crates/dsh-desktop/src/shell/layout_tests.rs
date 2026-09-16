@@ -6227,6 +6227,123 @@ fn collapsed_turn_has_no_gap_before_notice(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 压缩状态行三态(照源 quiet 行,替红色告警):进行中 = compact-running
+/// 行(底部槽位,非 turn-notice 红);空反馈(kind=empty 落档) =
+/// compact-row 中性行照显宿主原文;完成标记 = quiet 行(compact-done),
+/// 点击展开置 open_compactions(摘要随展开渲染)。
+#[gpui_kit::test]
+fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "compact-ui");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+    };
+
+    // 排队:回合进行中受理 → compact-queued 行(静态,非红)
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = crate::features::chat::ChatState::default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:0".into(),
+                text: "先聊着".into(),
+                images: vec![],
+                files: Vec::new(),
+            });
+            chat.compact_queued = true;
+            st.state.chats.insert(id, chat);
+        });
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("compact-queued").is_some(),
+        "排队态应渲染 quiet 状态行"
+    );
+
+    // 进行中:受理置位 → compact-running 在场,红色告警不在场
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.get_mut(&id).unwrap();
+            chat.compact_queued = false;
+            chat.compact_running = true;
+            // 直改绕过帧泵 notify:补版本位触发重绘(生产路径经 apply 有)
+            st.chat.chat_version += 1;
+            cx.notify();
+        });
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("compact-running").is_some(),
+        "进行中应渲染 quiet 状态行"
+    );
+    assert!(
+        wcx.debug_bounds("compact-queued").is_none(),
+        "晋升后排队行应消失"
+    );
+    assert!(
+        wcx.debug_bounds("turn-notice").is_none(),
+        "进行中不得走红色告警行(回归锁:旧「⚠ 正在压缩…」)"
+    );
+
+    // 空反馈:中性行,非红(回归锁:旧「⚠ 压缩:暂无可压缩的历史」)
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.get_mut(&id).unwrap();
+            chat.compact_running = false;
+            chat.nodes.push(ChatNode::CompactStatus {
+                key: "cpt-empty:3".into(),
+                message: "No compactable history yet.".into(),
+            });
+            // 直改绕过帧泵 notify:补版本位触发重绘(生产路径经 apply 有)
+            st.chat.chat_version += 1;
+            cx.notify();
+        });
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("compact-row").is_some(),
+        "空反馈应渲染中性行"
+    );
+    assert!(
+        wcx.debug_bounds("turn-notice").is_none(),
+        "空反馈不得走红色告警行"
+    );
+
+    // 完成标记:quiet 行,点击展开置 open_compactions
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.get_mut(&id).unwrap();
+            chat.nodes.push(ChatNode::Compaction {
+                key: "cpt:5".into(),
+                summary: "## 压缩摘要\n正文".into(),
+                items: Some(5),
+                tokens: Some(1234),
+            });
+            st.chat.chat_version += 1;
+            cx.notify();
+        });
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("compact-done-2").is_some(),
+        "完成标记行应渲染(quiet 样式)"
+    );
+    click_sel(&mut wcx, "compact-done-2");
+    redraw(cx, &mut wcx);
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            assert!(
+                st.chat.open_compactions.contains("cpt:5"),
+                "点击完成行应置展开位(摘要随展开渲染)"
+            );
+        });
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 消息导航轨 = 滚动条一体化:锚点**只有用户消息(轮次开始)**,按文档
 /// 坐标比例落位(canvas 捕获/邻点插值);轨上一条通高轨道线 + 可拖视口
 /// 拇指 + 当前位白点;hover 摘要卡;点圆点跳轮次顶对齐;拖拇指滚动、

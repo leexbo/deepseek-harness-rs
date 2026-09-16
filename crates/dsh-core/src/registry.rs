@@ -6717,22 +6717,25 @@ async fn handle_driver_cmd(
             // 手动压缩:摘要调用可达分钟级,await 阻塞的是驱动循环本身
             // (turn 间隙),新输入在队列排队、压完即处理(照源维护任务
             // 独占、插话排队语义)。成功广播 summary(桌面标记行);
-            // 失败落 compaction/error(记录⟺可见,桌面通告)
+            // 失败/空落 compaction/error(kind 区分:empty=无历史可压,
+            // 桌面渲染中性别照源显示英文原文;error=真实失败,红色告警)
             match session.compact_now().await {
                 Ok(Some((seq, _, _))) => {
                     broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
                 }
                 Ok(None) => {
-                    if let Ok(seq) = session
-                        .session_event("compaction/error", json!({ "message": "暂无可压缩的历史" }))
-                    {
+                    if let Ok(seq) = session.session_event(
+                        "compaction/error",
+                        json!({ "kind": "empty", "message": "No compactable history yet." }),
+                    ) {
                         broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
                     }
                 }
                 Err(e) => {
-                    if let Ok(seq) = session
-                        .session_event("compaction/error", json!({ "message": e.to_string() }))
-                    {
+                    if let Ok(seq) = session.session_event(
+                        "compaction/error",
+                        json!({ "kind": "error", "message": e.to_string() }),
+                    ) {
                         broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
                     }
                 }
