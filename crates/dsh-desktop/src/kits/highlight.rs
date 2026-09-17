@@ -25,6 +25,7 @@ use syntect::parsing::{SyntaxDefinition, SyntaxSet};
 use super::cache::MemoCache;
 
 /// 一个高亮 span(纯色;MVP 不做粗斜体)
+#[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Span {
     pub color: Rgba,
     pub text: String,
@@ -217,37 +218,79 @@ fn alias(lang: &str) -> String {
 /// 高亮窗口:逐行 spans(与输入行一一对应,空行为空 vec)。
 /// lang 未知名/缺省 → None(调用方回退纯文本)。
 fn highlight(lang: &str, lines: &[&str]) -> Option<Vec<Vec<Span>>> {
+    let mut session = highlight_session(lang)?;
+    session.extend(lines);
+    Some(session.spans)
+}
+
+/// 单行 spans(newline 加载语法集要求行尾带 \n;结果范围按需裁掉)
+fn highlight_line(hl: &mut HighlightLines, line: &str) -> Vec<Span> {
+    let set = &engine().set;
+    let fed = format!("{line}\n");
+    let ranges = match hl.highlight_line(&fed, set) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut spans: Vec<Span> = Vec::new();
+    for (style, text) in ranges {
+        if text.is_empty() {
+            continue;
+        }
+        spans.push(Span {
+            color: rgba_of(style.foreground),
+            text: text.to_string(),
+        });
+    }
+    // 行尾终结符贴在末 span 上:剥掉,避免 h_flex 里出现空白占位
+    if let Some(last) = spans.last_mut() {
+        while last.text.ends_with('\n') {
+            last.text.pop();
+        }
+        if last.text.is_empty() {
+            spans.pop();
+        }
+    }
+    spans
+}
+
+/// 渐进高亮会话:顺序喂行、跨块保持语法状态(多行字符串/块注释不丢
+/// 色),供预览分块流式上色——可视区首块先行,余下大块渐进补齐。
+/// 与一次性全量结果一致(一致性由 progressive_matches_batch 锁)
+pub(crate) struct HighlightSession {
+    hl: HighlightLines<'static>,
+    spans: Vec<Vec<Span>>,
+}
+
+/// 建会话(未知语言 → None,调用方回退纯文本)
+pub(crate) fn highlight_session(lang: &str) -> Option<HighlightSession> {
     let eng = engine();
     let lang = alias(lang);
     let syntax = eng.set.find_syntax_by_token(&lang)?;
-    let mut hl = HighlightLines::new(syntax, &eng.themes[crate::kits::theme::is_dark() as usize]);
-    let mut out = Vec::with_capacity(lines.len());
-    for line in lines {
-        // newline 加载语法集要求行尾带 \n;结果范围按需裁掉
-        let fed = format!("{line}\n");
-        let ranges = hl.highlight_line(&fed, &eng.set).ok()?;
-        let mut spans: Vec<Span> = Vec::new();
-        for (style, text) in ranges {
-            if text.is_empty() {
-                continue;
-            }
-            spans.push(Span {
-                color: rgba_of(style.foreground),
-                text: text.to_string(),
-            });
+    let theme = &eng.themes[crate::kits::theme::is_dark() as usize];
+    Some(HighlightSession {
+        hl: HighlightLines::new(syntax, theme),
+        spans: Vec::new(),
+    })
+}
+
+impl HighlightSession {
+    /// 追加一批行(后台线程调用)
+    pub(crate) fn extend(&mut self, lines: &[&str]) {
+        for line in lines {
+            let spans = highlight_line(&mut self.hl, line);
+            self.spans.push(spans);
         }
-        // 行尾终结符贴在末 span 上:剥掉,避免 h_flex 里出现空白占位
-        if let Some(last) = spans.last_mut() {
-            while last.text.ends_with('\n') {
-                last.text.pop();
-            }
-            if last.text.is_empty() {
-                spans.pop();
-            }
-        }
-        out.push(spans);
     }
-    Some(out)
+
+    /// 已算前缀快照(落桶用;克隆 O(已算行))
+    pub(crate) fn snapshot(&self) -> Arc<Vec<Vec<Span>>> {
+        Arc::new(self.spans.clone())
+    }
+
+    /// 已算行数
+    pub(crate) fn len(&self) -> usize {
+        self.spans.len()
+    }
 }
 
 fn rgba_of(c: syntect::highlighting::Color) -> Rgba {
@@ -267,6 +310,33 @@ const CACHE_MIN_BYTES: usize = 512;
 
 /// 域内自持高亮缓存(见 kits::cache;key 撞车互不可见)
 static CACHE: MemoCache<Vec<Vec<Span>>> = MemoCache::new(CACHE_CAP, CACHE_MIN_BYTES);
+
+/// 全量产物写入块缓存(渐进会话终点调用;键规则同 highlight_window)
+pub(crate) fn cache_spans(
+    key: &str,
+    lang: Option<&str>,
+    lines: &[&str],
+    spans: Arc<Vec<Vec<Span>>>,
+) {
+    let Some(lang) = lang else { return };
+    let bytes: usize = lines.iter().map(|l| l.len()).sum();
+    let mut h = DefaultHasher::new();
+    lang.hash(&mut h);
+    for l in lines {
+        l.hash(&mut h);
+    }
+    let mode_tag = if crate::kits::theme::is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    CACHE.put(
+        &format!("{mode_tag}·{key}·{lang}"),
+        h.finish(),
+        spans,
+        bytes,
+    );
+}
 
 /// 持所有权形态(后台线程调用:调用方的行集无法跨 await 借用,
 /// 收 Arc 按值进任务后在此建引用视图)
@@ -331,6 +401,39 @@ mod tests {
         assert!(highlight_window("t", Some("toml"), &["[package]"]).is_some());
         assert!(highlight_window("t", Some("no-such-lang"), &lines).is_none());
         assert!(highlight_window("t", None, &lines).is_none());
+    }
+
+    /// 渐进会话一致性锁:任意分块推进 == 一次性全量(跨块必须保持语法
+    /// 状态——多行字符串/块注释/嵌套结构跨块不丢色)
+    #[test]
+    fn progressive_matches_batch() {
+        // 夹具含跨行结构:块注释、多行字符串、缩进作用域
+        let lines: Vec<String> = vec![
+            "/* 块注释开始".into(),
+            " 注释第二行".into(),
+            " 注释第三行 */".into(),
+            "fn main() {".into(),
+            "    let s = \"多行".into(),
+            "继续\";".into(),
+            "    if true {".into(),
+            "        println!(\"x\");".into(),
+            "    }".into(),
+            "}".into(),
+        ];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let batch = highlight("rust", &refs).expect("全量应可用");
+        for chunk_size in [1usize, 3, 7, 10] {
+            let mut sess = highlight_session("rs").expect("会话应可建");
+            for chunk in refs.chunks(chunk_size) {
+                sess.extend(chunk);
+            }
+            assert_eq!(
+                sess.snapshot().as_ref(),
+                &batch,
+                "分块({chunk_size})与全量不一致"
+            );
+            assert_eq!(sess.len(), batch.len());
+        }
     }
 
     /// TOML 高亮着色锁:字符串行吃 STRING 色、注释行吃 COMMENT 色

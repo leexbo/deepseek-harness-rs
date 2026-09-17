@@ -640,24 +640,92 @@ impl AppStore {
         let key = format!("preview-code-{}", rel.display());
         let store = cx.entity().clone();
         let rel_done = rel.clone();
-        cx.spawn(async move |_this, cx| {
-            let spans = cx
-                .background_executor()
-                .spawn(async move {
-                    crate::kits::highlight::highlight_window_owned(&key, lang.as_deref(), lines)
-                })
-                .await;
-            store.update(cx, |s, cx| {
-                let Some(bucket) = s.preview.buckets.get_mut(&rel_done) else {
+        // 全量缓存命中(重开同文件)→ 直落桶秒回
+        if let Some(spans) =
+            crate::kits::highlight::highlight_window_owned(&key, lang.as_deref(), lines.clone())
+        {
+            {
+                let Some(bucket) = self.preview.buckets.get_mut(rel) else {
                     return;
                 };
+                bucket.highlight_pending = false;
+                bucket.spans = Some(spans);
+            }
+            cx.notify();
+            return;
+        }
+        cx.spawn(async move |_this, cx| {
+            // 渐进分块:首块小(可视区先上色),后续大块流式补齐;
+            // 每块后台推进 + 主线程落桶,epoch 不匹配即止(新踢已接棒)
+            let mut session: Option<crate::kits::highlight::HighlightSession> = None;
+            let mut offset = 0usize;
+            let mut chunk = 120usize;
+            while offset < lines.len() {
+                let end = (offset + chunk).min(lines.len());
+                let seg: Vec<String> = lines[offset..end].to_vec();
+                let seg_lang = lang.clone();
+                let moved = session.take();
+                let sess_opt = cx
+                    .background_executor()
+                    .spawn(async move {
+                        match moved {
+                            Some(s) => Some(s),
+                            None => crate::kits::highlight::highlight_session(
+                                seg_lang.as_deref().unwrap_or_default(),
+                            ),
+                        }
+                    })
+                    .await;
+                // 未建起会话 = 未知语言:纯色渲染收场(清在途)
+                let mut sess = match sess_opt {
+                    Some(s) => s,
+                    None => {
+                        store.update(cx, |s, cx| {
+                            if let Some(bucket) = s.preview.buckets.get_mut(&rel_done) {
+                                bucket.highlight_pending = false;
+                            }
+                            cx.notify();
+                        });
+                        return;
+                    }
+                };
+                let refs: Vec<&str> = seg.iter().map(String::as_str).collect();
+                sess.extend(&refs);
+                let snapshot = sess.snapshot();
+                let computed = sess.len();
+                session = Some(sess);
+                let stale = store.update(cx, |s, cx| {
+                    let Some(bucket) = s.preview.buckets.get_mut(&rel_done) else {
+                        return true;
+                    };
+                    if bucket.highlight_epoch != epoch {
+                        return true; // 行已变:回包过期,新踢已发起
+                    }
+                    bucket.spans = Some(snapshot);
+                    cx.notify();
+                    false
+                });
+                if stale {
+                    return;
+                }
+                offset = computed;
+                chunk = 500;
+            }
+            // 全量完成:清在途 + 入缓存(重开同文件秒回)
+            let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+            let final_spans = store.update(cx, |s, cx| {
+                let bucket = s.preview.buckets.get_mut(&rel_done)?;
                 if bucket.highlight_epoch != epoch {
-                    return; // 行已变(续页/重载):回包过期,完成回调会重踢
+                    return None;
                 }
                 bucket.highlight_pending = false;
-                bucket.spans = spans;
+                let spans = bucket.spans.clone();
                 cx.notify();
+                spans
             });
+            if let Some(spans) = final_spans {
+                crate::kits::highlight::cache_spans(&key, lang.as_deref(), &refs, spans);
+            }
         })
         .detach();
     }
