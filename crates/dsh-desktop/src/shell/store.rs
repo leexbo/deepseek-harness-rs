@@ -122,6 +122,14 @@ pub struct AppStore {
     /// 轨迹功能切片状态(台账/检查器/时间线/turns-calls 折叠;
     /// 域与行为见 features::trajectory)
     pub trajectory: TrajectoryStore,
+    /// 文件树功能切片状态(右栏「文件」标签;域与行为见
+    /// features::files)
+    pub files: crate::features::files::FilesStore,
+    /// 文档预览功能切片状态(预览标签桶/打开方式菜单;域与行为见
+    /// features::preview)
+    pub preview: crate::features::preview::PreviewStore,
+    /// 预览变更轮询任务(1s stat;仅存在预览 tab 时活,自退)
+    pub preview_poll: Option<gpui_kit::Task<()>>,
     /// 本地通告序号(Notice key 去重用)
     local_notice_seq: u64,
     /// 测试 harness 临时根(取证守卫:panic 时保留并打印路径,正常
@@ -191,6 +199,9 @@ impl AppStore {
             session_cfg_by_id: HashMap::new(),
             subagents: SubagentsStore::default(),
             trajectory: TrajectoryStore::default(),
+            files: crate::features::files::FilesStore::mount(cx),
+            preview: crate::features::preview::PreviewStore::default(),
+            preview_poll: None,
             local_notice_seq: 0,
             temp_root: None,
         };
@@ -624,6 +635,7 @@ impl AppStore {
         self.sessions.workspace_menu_open = false;
         self.settings.full_access_confirm = None;
         self.panel_plus_menu_at = None;
+        self.preview.menu = None;
         self.billing_card_open = false;
         self.sync_lineage_tick(cx);
         cx.notify();
@@ -954,33 +966,55 @@ impl AppStore {
     pub fn open_panel_tab(&mut self, tab: PanelTab, cx: &mut Context<Self>) {
         self.panel_open = true;
         if !self.panel_tabs.contains(&tab) {
-            self.panel_tabs.push(tab);
+            self.panel_tabs.push(tab.clone());
         }
         self.panel_active_tab = Some(tab);
         self.panel_plus_menu_at = None;
-        if tab == PanelTab::Trajectory {
+        if matches!(self.panel_active_tab, Some(PanelTab::Trajectory)) {
             self.refresh_trajectory(cx);
+        }
+        if self
+            .panel_active_tab
+            .as_ref()
+            .is_some_and(PanelTab::is_files)
+        {
+            self.files_ensure(cx);
         }
         cx.notify();
     }
 
     /// 关闭面板标签:关的是激活页则激活余下最后一张;无余 = 空态
-    /// (panel_open 不动,面板保持开)
+    /// (panel_open 不动,面板保持开)。预览标签关闭即焚桶(照源内存态)
     pub fn close_panel_tab(&mut self, tab: PanelTab, cx: &mut Context<Self>) {
+        if let PanelTab::Preview(p) = &tab {
+            self.preview_forget(&p.path);
+        }
         self.panel_tabs.retain(|t| *t != tab);
         if self.panel_active_tab == Some(tab) {
-            self.panel_active_tab = self.panel_tabs.last().copied();
+            self.panel_active_tab = self.panel_tabs.last().cloned();
         }
         cx.notify();
     }
 
     /// 激活已开标签(点标签条)。切入轨迹与 open_panel_tab 同语义:
-    /// 在别的标签停留期间直播重拉不跑,切回时缓存可能陈旧 → 重拉
+    /// 在别的标签停留期间直播重拉不跑,切回时缓存可能陈旧 → 重拉;
+    /// 文件树切入根失配才刷新(同根保持缓存)
     pub fn activate_panel_tab(&mut self, tab: PanelTab, cx: &mut Context<Self>) {
         if self.panel_tabs.contains(&tab) {
             self.panel_active_tab = Some(tab);
-            if tab == PanelTab::Trajectory {
+            if self.panel_active_tab == Some(PanelTab::Trajectory) {
                 self.refresh_trajectory(cx);
+            }
+            if self
+                .panel_active_tab
+                .as_ref()
+                .is_some_and(PanelTab::is_files)
+            {
+                self.files_ensure(cx);
+            }
+            if let Some(PanelTab::Preview(p)) = self.panel_active_tab.as_ref() {
+                let target = (p.path.clone(), p.line);
+                self.preview_ensure_bucket(&target.0, target.1, cx);
             }
             cx.notify();
         }

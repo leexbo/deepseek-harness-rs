@@ -72,6 +72,9 @@ impl AppStore {
         if self.trajectory_visible() {
             self.refresh_trajectory(cx);
         }
+        if self.files_visible() {
+            self.files_ensure(cx);
+        }
         self.sync_run_tick(cx);
         cx.notify();
     }

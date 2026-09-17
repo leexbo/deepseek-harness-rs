@@ -69,6 +69,41 @@ pub enum DshIcon {
     Wrench,
     /// 附件入口(输入卡底排独立钮)
     Paperclip,
+    // ── 文件类型族(lucide;组件默认 101 图标集缺,自有内嵌)──
+    /// 文件树标签/目录树
+    FolderTree,
+    /// 图片类文件
+    FileImage,
+    /// 代码类文件
+    FileCode,
+    /// 压缩包
+    FileArchive,
+    /// json 系
+    FileBraces,
+    /// rust(齿轮)
+    FileCog,
+    /// git 元数据
+    FileDiff,
+    /// env 系
+    FileKey,
+    /// 锁文件
+    FileLock,
+    /// shell 脚本
+    FileTerminal,
+    /// 表格
+    FileSpreadsheet,
+    /// 视频
+    FileVideoCamera,
+    /// 音频
+    FileVolume,
+    /// symlink/other 行
+    FileSymlink,
+    /// 图表(ppt 族)
+    FileChartColumn,
+    /// 通用类型文件(pdf/config/word/字体)
+    FileType,
+    /// 换行开关(预览头行)
+    TextWrap,
 }
 
 impl IconNamed for DshIcon {
@@ -100,6 +135,23 @@ impl IconNamed for DshIcon {
             Self::RefreshCw => "refresh-cw",
             Self::Wrench => "wrench",
             Self::Paperclip => "paperclip",
+            Self::FolderTree => "folder-tree",
+            Self::FileImage => "file-image",
+            Self::FileCode => "file-code",
+            Self::FileArchive => "file-archive",
+            Self::FileBraces => "file-braces",
+            Self::FileCog => "file-cog",
+            Self::FileDiff => "file-diff",
+            Self::FileKey => "file-key",
+            Self::FileLock => "file-lock",
+            Self::FileTerminal => "file-terminal",
+            Self::FileSpreadsheet => "file-spreadsheet",
+            Self::FileVideoCamera => "file-video-camera",
+            Self::FileVolume => "file-volume",
+            Self::FileSymlink => "file-symlink",
+            Self::FileChartColumn => "file-chart-column",
+            Self::FileType => "file-type",
+            Self::TextWrap => "text-wrap",
         };
         format!("icons/_dsh/{name}.svg").into()
     }
@@ -215,6 +267,74 @@ const DSH_ICONS: &[(&str, &[u8])] = &[
         "icons/_dsh/paperclip.svg",
         include_bytes!("../../assets/icons/paperclip.svg"),
     ),
+    (
+        "icons/_dsh/folder-tree.svg",
+        include_bytes!("../../assets/icons/folder-tree.svg"),
+    ),
+    (
+        "icons/_dsh/file-image.svg",
+        include_bytes!("../../assets/icons/file-image.svg"),
+    ),
+    (
+        "icons/_dsh/file-code.svg",
+        include_bytes!("../../assets/icons/file-code.svg"),
+    ),
+    (
+        "icons/_dsh/file-archive.svg",
+        include_bytes!("../../assets/icons/file-archive.svg"),
+    ),
+    (
+        "icons/_dsh/file-braces.svg",
+        include_bytes!("../../assets/icons/file-braces.svg"),
+    ),
+    (
+        "icons/_dsh/file-cog.svg",
+        include_bytes!("../../assets/icons/file-cog.svg"),
+    ),
+    (
+        "icons/_dsh/file-diff.svg",
+        include_bytes!("../../assets/icons/file-diff.svg"),
+    ),
+    (
+        "icons/_dsh/file-key.svg",
+        include_bytes!("../../assets/icons/file-key.svg"),
+    ),
+    (
+        "icons/_dsh/file-lock.svg",
+        include_bytes!("../../assets/icons/file-lock.svg"),
+    ),
+    (
+        "icons/_dsh/file-terminal.svg",
+        include_bytes!("../../assets/icons/file-terminal.svg"),
+    ),
+    (
+        "icons/_dsh/file-spreadsheet.svg",
+        include_bytes!("../../assets/icons/file-spreadsheet.svg"),
+    ),
+    (
+        "icons/_dsh/file-video-camera.svg",
+        include_bytes!("../../assets/icons/file-video-camera.svg"),
+    ),
+    (
+        "icons/_dsh/file-volume.svg",
+        include_bytes!("../../assets/icons/file-volume.svg"),
+    ),
+    (
+        "icons/_dsh/file-symlink.svg",
+        include_bytes!("../../assets/icons/file-symlink.svg"),
+    ),
+    (
+        "icons/_dsh/file-chart-column.svg",
+        include_bytes!("../../assets/icons/file-chart-column.svg"),
+    ),
+    (
+        "icons/_dsh/file-type.svg",
+        include_bytes!("../../assets/icons/file-type.svg"),
+    ),
+    (
+        "icons/_dsh/text-wrap.svg",
+        include_bytes!("../../assets/icons/text-wrap.svg"),
+    ),
 ];
 
 impl AssetSource for MergedAssets {
@@ -313,7 +433,7 @@ mod tests {
     /// 枚举全变体的 path 必须命中 DSH_ICONS 静态表(防加枚举忘加 SVG)
     #[test]
     fn dsh_icon_paths_all_embedded() {
-        const ALL: [DshIcon; 26] = [
+        const ALL: [DshIcon; 43] = [
             DshIcon::Sparkles,
             DshIcon::Zap,
             DshIcon::Brain,
@@ -340,6 +460,23 @@ mod tests {
             DshIcon::RefreshCw,
             DshIcon::Wrench,
             DshIcon::Paperclip,
+            DshIcon::FolderTree,
+            DshIcon::FileImage,
+            DshIcon::FileCode,
+            DshIcon::FileArchive,
+            DshIcon::FileBraces,
+            DshIcon::FileCog,
+            DshIcon::FileDiff,
+            DshIcon::FileKey,
+            DshIcon::FileLock,
+            DshIcon::FileTerminal,
+            DshIcon::FileSpreadsheet,
+            DshIcon::FileVideoCamera,
+            DshIcon::FileVolume,
+            DshIcon::FileSymlink,
+            DshIcon::FileChartColumn,
+            DshIcon::FileType,
+            DshIcon::TextWrap,
         ];
         for icon in ALL {
             let p = icon.path();

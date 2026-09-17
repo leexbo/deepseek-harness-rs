@@ -300,6 +300,39 @@ pub fn FILE_KIND_BADGE(kind: dsh_attachment::FileKind) -> Rgba {
         K::Other => rgba(0x6E6E73FF),
     }
 }
+/// 文件类型家族染色(gpui SVG = alpha-mask 单色,源项目彩色渐变图标
+/// 不可照搬;家族中饱和色双盘同值可读,属图标语义色,非界面分层色。
+/// office 三色与 [`FILE_KIND_BADGE`] 同源)
+pub fn FILE_TYPE_TINT(class: crate::kits::filetype::FileClass) -> Rgba {
+    use crate::kits::filetype::FileClass as F;
+    match class {
+        F::Markdown => rgba(0x4C7DB0FF),
+        F::Image => rgba(0x0A7EA4FF),
+        F::Pdf => rgba(0xC74440FF),
+        F::Html => rgba(0xC1603CFF),
+        F::Css => rgba(0x3F8FBFFF),
+        F::Rust => rgba(0xB7410EFF),
+        F::Git => rgba(0xD06142FF),
+        F::Json => rgba(0xB39B33FF),
+        F::Config => rgba(0x6E7B8AFF),
+        F::Env => rgba(0x5D8A46FF),
+        F::Lock => rgba(0xB08A3EFF),
+        F::Shell => rgba(0x5FA85FFF),
+        F::Python => rgba(0x4B8BBEFF),
+        F::JsTs => rgba(0x3776C8FF),
+        F::Code => rgba(0x5A6B7BFF),
+        F::Archive => rgba(0x9A7B4FFF),
+        F::Video => rgba(0x7A5CC0FF),
+        F::Audio => rgba(0xA060A8FF),
+        F::Word => rgba(0x2B579AFF),
+        F::Excel => rgba(0x217346FF),
+        F::Ppt => rgba(0xC43E1CFF),
+        F::Font => rgba(0x8A8F98FF),
+        F::Text => rgba(0x7A8694FF),
+        F::Other => rgba(0x6E6E73FF),
+    }
+}
+
 /// 玻璃态填充(激活 tab pill;无 backdrop blur 以半透明近似磨砂)
 pub fn GLASS_BG() -> Rgba {
     cur().glass_bg

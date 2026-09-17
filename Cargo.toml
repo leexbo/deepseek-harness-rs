@@ -101,6 +101,8 @@ hex = "0.4"
 rmcp = { version = "3.2", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 # 附件 wire 编码(base64 / data URL)
 base64 = "0.23"
+# PDF 预览:pdf-syntax 解析 + 纯 Rust 栅格化(pdf-render 重导出;无 C 交付物)
+pdf-render = "1.0"
 
 [profile.dev]
 # 全量 debuginfo 下 wasmtime+turso 构建达数十 GB;行号表足够日常调试

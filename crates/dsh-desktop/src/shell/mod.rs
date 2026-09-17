@@ -10,7 +10,7 @@ pub(crate) mod reducer;
 pub(crate) mod store;
 
 mod hero;
-mod scroll;
+pub(crate) mod scroll;
 mod statusbar;
 mod topbar;
 #[cfg(target_os = "macos")]
@@ -372,7 +372,8 @@ impl Render for WorkspaceView {
             || st.sessions.menu_open_session.is_some()
             || st.sessions.menu_open_ws.is_some()
             || st.sessions.workspace_menu_open
-            || st.panel_plus_menu_at.is_some();
+            || st.panel_plus_menu_at.is_some()
+            || st.preview.menu.is_some();
         let settings_open = st.settings.settings_open;
         div()
             .relative()
@@ -615,6 +616,13 @@ impl Render for WorkspaceView {
                 let card = self.store.read(cx).panel_plus_menu_at.map(|pos| {
                     let shortcut = window.keystroke_text_for(&panel::OpenPanelPlan);
                     panel::plus_menu_card(&self.store, pos, shortcut)
+                });
+                el.children(card)
+            })
+            // 预览「打开方式」菜单(根级定位渲染,同 + 菜单模式)
+            .when(self.store.read(cx).preview.menu.is_some(), |el| {
+                let card = self.store.read(cx).preview.menu.as_ref().map(|(rel, pos)| {
+                    crate::features::preview::renderer_menu_card(&self.store, rel, *pos, cx)
                 });
                 el.children(card)
             })

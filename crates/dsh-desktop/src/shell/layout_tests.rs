@@ -382,7 +382,7 @@ fn tool_read_expanded_keeps_collapse_and_inspect_jumps(cx: &mut TestAppContext) 
         cx.update(|app| {
             let st = store.read(app);
             (
-                st.panel_active_tab,
+                st.panel_active_tab.clone(),
                 st.trajectory.inspector,
                 st.trajectory.inspect_locate.is_some(),
             )
@@ -3333,7 +3333,7 @@ fn plan_review_compact_card_two_options(cx: &mut TestAppContext) {
     redraw(cx, &mut wcx);
     let (open, active) = cx.update(|app| {
         let s = store.read(app);
-        (s.panel_open, s.panel_active_tab)
+        (s.panel_open, s.panel_active_tab.clone())
     });
     assert!(open, "查看应开右栏");
     assert_eq!(
@@ -3819,7 +3819,7 @@ fn panel_plus_menu_opens_plan(cx: &mut TestAppContext) {
         "点项后清单菜单应自关"
     );
     assert_eq!(
-        cx.update(|app| store.read(app).panel_active_tab),
+        cx.update(|app| store.read(app).panel_active_tab.clone()),
         Some(crate::shell::panel::PanelTab::Plan),
         "计划标签应激活"
     );
@@ -3861,7 +3861,7 @@ fn panel_trajectory_tab_listing_and_entry(cx: &mut TestAppContext) {
         "轨迹整页视图应在面板内渲染"
     );
     assert_eq!(
-        cx.update(|app| store.read(app).panel_active_tab),
+        cx.update(|app| store.read(app).panel_active_tab.clone()),
         Some(crate::shell::panel::PanelTab::Trajectory),
         "轨迹标签应激活"
     );
@@ -3886,6 +3886,238 @@ fn panel_trajectory_tab_listing_and_entry(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 轮询等待选择器出现(树/预览装载走真实异步:refresh + park + 小睡,
+/// 见异步断言纪律);超时 panic 带选择器名
+fn wait_bounds(
+    cx: &mut TestAppContext,
+    wcx: &mut gpui_kit::VisualTestContext,
+    sel: &'static str,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    for _ in 0..300 {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+        if let Some(b) = wcx.debug_bounds(sel) {
+            return b;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    panic!("selector {sel} 等待超时");
+}
+
+/// 文件标签:「+」清单/空态清单收录 + 进出视图(轨迹同构回归锁)
+#[gpui_kit::test]
+fn panel_files_tab_listing_and_entry(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "panel-files");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.open_panel_tab(crate::shell::panel::PanelTab::Plan, cx)
+        });
+    });
+    redraw(cx, &mut wcx);
+    click_sel(&mut wcx, "panel-plus");
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("panel-plus-item-files").is_some(),
+        "「+」清单应有文件项"
+    );
+    click_sel(&mut wcx, "panel-plus-item-files");
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("panel-tab-files").is_some(),
+        "标签条应有文件标签"
+    );
+    assert!(
+        wcx.debug_bounds("panel-files-view").is_some(),
+        "文件视图应在面板内渲染"
+    );
+    assert_eq!(
+        cx.update(|app| store.read(app).panel_active_tab.clone()),
+        Some(crate::shell::panel::PanelTab::Files),
+        "文件标签应激活"
+    );
+    // 关掉全部标签 → 空态清单有文件行;点行恢复
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.close_panel_tab(crate::shell::panel::PanelTab::Files, cx);
+            st.close_panel_tab(crate::shell::panel::PanelTab::Plan, cx);
+        });
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("panel-empty-row-files").is_some(),
+        "空态清单应有文件行"
+    );
+    click_sel(&mut wcx, "panel-empty-row-files");
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("panel-files-view").is_some(),
+        "空态行点击应开文件标签"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 文件树内容链回归锁:工作区夹具 → 排序(目录优先/点开头混排)→
+/// 点目录行惰性展开 → 点文件行开预览 tab(rel 路径、markdown 体渲染)
+/// → 同路径重点不重复开
+#[gpui_kit::test]
+fn files_tree_listing_expansion_and_preview_open(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "files-tree");
+    let ws = root.join("ws");
+    std::fs::create_dir_all(ws.join("src")).expect("建夹具目录");
+    std::fs::write(ws.join(".gitignore"), "target\n").expect("写 .gitignore");
+    std::fs::write(ws.join("readme.md"), "# 标题\n\n正文一段。\n").expect("写 readme");
+    std::fs::write(ws.join("zz-notes.txt"), "note line\n").expect("写 notes");
+    std::fs::write(ws.join("src").join("main.rs"), "fn main() {}\n").expect("写 main.rs");
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.open_panel_tab(crate::shell::panel::PanelTab::Files, cx)
+        });
+    });
+    // 根层装载(异步):目录优先,组内 collator 序(.gitignore <
+    // readme.md < zz-notes.txt)
+    wait_bounds(cx, &mut wcx, "files-row-src");
+    let order: Vec<(&str, f32)> = [
+        "files-row-src",
+        "files-row-.gitignore",
+        "files-row-readme.md",
+        "files-row-zz-notes.txt",
+    ]
+    .iter()
+    .map(|sel| {
+        (
+            *sel,
+            f32::from(wcx.debug_bounds(sel).expect("行应在场").origin.y),
+        )
+    })
+    .collect();
+    for pair in order.windows(2) {
+        assert!(
+            pair[0].1 < pair[1].1,
+            "{} 应排在 {} 之上",
+            pair[0].0,
+            pair[1].0
+        );
+    }
+    // 点目录行 → 惰性装载子层
+    click_sel(&mut wcx, "files-row-src");
+    wait_bounds(cx, &mut wcx, "files-row-main.rs");
+    // 点文件行 → 预览 tab(路径去根为 rel;markdown 默认渲染器)
+    click_sel(&mut wcx, "files-row-readme.md");
+    wait_bounds(cx, &mut wcx, "preview-markdown-body");
+    let active = cx.update(|app| store.read(app).panel_active_tab.clone());
+    assert!(
+        matches!(
+            active,
+            Some(crate::shell::panel::PanelTab::Preview(ref p)) if p.path == std::path::Path::new("readme.md")
+        ),
+        "激活标签应为 readme.md 的预览,实际 {active:?}"
+    );
+    // 同路径重复开 = reveal 不重开
+    let abs = ws.join("readme.md").display().to_string();
+    cx.update(|app| {
+        store.update(app, |st, cx| st.open_file_preview(&abs, None, cx));
+    });
+    cx.run_until_parked();
+    let preview_tabs = cx.update(|app| {
+        store
+            .read(app)
+            .panel_tabs
+            .iter()
+            .filter(|t| matches!(t, crate::shell::panel::PanelTab::Preview(_)))
+            .count()
+    });
+    assert_eq!(preview_tabs, 1, "同路径重点应聚焦不重复开");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 预览「打开方式」菜单 + wrap 开关显隐 + 不可预览空态回归锁:
+/// markdown(候选 3)显菜单、不显 wrap;切代码(同 mode 保内容)后
+/// wrap 出现;mp4 空候选 → unsupported 空态
+#[gpui_kit::test]
+fn preview_renderer_menu_wrap_and_unsupported(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "preview-menu");
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("建夹具目录");
+    std::fs::write(ws.join("readme.md"), "# 标题\n\n正文。\n").expect("写 readme");
+    std::fs::write(ws.join("movie.mp4"), b"\x00\x01mp4").expect("写 mp4");
+    let open = |cx: &mut TestAppContext, name: &str| {
+        let abs = ws.join(name).display().to_string();
+        cx.update(|app| {
+            store.update(app, |st, cx| st.open_file_preview(&abs, None, cx));
+        });
+    };
+    // markdown:菜单在(markdown/code/text 三候选)、wrap 无(markdown
+    // 不消费换行,照源)
+    open(cx, "readme.md");
+    wait_bounds(cx, &mut wcx, "preview-markdown-body");
+    assert!(
+        wcx.debug_bounds("preview-renderer-menu").is_some(),
+        "多候选应显示「打开方式」"
+    );
+    assert!(
+        wcx.debug_bounds("preview-wrap").is_none(),
+        "markdown 渲染器不应显示换行开关"
+    );
+    // 开菜单 → 切代码(同 mode:内容保留,体切代码行视图,wrap 出现)
+    click_sel(&mut wcx, "preview-renderer-menu");
+    wait_bounds(cx, &mut wcx, "preview-renderer-menu-card");
+    click_sel(&mut wcx, "preview-renderer-item-code");
+    wait_bounds(cx, &mut wcx, "preview-lines-body");
+    assert!(
+        wcx.debug_bounds("preview-wrap").is_some(),
+        "代码渲染器应显示换行开关"
+    );
+    // 不可预览:空候选 → unsupported 空态(无菜单)
+    open(cx, "movie.mp4");
+    wait_bounds(cx, &mut wcx, "preview-unsupported");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 变更提示条回归锁:装载后改文件(mtime+长度)→ 1s stat 轮询点亮
+/// 提示条(只提示不自动重载)→「重新载入」恢复
+#[gpui_kit::test]
+fn preview_changed_bar_polls_mtime(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "preview-changed");
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("建夹具目录");
+    let notes = ws.join("notes.txt");
+    std::fs::write(&notes, "v1\n").expect("写 notes");
+    let abs = notes.display().to_string();
+    cx.update(|app| {
+        store.update(app, |st, cx| st.open_file_preview(&abs, None, cx));
+    });
+    wait_bounds(cx, &mut wcx, "preview-lines-body");
+    // 外部改写 → 轮询点亮提示条(1s 节拍;测试态 background timer 走
+    // 虚拟时钟,advance_clock 推过节拍 + park 收敛)
+    std::fs::write(&notes, "v2 with more content\n").expect("改写 notes");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(1100));
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("preview-changed-bar").is_some(),
+        "改写后应显示「文件已更新」提示条"
+    );
+    // 重新载入 → 提示条消失、体恢复
+    click_sel(&mut wcx, "preview-changed-reload");
+    wait_bounds(cx, &mut wcx, "preview-lines-body");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("preview-changed-bar").is_none(),
+        "重载后提示条应消失"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// ⇧⌘P 键绑定:无焦点直接按键 → 面板开 + 计划标签激活(键表经
 /// bind_global_keys 与 main.rs 同源;action 无焦点回落 root 分派路径)
 #[gpui_kit::test]
@@ -3901,7 +4133,7 @@ fn panel_plan_shortcut_binding(cx: &mut TestAppContext) {
     redraw(cx, &mut wcx);
     let (open, active) = cx.update(|app| {
         let s = store.read(app);
-        (s.panel_open, s.panel_active_tab)
+        (s.panel_open, s.panel_active_tab.clone())
     });
     assert!(open, "⇧⌘P 应开面板");
     assert_eq!(
@@ -3946,7 +4178,7 @@ fn plan_card_view_chip_opens_panel(cx: &mut TestAppContext) {
     redraw(cx, &mut wcx);
     let (open, active) = cx.update(|app| {
         let s = store.read(app);
-        (s.panel_open, s.panel_active_tab)
+        (s.panel_open, s.panel_active_tab.clone())
     });
     assert!(open, "点「查看」应开面板");
     assert_eq!(
@@ -5823,7 +6055,10 @@ fn global_search_hit_to_trajectory_row(cx: &mut TestAppContext) {
     }
     let (active, inspector) = cx.update(|app| {
         let st = store.read(app);
-        (st.panel_active_tab, st.trajectory.inspector.is_some())
+        (
+            st.panel_active_tab.clone(),
+            st.trajectory.inspector.is_some(),
+        )
     });
     assert_eq!(
         active,

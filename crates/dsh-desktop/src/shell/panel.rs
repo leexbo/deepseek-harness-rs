@@ -19,40 +19,83 @@ use crate::shell::store::AppStore;
 
 actions!(panel, [OpenPanelPlan]);
 
-/// 面板标签页(同类去重,序 = 打开序)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 预览标签数据(工作区相对路径 + 行导航参数)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewTab {
+    /// 目标文件(工作区相对路径)
+    pub path: std::path::PathBuf,
+    /// 跳行导航(1-based;入口带行时更新,重开同文件聚焦不重开)
+    pub line: Option<u32>,
+}
+
+/// 面板标签页(静态种同类去重,序 = 打开序;Preview 按路径去重、
+/// 只经文件树点击进入,不进「+」与空态清单)
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PanelTab {
     /// 计划(当前会话最新计划只读)
     Plan,
     /// 轨迹(时间线/台账/检查器整页,原样呈现)
     Trajectory,
+    /// 文件(工作区文件树,lazy 逐层装载;点文件开预览)
+    Files,
+    /// 文档预览(渲染器注册表见 kits::filetype)
+    Preview(PreviewTab),
 }
 
 impl PanelTab {
-    /// 全部标签(「+」菜单与空态清单共用的视图源)
-    pub const ALL: [PanelTab; 2] = [PanelTab::Plan, PanelTab::Trajectory];
+    /// 全部静态标签(「+」菜单与空态清单共用的视图源;Preview 不列)
+    pub const ALL: [PanelTab; 3] = [PanelTab::Plan, PanelTab::Trajectory, PanelTab::Files];
 
-    /// 标签标题
-    pub fn title(self) -> &'static str {
+    /// 是否文件树标签(切会话换根门控判据)
+    pub fn is_files(&self) -> bool {
+        matches!(self, PanelTab::Files)
+    }
+
+    /// 标签标题(Preview = 文件名)
+    pub fn title(&self) -> String {
         match self {
-            PanelTab::Plan => "计划",
-            PanelTab::Trajectory => "轨迹",
+            PanelTab::Plan => "计划".to_string(),
+            PanelTab::Trajectory => "轨迹".to_string(),
+            PanelTab::Files => "文件".to_string(),
+            PanelTab::Preview(p) => p
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "预览".to_string()),
         }
     }
 
-    /// 定尺寸图标(标签 pill 13 / 清单行 16)
-    pub fn icon(self, size: f32) -> gpui_kit::component::Icon {
+    /// 定尺寸图标(标签 pill 13 / 清单行 16;Preview = 类型染色)
+    pub fn icon(&self, size: f32) -> gpui_kit::component::Icon {
         match self {
             PanelTab::Plan => fixed(DshIcon::ListChecks, size),
             PanelTab::Trajectory => fixed(IconName::GalleryVerticalEnd, size),
+            PanelTab::Files => fixed(DshIcon::FolderTree, size),
+            PanelTab::Preview(p) => {
+                let name = p
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let class = crate::kits::filetype::file_class(&name);
+                crate::kits::filetype::class_icon(class, size)
+                    .text_color(theme::FILE_TYPE_TINT(class))
+            }
         }
     }
 
-    /// 稳定 id / debug selector 片段
-    fn key(self) -> &'static str {
+    /// 稳定 id / debug selector 片段(Preview 带路径哈希防同域撞名)
+    fn key(&self) -> String {
         match self {
-            PanelTab::Plan => "plan",
-            PanelTab::Trajectory => "trajectory",
+            PanelTab::Plan => "plan".to_string(),
+            PanelTab::Trajectory => "trajectory".to_string(),
+            PanelTab::Files => "files".to_string(),
+            PanelTab::Preview(p) => {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                p.path.hash(&mut hasher);
+                format!("preview-{:016x}", hasher.finish())
+            }
         }
     }
 }
@@ -72,7 +115,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
             )),
             st.panel_resize_anchor.is_some(),
             st.panel_tabs.clone(),
-            st.panel_active_tab,
+            st.panel_active_tab.clone(),
         )
     };
     if col_w <= 0. {
@@ -103,7 +146,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                     crate::kits::markdown::PANEL_TAIL_ORDER,
                 )),
         )
-        .child(panel_header(store, &tabs, active_tab))
+        .child(panel_header(store, &tabs, active_tab.clone()))
         .child(match active_tab {
             Some(tab) => tab_body(store, tab, window, cx),
             None => empty_menu(store, &shortcut),
@@ -177,7 +220,9 @@ fn panel_header(
 ) -> impl IntoElement {
     let mut strip: Vec<gpui_kit::AnyElement> = Vec::new();
     for tab in tabs {
-        strip.push(panel_tab_pill(store, *tab, Some(*tab) == active).into_any_element());
+        strip.push(
+            panel_tab_pill(store, tab.clone(), Some(tab.clone()) == active).into_any_element(),
+        );
     }
     let s_plus = store.clone();
     let s_toggle = store.clone();
@@ -265,9 +310,11 @@ fn panel_tab_pill(store: &Entity<AppStore>, tab: PanelTab, active: bool) -> gpui
     let s_tab = store.clone();
     let s_close = store.clone();
     let key = tab.key();
+    let pill = tab.clone();
+    let closer = tab.clone();
     div()
         .id(SharedString::from(format!("panel-tab-{key}")))
-        .debug_selector(move || format!("panel-tab-{}", tab.key()))
+        .debug_selector(move || format!("panel-tab-{}", pill.key()))
         .flex()
         .flex_shrink_0()
         .items_center()
@@ -313,18 +360,19 @@ fn panel_tab_pill(store: &Entity<AppStore>, tab: PanelTab, active: bool) -> gpui
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
-                    s_close.update(cx, |st, cx| st.close_panel_tab(tab, cx));
+                    s_close.update(cx, |st, cx| st.close_panel_tab(closer.clone(), cx));
                 }),
         )
         .on_click(move |_, _, cx| {
-            s_tab.update(cx, |st, cx| st.activate_panel_tab(tab, cx));
+            s_tab.update(cx, |st, cx| st.activate_panel_tab(tab.clone(), cx));
         })
         .into_any_element()
 }
 
 /// 标签正文:计划 = 最新计划快照只读;轨迹 = 整页视图自主区迁入(原样:
 /// 工具栏 + 时间线 + 台账|检查器并排,检查器拖宽/时间线选区照旧)。
-/// 外层 flex_1 承接面板列剩余高度,轨迹视图根 size_full 填满
+/// 文件 = 文件树视图;预览 = 渲染器分发视图。
+/// 外层 flex_1 承接面板列剩余高度,各视图根 size_full 填满
 fn tab_body(
     store: &Entity<AppStore>,
     tab: PanelTab,
@@ -363,6 +411,22 @@ fn tab_body(
             .min_w(px(0.))
             .child(crate::features::trajectory::render(store, window, cx))
             .into_any_element(),
+        PanelTab::Files => div()
+            .debug_selector(|| "panel-files-view".to_string())
+            .flex_1()
+            .min_h(px(0.))
+            .min_w(px(0.))
+            .child(crate::features::files::render(store, window, cx))
+            .into_any_element(),
+        PanelTab::Preview(preview) => div()
+            .debug_selector(|| format!("panel-preview-view-{}", preview.path.display()))
+            .flex_1()
+            .min_h(px(0.))
+            .min_w(px(0.))
+            .child(crate::features::preview::render(
+                store, &preview, window, cx,
+            ))
+            .into_any_element(),
     }
 }
 
@@ -373,6 +437,7 @@ fn empty_menu(store: &Entity<AppStore>, shortcut: &str) -> gpui_kit::AnyElement 
         .iter()
         .map(|tab| {
             let s = store.clone();
+            let open = tab.clone();
             div()
                 .id(SharedString::from(format!("panel-empty-row-{}", tab.key())))
                 .debug_selector(move || format!("panel-empty-row-{}", tab.key()))
@@ -415,7 +480,9 @@ fn empty_menu(store: &Entity<AppStore>, shortcut: &str) -> gpui_kit::AnyElement 
                         .text_color(theme::CAPTION())
                         .child(shortcut.to_string()),
                 )
-                .on_click(move |_, _, cx| s.update(cx, |st, cx| st.open_panel_tab(*tab, cx)))
+                .on_click(move |_, _, cx| {
+                    s.update(cx, |st, cx| st.open_panel_tab(open.clone(), cx))
+                })
                 .into_any_element()
         })
         .collect();
@@ -449,6 +516,7 @@ pub fn plus_menu_card(
         .map(|tab| {
             let s = store.clone();
             let shortcut = shortcut.clone();
+            let open = tab.clone();
             div()
                 .id(SharedString::from(format!("panel-plus-item-{}", tab.key())))
                 .debug_selector(move || format!("panel-plus-item-{}", tab.key()))
@@ -470,7 +538,9 @@ pub fn plus_menu_card(
                         .text_color(theme::CAPTION())
                         .child(shortcut.to_string()),
                 )
-                .on_click(move |_, _, cx| s.update(cx, |st, cx| st.open_panel_tab(*tab, cx)))
+                .on_click(move |_, _, cx| {
+                    s.update(cx, |st, cx| st.open_panel_tab(open.clone(), cx))
+                })
                 .into_any_element()
         })
         .collect();

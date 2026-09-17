@@ -13,6 +13,8 @@ path = "src/main.rs"
 [dependencies]
 image.workspace = true
 base64.workspace = true
+# PDF 预览(解析 + 纯 Rust 栅格化;features/preview/pdf.rs)
+pdf-render.workspace = true
 dsh-attachment.workspace = true
 dsh-core.workspace = true
 anyhow.workspace = true

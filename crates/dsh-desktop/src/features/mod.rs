@@ -5,6 +5,8 @@ pub(crate) mod ask;
 pub(crate) mod attachments;
 pub(crate) mod chat;
 pub(crate) mod feedback;
+pub(crate) mod files;
+pub(crate) mod preview;
 pub(crate) mod search;
 pub(crate) mod sessions;
 pub(crate) mod settings;
