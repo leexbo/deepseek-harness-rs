@@ -7497,3 +7497,32 @@ fn open_session_stats_arrive_async_off_ui_thread(cx: &mut TestAppContext) {
     assert!(filled, "泵空后统计应经异步回填落表");
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// 预览行可见性回归锁:text 与 code 行体必须有非零尺寸的行(修复前
+/// list 裸挂塌 0 高、可见范围空、行闭包从不调用——体 selector 在场
+/// 但内容全空)。未知后缀(.lock)落纯文本兜底,代码后缀(.rs)落
+/// 代码渲染器,两者行都必须实际渲染
+#[gpui_kit::test]
+fn preview_text_and_code_rows_visible(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "preview-rows");
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("建夹具目录");
+    std::fs::write(ws.join("a.lock"), "LOCK_LINE_ONE\nsecond\n").expect("写 lock");
+    std::fs::write(ws.join("b.rs"), "fn main() {}\n").expect("写 rs");
+    for (name, sel) in [
+        ("a.lock", "preview-text-row-0"),
+        ("b.rs", "preview-code-line-0"),
+    ] {
+        let abs = ws.join(name).display().to_string();
+        cx.update(|app| {
+            store.update(app, |st, cx| st.open_file_preview(&abs, None, cx));
+        });
+        let row = wait_bounds(cx, &mut wcx, sel);
+        assert!(
+            f32::from(row.size.height) > 0. && f32::from(row.size.width) > 0.,
+            "{name} 首行应有非零尺寸(实际 {:?})",
+            row.size
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}

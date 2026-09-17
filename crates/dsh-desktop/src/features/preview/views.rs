@@ -668,6 +668,7 @@ fn preview_lines_body(
             });
             let mut row = div()
                 .id(("preview-code-line", ix))
+                .debug_selector(move || format!("preview-code-line-{ix}"))
                 .flex()
                 .items_baseline()
                 .pl(px(8.))
@@ -717,6 +718,7 @@ fn preview_lines_body(
                 .document_order(PREVIEW_ORDER_BASE + ix as u64);
             div()
                 .id(("preview-text-row", ix))
+                .debug_selector(move || format!("preview-text-row-{ix}"))
                 .flex()
                 .px(px(14.))
                 .py(px(1.))
@@ -744,7 +746,9 @@ fn preview_lines_body(
         .flex_1()
         .min_h(px(0.))
         .vertical_scrollbar(&FullTrackHandle::new(&list_state, px(0.)))
-        .child(rows)
+        // list 元素须显式尺寸(裸挂塌 0 高 → 可见范围空、行闭包不调用;
+        // chat 列同款 h_full().w_full())
+        .child(rows.h_full().w_full())
         .into_any_element()
 }
 
