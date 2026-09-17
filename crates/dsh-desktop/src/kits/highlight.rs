@@ -268,6 +268,17 @@ const CACHE_MIN_BYTES: usize = 512;
 /// 域内自持高亮缓存(见 kits::cache;key 撞车互不可见)
 static CACHE: MemoCache<Vec<Vec<Span>>> = MemoCache::new(CACHE_CAP, CACHE_MIN_BYTES);
 
+/// 持所有权形态(后台线程调用:调用方的行集无法跨 await 借用,
+/// 收 Arc 按值进任务后在此建引用视图)
+pub(crate) fn highlight_window_owned(
+    key: &str,
+    lang: Option<&str>,
+    lines: std::sync::Arc<Vec<String>>,
+) -> Option<std::sync::Arc<Vec<Vec<Span>>>> {
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    highlight_window(key, lang, &refs)
+}
+
 /// 带缓存的高亮窗口:key 需调用方稳定(read 卡 = call key;markdown 块 =
 /// 节点 key)。命中条件 = 同 key + 同 lang + 内容哈希一致。
 pub(crate) fn highlight_window(

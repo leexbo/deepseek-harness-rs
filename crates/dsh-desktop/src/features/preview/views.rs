@@ -23,7 +23,6 @@ use gpui_kit::{
 
 use super::store::PreviewBucket;
 use crate::kits::filetype::{self, DocRenderer};
-use crate::kits::highlight::highlight_window;
 use crate::kits::icons::{DshIcon, fixed};
 use crate::kits::markdown;
 use crate::kits::theme;
@@ -618,21 +617,16 @@ fn preview_lines_body(
     cx: &mut App,
 ) -> gpui_kit::AnyElement {
     let code = snap.renderer == Some(DocRenderer::Code);
-    let (list_state, lines, highlight_line) = {
+    // spans/lines 都取 Arc(每帧 O(1) 拷贝);code 高亮在后台任务算好
+    // 落桶(store::preview_maybe_kick_highlight),未就绪行按纯色渲染
+    let (list_state, spans, highlight_line) = {
         let st = store.read(cx);
         match st.preview.buckets.get(rel) {
-            Some(b) => (b.code_list.clone(), b.lines.clone(), b.highlight_line),
+            Some(b) => (b.code_list.clone(), b.spans.clone(), b.highlight_line),
             None => return div().flex_1().min_h(px(0.)).into_any_element(),
         }
     };
-    // code 高亮:整窗一次(spans 与行对齐;缓存见 highlight_window)
-    let spans = if code {
-        let lang = name.rsplit('.').next();
-        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-        highlight_window(&format!("preview-code-{}", rel.display()), lang, &refs)
-    } else {
-        None
-    };
+    let _ = name;
     let row_store = store.clone();
     let row_rel = rel.clone();
     let rows = gpui_kit::list(list_state.clone(), move |ix, _window, cx| {

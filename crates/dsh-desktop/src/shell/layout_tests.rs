@@ -7526,3 +7526,46 @@ fn preview_text_and_code_rows_visible(cx: &mut TestAppContext) {
     }
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// 预览高亮后台化回归锁:code 文件行**先于**高亮可见(修复前整窗
+/// syntect 高亮在渲染帧内同步跑,5000 行 ≈ 6s 冻结),spans 随后台
+/// 任务渐进落桶。锁机制:行 bounds 在 spans 落桶前已非零;随后轮询
+/// 桶内 spans 到位
+#[gpui_kit::test]
+fn preview_code_rows_render_before_highlight(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "preview-hl");
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("建夹具目录");
+    let body: String = (0..600)
+        .map(|i| format!("fn f{i}() -> u32 {{ {i} }}\n"))
+        .collect();
+    std::fs::write(ws.join("big.rs"), body).expect("写 big.rs");
+    let abs = ws.join("big.rs").display().to_string();
+    cx.update(|app| {
+        store.update(app, |st, cx| st.open_file_preview(&abs, None, cx));
+    });
+    // 行先可见(高亮未到位也必须有行)
+    let row = wait_bounds(cx, &mut wcx, "preview-code-line-0");
+    assert!(f32::from(row.size.height) > 0., "首行应先于高亮可见");
+    // spans 后台渐进落桶
+    let mut spans_ready = false;
+    for _ in 0..300 {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+        if cx.update(|app| {
+            store
+                .read(app)
+                .preview
+                .buckets
+                .values()
+                .any(|b| b.spans.as_ref().is_some_and(|s| s.len() == 600))
+        }) {
+            spans_ready = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    assert!(spans_ready, "后台高亮应渐进落桶(600 行 spans)");
+    let _ = std::fs::remove_dir_all(root);
+}

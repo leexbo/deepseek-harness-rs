@@ -39,8 +39,15 @@ pub struct PreviewBucket {
     pub wrap: bool,
     /// 已载页(offset → 页;text-pages)
     pub pages: BTreeMap<u32, TextPage>,
-    /// 已载行缓存(页到达时重建;code 行列与计数的数据源)
-    pub lines: Vec<String>,
+    /// 已载行缓存(页到达时重建;code 行列与计数的数据源;Arc 共享,
+    /// 渲染每帧 O(1) 拷贝)
+    pub lines: Arc<Vec<String>>,
+    /// code 高亮 spans(后台任务产物;None = 未就绪,行按纯色渲染)
+    pub spans: Option<Arc<Vec<Vec<crate::kits::highlight::Span>>>>,
+    /// 行内容代号(lines 重建即 +1;过期高亮回包丢弃)
+    pub highlight_epoch: u64,
+    /// 高亮任务在途(防重复踢)
+    pub highlight_pending: bool,
     /// 已读到最后一行
     pub eof: bool,
     /// 装载进行中
@@ -85,7 +92,10 @@ impl PreviewBucket {
             loaded_mode: None,
             wrap: true,
             pages: BTreeMap::new(),
-            lines: Vec::new(),
+            lines: Arc::new(Vec::new()),
+            spans: None,
+            highlight_epoch: 0,
+            highlight_pending: false,
             eof: false,
             loading: false,
             failure: None,
@@ -136,7 +146,8 @@ impl PreviewBucket {
             .unwrap_or(1)
     }
 
-    /// 页到达后重建行缓存并对齐 code 行列(追加 splice,重载 reset)
+    /// 页到达后重建行缓存并对齐 code 行列(追加 splice,重载 reset)。
+    /// 行内容变化 → 高亮代号 +1、spans 失效(由装载完成回调重踢后台)
     fn rebuild_lines(&mut self, reset: bool) {
         let mut lines = Vec::new();
         for page in self.pages.values() {
@@ -149,7 +160,10 @@ impl PreviewBucket {
             }
         }
         let count = lines.len();
-        self.lines = lines;
+        self.lines = Arc::new(lines);
+        self.highlight_epoch += 1;
+        self.spans = None;
+        self.highlight_pending = false;
         if reset || count < self.code_list_count {
             self.code_list.reset(count);
         } else if count > self.code_list_count {
@@ -162,7 +176,6 @@ impl PreviewBucket {
     /// 清装载内容(渲染器跨 mode 切换 / 重载)
     fn clear_content(&mut self) {
         self.pages.clear();
-        self.lines.clear();
         self.eof = false;
         self.failure = None;
         self.complete = None;
@@ -356,6 +369,7 @@ impl AppStore {
                 if let Some(offset) = next_page {
                     s.preview_load_page(&rel_done, offset, cx);
                 }
+                s.preview_maybe_kick_highlight(&rel_done, cx);
                 cx.notify();
             });
             Ok::<(), anyhow::Error>(())
@@ -597,6 +611,57 @@ impl AppStore {
         .detach();
     }
 
+    /// 踢 code 高亮后台任务(syntect 全窗高亮是秒级成本,禁止在渲染
+    /// 帧内跑——首帧先出纯色行,色块渐进到位;lines 变化经
+    /// highlight_epoch 使过期回包失效)
+    fn preview_maybe_kick_highlight(&mut self, rel: &PathBuf, cx: &mut Context<Self>) {
+        let is_code = self.preview_renderer_of(rel) == Some(DocRenderer::Code);
+        let (lines, epoch, pending, lang) = {
+            let Some(bucket) = self.preview.buckets.get(rel) else {
+                return;
+            };
+            let lang = file_name_of(rel).rsplit('.').next().map(str::to_string);
+            (
+                bucket.lines.clone(),
+                bucket.highlight_epoch,
+                bucket.highlight_pending,
+                lang,
+            )
+        };
+        if !is_code || pending || lines.is_empty() {
+            return;
+        }
+        {
+            let Some(bucket) = self.preview.buckets.get_mut(rel) else {
+                return;
+            };
+            bucket.highlight_pending = true;
+        }
+        let key = format!("preview-code-{}", rel.display());
+        let store = cx.entity().clone();
+        let rel_done = rel.clone();
+        cx.spawn(async move |_this, cx| {
+            let spans = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::kits::highlight::highlight_window_owned(&key, lang.as_deref(), lines)
+                })
+                .await;
+            store.update(cx, |s, cx| {
+                let Some(bucket) = s.preview.buckets.get_mut(&rel_done) else {
+                    return;
+                };
+                if bucket.highlight_epoch != epoch {
+                    return; // 行已变(续页/重载):回包过期,完成回调会重踢
+                }
+                bucket.highlight_pending = false;
+                bucket.spans = spans;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// 消费行导航:滚动到目标行并一次性高亮
     fn preview_consume_nav(&mut self, rel: &std::path::Path) {
         let Some(bucket) = self.preview.buckets.get_mut(rel) else {
@@ -670,6 +735,9 @@ impl AppStore {
         }
         if mode_change || idle {
             self.preview_start_load(rel, cx);
+        } else {
+            // 同 mode 切到 code:内容已在,直接踢高亮
+            self.preview_maybe_kick_highlight(rel, cx);
         }
         cx.notify();
     }
