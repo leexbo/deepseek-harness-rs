@@ -20,7 +20,7 @@ use std::sync::{Arc, OnceLock};
 use gpui_kit::Rgba;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, ScopeSelectors, Theme, ThemeItem, ThemeSettings};
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::{SyntaxDefinition, SyntaxSet};
 
 use super::cache::MemoCache;
 
@@ -38,11 +38,24 @@ struct Engine {
     themes: [Theme; 2],
 }
 
+/// syntect 默认语法集缺 TOML(find_syntax_by_token 实测为 None);
+/// 内嵌 Sublime 官方 TOML 语法定义,引擎构建时合并
+const TOML_SYNTAX: &str = include_str!("../../assets/syntaxes/TOML.sublime-syntax");
+
 fn engine() -> &'static Engine {
     static ENGINE: OnceLock<Engine> = OnceLock::new();
-    ENGINE.get_or_init(|| Engine {
-        set: SyntaxSet::load_defaults_newlines(),
-        themes: [plus_theme(false), plus_theme(true)],
+    ENGINE.get_or_init(|| {
+        let mut builder = SyntaxSet::load_defaults_newlines().into_builder();
+        // 资产随二进制分发,损坏属分发级异常:降级纯文本不崩(高亮
+        // 完整性由测试锁兜底——toml 高亮用例失败即资产坏)
+        match SyntaxDefinition::load_from_str(TOML_SYNTAX, true, Some("TOML")) {
+            Ok(def) => builder.add(def),
+            Err(err) => eprintln!("[dsh-desktop] TOML 语法装载失败,回退纯文本:{err}"),
+        }
+        Engine {
+            set: builder.build(),
+            themes: [plus_theme(false), plus_theme(true)],
+        }
     })
 }
 
@@ -190,8 +203,8 @@ fn plus_theme(dark: bool) -> Theme {
 
 // ── 高亮管线 ─────────────────────────────────────────────────
 
-/// 常见语言名归一/近似(默认语法集的缺口:无 TypeScript/toml——
-/// TS 按 JS 近似高亮,toml 回退纯文本;后续如需精确再补语法包)
+/// 常见语言名归一/近似(默认语法集的缺口:无 TypeScript——TS 按 JS
+/// 近似高亮;TOML 经内嵌官方语法定义补齐,见 [`TOML_SYNTAX`])
 fn alias(lang: &str) -> String {
     match lang.to_ascii_lowercase().as_str() {
         "typescript" | "ts" | "tsx" | "jsx" => "javascript".into(),
@@ -303,8 +316,38 @@ mod tests {
         assert!(highlight_window("t", Some("rs"), &lines).is_some());
         assert!(highlight_window("t", Some("py"), &lines).is_some());
         assert!(highlight_window("t", Some("typescript"), &lines).is_some());
+        // TOML 经内嵌官方语法补齐(默认集没有;资产坏/合并失败即红)
+        assert!(highlight_window("t", Some("toml"), &["[package]"]).is_some());
         assert!(highlight_window("t", Some("no-such-lang"), &lines).is_none());
         assert!(highlight_window("t", None, &lines).is_none());
+    }
+
+    /// TOML 高亮着色锁:字符串行吃 STRING 色、注释行吃 COMMENT 色
+    /// (内嵌语法定义 + 自写主题 scope 匹配两环都在才有色)
+    #[test]
+    fn toml_highlight_colors() {
+        let lines = ["name = \"app\"", "# note"];
+        let spans = highlight("toml", &lines).expect("toml 高亮应可用");
+        let stringed = &spans[0];
+        assert!(
+            stringed
+                .iter()
+                .any(|s| s.text.contains("app") && s.color == palette::STRING),
+            "字符串值应收 STRING 色,实际 {:?}",
+            stringed
+                .iter()
+                .map(|s| (s.color, s.text.clone()))
+                .collect::<Vec<_>>()
+        );
+        let commented = &spans[1];
+        assert!(
+            commented.iter().all(|s| s.color == palette::COMMENT),
+            "注释行应收 COMMENT 色,实际 {:?}",
+            commented
+                .iter()
+                .map(|s| (s.color, s.text.clone()))
+                .collect::<Vec<_>>()
+        );
     }
 
     /// Light+ 主题构造:浅盘字面值就位(浅色代码块的分发面)
