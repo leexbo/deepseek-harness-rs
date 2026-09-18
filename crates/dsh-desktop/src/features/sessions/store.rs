@@ -63,6 +63,9 @@ impl AppStore {
         // 命令行是输入意图,不属于会话状态:切换即弃(否则残留到别的
         // 会话,发送时被拼上 /plan 等——跨会话污染)
         self.chat.pending_command = None;
+        // TextView 流式注册表随旧会话焚毁(重开重解析一次;防跨会话
+        // key 残留与 map 无界增长)
+        self.chat.tv_streams.clear();
         self.sync_active_workspace_from_current();
         self.refresh_session_cfg(id);
         // 统计异步回填:冷路径全量折叠大日志,同步跑 GPUI 线程会

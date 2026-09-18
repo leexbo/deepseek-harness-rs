@@ -4,6 +4,7 @@
 pub(crate) mod chat_pane;
 pub(crate) mod composer;
 mod context_meter;
+pub(crate) mod mermaid_plugin;
 pub(crate) mod mermaid_viewer;
 pub(crate) mod projection;
 mod reference;

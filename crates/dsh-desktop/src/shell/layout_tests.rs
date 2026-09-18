@@ -697,6 +697,15 @@ fn at_completion_rows_truncate_and_cap(cx: &mut TestAppContext) {
 /// Mermaid 查看器全链路:内嵌**卡片**工具有控(图表/代码、±缩放、下载、
 /// 放大);点击卡片图 → 查看器(纯图:画布 + 角落关闭钮,无工具栏)→
 /// Esc 关闭。放大/下载动作落在卡片上,查看器"放大只放大图片"。
+
+/// 提取文本中第一个 mermaid 围栏的源码(mermaid 插件卡片键的输入)
+fn first_mermaid_source(text: &str) -> Option<String> {
+    let start = text.find("```mermaid")? + "```mermaid".len();
+    let rest = &text[start..];
+    let end = rest.find("\n```")?;
+    Some(rest[..end].trim().to_string())
+}
+
 /// 全程持单槽测试锁(开图同步渲染/关闭驱逐都触全局 VIEWER_SLOT,与
 /// kits 单槽测试、防抖生命周期测试并发交叠会互相覆盖档位)。
 #[gpui_kit::test]
@@ -731,17 +740,21 @@ fn mermaid_viewer_full_interaction(cx: &mut TestAppContext) {
     for _ in 0..80 {
         std::thread::sleep(std::time::Duration::from_millis(200));
         redraw(cx, &mut wcx);
-        if let Some(key) = cx.update(|app| {
+        if let Some(src) = cx.update(|app| {
             store
                 .read(app)
                 .current_nodes()
                 .iter()
                 .find_map(|n| match n {
-                    ChatNode::Assistant { key, text, .. } if !text.is_empty() => Some(key.clone()),
+                    ChatNode::Assistant { text, .. } if !text.is_empty() => {
+                        first_mermaid_source(text)
+                    }
                     _ => None,
                 })
         }) {
-            let sel: &'static str = Box::leak(format!("{key}-md-mermaid-1").into_boxed_str());
+            // 插件化后卡片键 = 源码 hash(不再依赖节点 key 与块序)
+            let card_key = crate::features::chat::mermaid_plugin::mermaid_card_key(&src);
+            let sel: &'static str = Box::leak(format!("{card_key}-md-mermaid-0").into_boxed_str());
             if wcx.debug_bounds(sel).is_some() {
                 fig_sel = Some(sel);
                 break;

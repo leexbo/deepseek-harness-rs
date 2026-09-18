@@ -7,9 +7,7 @@
 
 use gpui_kit::component::IconName;
 use gpui_kit::component::StyledExt;
-use gpui_kit::component::WindowExt;
 use gpui_kit::component::native_menu::NativeMenu;
-use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, Div, Entity, InteractiveElement, IntoElement,
@@ -23,7 +21,6 @@ use super::projection::{
 use crate::kits::icons::{self, DshIcon, fixed};
 use crate::kits::theme;
 use crate::shell::metrics::{H_PAD, NAV_GUTTER_W, RUN_CLOCK_AFTER_SECS, SCROLLBAR_GUTTER_W};
-use std::sync::Arc;
 
 use crate::shell::store::AppStore;
 
@@ -1634,27 +1631,27 @@ fn assistant_block(
     // 正文区:仅在有内容时出现——推理期活动指示由 Think 行的
     // 尾部摘要 + 光标承担(此前的孤立 ▍ 行视觉上不成指示)
     if !text.is_empty() {
-        // 流式与定稿统一 markdown 渲染(所见即所得;parse 按节点
-        // 缓存,重解析只发生在文本真正变化的 chunk 帧)。流式光标
-        // 由 markdown::render_streaming 在渲染期追加到末块(缓存
-        // 哈希不含光标 → chunk 间的纯 vsync 帧直接命中缓存)
-        // mermaid 卡片集:动作钩子 + per-key 状态快照(控件在卡片上,
-        // 放大/缩放/下载/图表-代码切换;查看器是纯图,不把控件带进去)
-        let cards = build_mermaid_cards(&s, cx);
-        let order = crate::kits::markdown::CHAT_ORDER_BASE
-            + (1 + ix as u64) * crate::kits::markdown::ORDER_STRIDE;
-        col = col.child(if streaming {
-            crate::kits::markdown::render_streaming_clickable(
-                &key,
-                text,
-                Some(cards.clone()),
-                order,
-            )
-            .into_any_element()
-        } else {
-            crate::kits::markdown::render_clickable(&key, text, Some(cards), order)
-                .into_any_element()
-        });
+        // 正文 = gpui-kit TextView(流式经渲染前 flush 的 push_str 增量
+        // 驱动,见 ChatStore::sync_chat_list;定稿幂等)。流式光标在
+        // 文档尾外层追加(试验形态;mermaid 待插件批次接入)
+        let body_view = store.read(cx).chat.tv_streams.view(&key, text).plugin(
+            crate::features::chat::mermaid_plugin::MermaidTextViewPlugin {
+                store: store.clone(),
+            },
+        );
+        let body = div()
+            .min_w(px(0.))
+            .flex_1()
+            .child(body_view)
+            .when(streaming, |el| {
+                el.child(
+                    div()
+                        .id(("asst-cursor", ix))
+                        .text_color(theme::LABEL_2())
+                        .child("▍"),
+                )
+            });
+        col = col.child(body);
         // 定稿后可复制(流式中复制半截无意义);正文下方左对齐
         // 常显动作行(文档流内,非浮层)= 复制 + 消息反馈(赞/踩/备注)
         if !streaming {
@@ -1672,85 +1669,6 @@ fn assistant_block(
     col
 }
 
-/// 组装单条助手消息的 mermaid 卡片集:动作钩子(捕获 store entity,用户
-/// 点击卡片工具条时经 `store.update` 调 store 方法)+ 每卡片 key 的状态
-/// 快照(读取 store 里已持久化的 per-card `MermaidCard`)。`cards.states`
-/// 来自 store 的 `mermaid_cards` 映射,按 `{prefix}-md-mermaid-{ix}` 键。
-fn build_mermaid_cards(s: &Entity<AppStore>, cx: &App) -> crate::kits::mermaid::MermaidCards {
-    let store = s.clone();
-    let states = s
-        .read(cx)
-        .chat
-        .mermaid_cards
-        .iter()
-        .map(|(k, v)| {
-            (
-                k.clone(),
-                crate::kits::mermaid::MermaidCardState {
-                    show_code: v.show_code,
-                    copied: v.copied,
-                },
-            )
-        })
-        .collect();
-    let callbacks = crate::kits::mermaid::MermaidCardCallbacks {
-        toggle_code: {
-            let store = store.clone();
-            Arc::new(move |card_key, _w, cx| {
-                store.update(cx, |st, cx| st.toggle_mermaid_code(card_key, cx));
-            })
-        },
-        copy: {
-            // 复制反馈在按钮本体(store 侧绿色「已复制」态切换),
-            // 不用异步通知——反馈须锚定在动作发生处
-            let store = store.clone();
-            Arc::new(move |card_key, source, _w, cx| {
-                store.update(cx, |st, cx| st.copy_mermaid_source(card_key, &source, cx));
-            })
-        },
-        enlarge: {
-            let store = store.clone();
-            Arc::new(move |card_key, source, _w, cx| {
-                // 开图占位 = 卡片在档光栅(缓存命中零渲染;卡片固定
-                // 1.0 档,与内嵌预览共用缓存)——占位的渲染档上下文:
-                // 全图、pan 0。查看器首档走后台渲染,就位前地图式过渡
-                // 显示占位,主线程不同步 usvg 解析
-                let placeholder = crate::kits::mermaid::raster_at_zoom(card_key, &source, cx, 1.0)
-                    .ok()
-                    .map(|img| (img, 1.0));
-                store.update(cx, |st, cx| {
-                    st.open_mermaid_enlarged(source, placeholder, cx)
-                });
-            })
-        },
-        download: {
-            // 下载完成提示用 can-gpui-component Notification(自动消失),
-            // 而非 push_local_notice(插入消息流 → 永久)。导出为同步纯函数
-            //(固定 1.0 自然档);通知需 window(WindowExt::push_notification),
-            // 故回调收 &mut Window。
-            Arc::new(|_card_key, source, window, cx| {
-                let msg = match crate::kits::mermaid::export_diagram_png(&source, 1.0, cx) {
-                    Ok(p) => (
-                        "已导出:".to_string() + &p.display().to_string(),
-                        NotificationType::Success,
-                    ),
-                    Err(e) => (format!("导出失败:{e}"), NotificationType::Error),
-                };
-                window.push_notification(
-                    Notification::new()
-                        .id::<MermaidDownloadNotice>()
-                        .message(msg.0)
-                        .with_type(msg.1),
-                    cx,
-                );
-            })
-        },
-    };
-    crate::kits::mermaid::MermaidCards { states, callbacks }
-}
-
-/// 下载通知的稳定类型 id:同类型通知互相替换(连续导出不无限堆叠)
-struct MermaidDownloadNotice;
 #[allow(clippy::too_many_arguments)]
 fn tool_block(
     store: &Entity<AppStore>,

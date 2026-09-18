@@ -272,6 +272,9 @@ pub(crate) struct ChatStore {
     /// 卡片自绘工具条(图表/代码、±缩放、下载、放大)由此挂靠;查看器
     /// 纯图态读同一张卡的状态。
     pub mermaid_cards: HashMap<String, MermaidCard>,
+    /// 聊天正文 TextView 流式注册表(渲染前 flush 驱动;见
+    /// kits::markdown_tv)
+    pub tv_streams: crate::kits::markdown_tv::TvStreamRegistry,
 }
 
 impl Default for ChatStore {
@@ -327,6 +330,7 @@ impl Default for ChatStore {
             mermaid_viewer: None,
             mermaid_reraster: None,
             mermaid_cards: HashMap::new(),
+            tv_streams: crate::kits::markdown_tv::TvStreamRegistry::default(),
         }
     }
 }
@@ -685,6 +689,23 @@ impl AppStore {
     /// (flush 伴生)。行数以 row_slots(派生行槽)为准,非 nodes 原始数
     pub fn sync_chat_list(&mut self, cx: &mut Context<Self>) {
         self.ensure_row_slots();
+        // TextView 流式驱动(渲染前 flush:前缀匹配 push_str 增量/漂移
+        // set_text;幂等,文本未变零开销。须在任何提前 return 之前)
+        let assistant_feed: Vec<(String, String)> = self
+            .current_chat()
+            .map(|c| {
+                c.nodes
+                    .iter()
+                    .filter_map(|n| match n {
+                        ChatNode::Assistant { key, text, .. } => Some((key.clone(), text.clone())),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (k, t) in assistant_feed {
+            self.chat.tv_streams.drive(&k, &t, cx);
+        }
         let sid = self.state.current_id.clone();
         // 列表行数 = 行槽 + 流尾插队气泡(伪行;session/queue 帧驱动增减)
         let steering = self
