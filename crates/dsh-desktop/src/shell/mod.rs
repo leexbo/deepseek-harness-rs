@@ -373,7 +373,9 @@ impl Render for WorkspaceView {
             || st.sessions.menu_open_ws.is_some()
             || st.sessions.workspace_menu_open
             || st.panel_plus_menu_at.is_some()
-            || st.preview.menu.is_some();
+            || st.preview.menu.is_some()
+            || st.stats_card.is_some()
+            || st.chat.tail_card.is_some();
         let settings_open = st.settings.settings_open;
         div()
             .relative()
@@ -690,6 +692,111 @@ impl Render for WorkspaceView {
                     el.children(card)
                 },
             )
+            // 会话统计 / Token 用量卡(状态栏两 pill 点击;仪表卡左缘对齐
+            // pill 左、用量卡右缘对齐 pill 右,卡底缘贴 chip 顶上方 5px,
+            // 同计费卡模式)
+            .when(
+                self.store.read(cx).stats_card.is_some()
+                    && !self.store.read(cx).settings.settings_open,
+                |el| {
+                    let st = self.store.read(cx);
+                    let (bounds, align_right) = match st.stats_card {
+                        Some(crate::shell::store::StatsCardKind::Time) => {
+                            (st.stats_time_bounds, false)
+                        }
+                        Some(crate::shell::store::StatsCardKind::Usage) => {
+                            (st.stats_usage_bounds, true)
+                        }
+                        None => (None, false),
+                    };
+                    let card = bounds.map(|b| {
+                        let card = match st.stats_card {
+                            Some(crate::shell::store::StatsCardKind::Usage) => {
+                                statusbar::token_usage_card(&self.store, cx)
+                            }
+                            _ => statusbar::session_stats_card(&self.store, cx),
+                        };
+                        let vh = f32::from(window.viewport_size().height);
+                        let vw = f32::from(window.viewport_size().width);
+                        let mut anchor = div()
+                            .id("stats-card")
+                            .debug_selector(|| "stats-card".to_string())
+                            .absolute()
+                            .bottom(px(vh - f32::from(b.origin.y) + 5.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::BORDER())
+                            .bg(if theme::is_dark() {
+                                theme::LAYER()
+                            } else {
+                                theme::CARD()
+                            })
+                            .shadow_md()
+                            .occlude()
+                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .child(card);
+                        // 用量卡右缘贴 pill 右;仪表卡左缘贴 pill 左(窄窗
+                        // clamp 进视口,卡体 min_w 260)
+                        anchor = if align_right {
+                            anchor.right(px(vw - f32::from(b.origin.x + b.size.width)))
+                        } else {
+                            anchor.left(px(f32::from(b.origin.x).min((vw - 268.).max(8.))))
+                        };
+                        anchor
+                    });
+                    el.children(card)
+                },
+            )
+            // 轮尾统计卡(聊天区轮尾 pill 点击;卡在触发行上方生长,视口
+            // 内 clamp,同计费卡模式)
+            .when(self.store.read(cx).chat.tail_card.is_some(), |el| {
+                let st = self.store.read(cx);
+                let card = st.chat.tail_card.as_ref().and_then(|tc| {
+                    // 切会话后残留卡不渲染
+                    if st.state.current_id.as_deref() != Some(tc.session_id.as_str()) {
+                        return None;
+                    }
+                    let card = match tc.kind {
+                        crate::features::chat::store::TailCardKind::Usage => {
+                            crate::features::chat::chat_pane::turn_usage_card(&self.store, cx)
+                        }
+                        crate::features::chat::store::TailCardKind::Time => {
+                            crate::features::chat::chat_pane::turn_time_card(&self.store, cx)
+                        }
+                    };
+                    let vh = f32::from(window.viewport_size().height);
+                    let vw = f32::from(window.viewport_size().width);
+                    // 卡在触发行上方生长(bottom 锚,同计费卡):永不遮盖
+                    // pill 行,开卡后两 pill 仍可点;左缘贴 pill 左侧,视口
+                    // 内 clamp(卡体 min_w 260)
+                    let left = (f32::from(tc.pos.x) - 20.).min((vw - 268.).max(8.)).max(8.);
+                    Some(
+                        div()
+                            .id("turn-tail-card")
+                            .debug_selector(|| "turn-tail-card".to_string())
+                            .absolute()
+                            .left(px(left))
+                            .bottom(px(vh - f32::from(tc.pos.y) + 15.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::BORDER())
+                            .bg(if theme::is_dark() {
+                                theme::LAYER()
+                            } else {
+                                theme::CARD()
+                            })
+                            .shadow_md()
+                            .occlude()
+                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .child(card),
+                    )
+                });
+                el.children(card)
+            })
             .when(
                 self.store.read(cx).sessions.rename_target.is_some()
                     || self.store.read(cx).sessions.rename_ws_target.is_some(),

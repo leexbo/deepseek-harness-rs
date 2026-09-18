@@ -1224,11 +1224,23 @@ fn render_node(
         )
         .into_any_element(),
         ChatNode::TurnTail {
+            key,
             aborted,
-            meta,
+            turn,
+            ended_ms,
+            run_ms,
             deliverables,
-            ..
-        } => turn_tail(store, *aborted, meta.as_deref(), deliverables).into_any_element(),
+        } => turn_tail(
+            store,
+            cx,
+            key,
+            *aborted,
+            *turn,
+            *ended_ms,
+            *run_ms,
+            deliverables,
+        )
+        .into_any_element(),
         ChatNode::Notice { text, .. } => notice(text).into_any_element(),
         ChatNode::Compaction {
             key,
@@ -2145,44 +2157,298 @@ fn copy_button(
         })
 }
 
-/// 回合收尾行(状态 + 用量摘要)+ 产物行(diff/edit 路径 chip)
+/// 回合收尾行(照源 TurnTailNodeView:用量 pill + 用时 pill + 时钟;
+/// 中断轮保留警示标。详情卡根级渲染,点击坐标锚定)+ 产物行
+#[allow(clippy::too_many_arguments)]
 fn turn_tail(
     store: &Entity<AppStore>,
+    cx: &App,
+    key: &str,
     aborted: bool,
-    meta: Option<&str>,
+    turn: u64,
+    ended_ms: i64,
+    run_ms: i64,
     deliverables: &[String],
 ) -> impl IntoElement {
-    let mut text = if aborted {
-        "已中断".to_string()
-    } else {
-        "回合结束".to_string()
-    };
-    if let Some(m) = meta {
-        text.push_str(&format!(" · {m}"));
-    }
+    let st = store.read(cx);
+    let session = st.state.current_id.clone().unwrap_or_default();
+    let bucket = st
+        .state
+        .chats
+        .get(&session)
+        .and_then(|c| c.turn_usage.get(&turn))
+        .cloned();
+    let total = bucket.as_ref().map(|b| {
+        b["uncachedInputTokens"].as_u64().unwrap_or(0)
+            + b["cacheReadTokens"].as_u64().unwrap_or(0)
+            + b["cacheWriteTokens"].as_u64().unwrap_or(0)
+            + b["outputTokens"].as_u64().unwrap_or(0)
+    });
+    let row = div()
+        .flex()
+        .flex_shrink_0()
+        .flex_wrap()
+        .items_center()
+        .gap(px(6.))
+        // 中断轮警示标(照源无状态文案;中断语义必须可见,保留)
+        .when(aborted, |el| {
+            el.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .text_size(px(12.))
+                    .text_color(theme::CAPTION())
+                    .child(fixed(IconName::TriangleAlert, 12.))
+                    .child("已中断"),
+            )
+        })
+        .when(!aborted && run_ms <= 0 && total.is_none(), |el| {
+            // 无任何统计可显(极老日志/零长轮):退化为静默勾标
+            el.child(fixed(IconName::Check, 12.).text_color(theme::CAPTION()))
+        })
+        .when_some(total.filter(|t| *t > 0), |el, total| {
+            el.child(tail_pill(
+                store,
+                format!("{key}-usage"),
+                format!("turn-tail-{key}-usage"),
+                fixed(gpui_kit::assets::IconName::Database, 12.).into_any_element(),
+                format!("用量 {} tok", crate::kits::fmt::fmt_tokens_abbrev(total)),
+                super::store::TailCardKind::Usage,
+                session.clone(),
+                key,
+                turn,
+            ))
+        })
+        .when(run_ms > 0, |el| {
+            el.child(tail_pill(
+                store,
+                format!("{key}-time"),
+                format!("turn-tail-{key}-time"),
+                fixed(DshIcon::Clock, 12.).into_any_element(),
+                format!("用时 {}", crate::kits::fmt::fmt_duration_run(run_ms)),
+                super::store::TailCardKind::Time,
+                session.clone(),
+                key,
+                turn,
+            ))
+        })
+        .when(ended_ms > 0, |el| {
+            el.child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(theme::CAPTION())
+                    .child(crate::kits::fmt::fmt_clock_md(ended_ms)),
+            )
+        });
     div()
         .v_flex()
         .flex_shrink_0()
         .gap(px(4.))
+        .child(row)
+        .children((!deliverables.is_empty()).then(|| deliverables_row(store, deliverables)))
+}
+
+/// 轮尾统计 pill(用量/用时;点击恒开对应卡,根级渲染见 shell/mod)
+#[allow(clippy::too_many_arguments)]
+fn tail_pill(
+    store: &Entity<AppStore>,
+    id: String,
+    sel: String,
+    icon: AnyElement,
+    label: String,
+    kind: super::store::TailCardKind,
+    session: String,
+    turn_key: &str,
+    turn: u64,
+) -> AnyElement {
+    let s = store.clone();
+    let turn_key = turn_key.to_string();
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || sel.clone())
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .px(px(6.))
+        .h(px(20.))
+        .rounded(px(6.))
+        .cursor_pointer()
+        .text_size(px(12.))
+        .text_color(theme::LABEL_2())
+        .hover(|s| s.bg(theme::DOCK()))
+        .child(icon)
+        .child(label)
+        .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
+            let pos = match ev {
+                gpui_kit::ClickEvent::Mouse(m) => m.down.position,
+                _ => Default::default(),
+            };
+            let (session, turn_key, turn, kind) = (session.clone(), turn_key.clone(), turn, kind);
+            s.update(cx, |st, cx| {
+                st.open_turn_tail_card(&session, &turn_key, turn, kind, pos, cx)
+            });
+        })
+        .into_any_element()
+}
+
+/// 本轮用量卡(用量 pill 详情,照源 TurnUsagePanel):头部总数 +
+/// 提供方 / 模型 + 缓存命中 + 输入侧桶 + 输出(含推理后缀)
+pub(crate) fn turn_usage_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
+    let bucket = tail_card_bucket(store, cx);
+    let mut card = detail_card_base();
+    let (total, rows) = match bucket {
+        Some(b) => {
+            let uncached = b["uncachedInputTokens"].as_u64().unwrap_or(0);
+            let read = b["cacheReadTokens"].as_u64().unwrap_or(0);
+            let write = b["cacheWriteTokens"].as_u64().unwrap_or(0);
+            let output = b["outputTokens"].as_u64().unwrap_or(0);
+            let reasoning = b["reasoningTokens"].as_u64().unwrap_or(0);
+            let total = uncached + read + write + output;
+            let mut rows: Vec<(String, String)> = vec![(
+                "提供方 / 模型".to_string(),
+                b["routes"]
+                    .as_array()
+                    .map(|r| {
+                        r.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default(),
+            )];
+            if let Some(hit) = crate::kits::fmt::fmt_cache_hit(read, uncached + read + write) {
+                rows.push(("缓存命中".to_string(), format!("{hit}%")));
+            }
+            rows.push(("未缓存输入".to_string(), tok_exact(uncached)));
+            rows.push(("缓存读取".to_string(), tok_exact(read)));
+            if write != 0 {
+                rows.push(("缓存写入".to_string(), tok_exact(write)));
+            }
+            let mut output_text = tok_exact(output);
+            if reasoning > 0 {
+                output_text.push_str(&format!("（其中推理 {} tok）", tok_exact_raw(reasoning)));
+            }
+            rows.push(("输出".to_string(), output_text));
+            (Some(total), rows)
+        }
+        None => (None, vec![]),
+    };
+    card = card.child(card_head(
+        fixed(gpui_kit::assets::IconName::Database, 14.).into_any_element(),
+        "本轮用量",
+        total.map(|t| format!("{} tok", crate::kits::fmt::fmt_exact_count(t))),
+    ));
+    for (label, value) in rows {
+        card = card.child(detail_row(&label, value));
+    }
+    card.into_any_element()
+}
+
+/// 本轮用时和速度卡(用时 pill 详情,照源 TurnTimePanel):
+/// 本轮总用时 / 输出速度（TPS）/ 首 token 用时（TTFT）
+pub(crate) fn turn_time_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
+    let bucket = tail_card_bucket(store, cx);
+    let mut card = detail_card_base();
+    card = card.child(card_head(
+        fixed(DshIcon::Clock, 14.).into_any_element(),
+        "本轮用时和速度",
+        None,
+    ));
+    if let Some(b) = bucket {
+        card = card
+            .child(detail_row(
+                "本轮总用时",
+                crate::kits::fmt::fmt_duration_run(b["runMs"].as_i64().unwrap_or(0)),
+            ))
+            .child(detail_row(
+                "输出速度（TPS）",
+                format!(
+                    "{} tok/s",
+                    crate::kits::fmt::fmt_tps(b["tokensPerSecond"].as_f64().unwrap_or(0.0))
+                ),
+            ))
+            .child(detail_row(
+                "首 token 用时（TTFT）",
+                crate::kits::fmt::fmt_duration_compact(b["ttftMs"].as_i64().unwrap_or(0)),
+            ));
+    }
+    card.into_any_element()
+}
+
+/// 开着的轮尾卡对应的轮桶(无卡/会话失配/无桶 → None)
+fn tail_card_bucket(store: &Entity<AppStore>, cx: &App) -> Option<serde_json::Value> {
+    let st = store.read(cx);
+    let tc = st.chat.tail_card.as_ref()?;
+    st.state
+        .chats
+        .get(&tc.session_id)?
+        .turn_usage
+        .get(&tc.turn)
+        .cloned()
+}
+
+/// 详情卡容器(与状态栏统计卡同形:p14/min_w260/行距 10)
+fn detail_card_base() -> Div {
+    div().v_flex().gap(px(10.)).p(px(14.)).min_w(px(260.))
+}
+
+/// 卡头部(图标+标题,可选右对齐总数)+ 发丝分隔线
+fn card_head(icon: AnyElement, title: &str, total: Option<String>) -> AnyElement {
+    div()
+        .v_flex()
+        .gap(px(10.))
         .child(
             div()
                 .flex()
-                .flex_shrink_0()
                 .items_center()
-                .gap(px(4.))
-                .text_size(px(12.))
-                .text_color(theme::CAPTION())
-                .child(fixed(
-                    if aborted {
-                        IconName::TriangleAlert
-                    } else {
-                        IconName::Check
-                    },
-                    12.,
-                ))
-                .child(text),
+                .gap(px(8.))
+                .child(icon)
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(theme::LABEL())
+                        .child(title.to_string()),
+                )
+                .when_some(total, |el, t| {
+                    el.child(div().flex_1())
+                        .child(div().text_size(px(13.)).text_color(theme::LABEL()).child(t))
+                }),
         )
-        .children((!deliverables.is_empty()).then(|| deliverables_row(store, deliverables)))
+        .child(div().h(px(1.)).w_full().bg(theme::BORDER()))
+        .into_any_element()
+}
+
+/// 详情卡行(label 左侧灰 / 值右对齐)
+fn detail_row(label: &str, value: String) -> AnyElement {
+    div()
+        .flex()
+        .items_baseline()
+        .justify_between()
+        .gap(px(16.))
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(theme::LABEL_2())
+                .child(label.to_string()),
+        )
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(theme::LABEL())
+                .child(value),
+        )
+        .into_any_element()
+}
+
+/// 「{千分位} tok」
+fn tok_exact(v: u64) -> String {
+    format!("{} tok", tok_exact_raw(v))
+}
+
+/// 千分位精确值
+fn tok_exact_raw(v: u64) -> String {
+    crate::kits::fmt::fmt_exact_count(v)
 }
 
 /// 产物行:basename chip + 完整路径 title,点击系统打开

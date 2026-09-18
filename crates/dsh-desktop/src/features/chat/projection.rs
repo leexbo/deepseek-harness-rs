@@ -92,8 +92,12 @@ pub enum ChatNode {
         key: String,
         /// 中断(true)/正常完成
         aborted: bool,
-        /// 用量摘要(耗时 · 首 token · tok/s;自尾部最近 assistant 用量)
-        meta: Option<String>,
+        /// 轮号(turn_usage 桶的查询键;与 Translator 计数同源)
+        turn: u64,
+        /// 收尾时刻(轮尾时钟文本;信封毫秒)
+        ended_ms: i64,
+        /// 轮墙钟用时(turn/end − turn/start;0 = 起始未知)
+        run_ms: i64,
         /// 本 turn 产出的 diff/edit 路径(产物行;去重保序)
         deliverables: Vec<String>,
     },
@@ -270,6 +274,11 @@ pub struct ChatState {
     pub compact_queued: bool,
     /// 当前 turn 已产出的 diff/edit 路径(去重保序;turn/end 挂 TurnTail 产物行)
     pub turn_deliverables: Vec<String>,
+    /// 轮号 → 轮桶(session/stats `lastTurn` 直播喂入 + 冷读 `turnList`
+    /// 整批喂入;轮尾用量/用时 pill 与统计卡的查询源)
+    pub turn_usage: std::collections::HashMap<u64, serde_json::Value>,
+    /// 当前 turn 起始时刻(信封毫秒;turn/end 求轮墙钟用时,瞬态不入相等性)
+    turn_started_ms: Option<i64>,
     /// 节点出生时刻(入场动画年龄门控:超龄不包动画,gpui list 虚拟化
     /// 重挂不重放)。纯 UI 元数据,不参与相等性。
     pub node_born: std::collections::HashMap<String, std::time::Instant>,
@@ -312,6 +321,15 @@ impl ChatState {
             .retain(|k, _| live.contains(k.as_str()));
     }
 
+    /// 喂入单轮用量桶(宿主 session/stats `lastTurn` 直播帧与冷读
+    /// `turnList` 同形;按轮号覆盖写,直播后到不漂移)
+    pub fn note_turn_usage(&mut self, turn: u64, bucket: &serde_json::Value) {
+        if bucket.is_null() {
+            return;
+        }
+        self.turn_usage.insert(turn, bucket.clone());
+    }
+
     /// 应用单个客方事件
     pub fn apply(&mut self, ev: &SessionEvent) {
         match ev.ty.as_str() {
@@ -320,6 +338,7 @@ impl ChatState {
             "turn/start" => {
                 self.running = true;
                 self.todos.clear();
+                self.turn_started_ms = Some(ev.time);
             }
             "turn/end" => {
                 self.running = false;
@@ -350,12 +369,15 @@ impl ChatState {
                         text: format!("回合出错:{msg}"),
                     });
                 } else {
-                    let meta = self.usage_meta();
                     let deliverables = std::mem::take(&mut self.turn_deliverables);
+                    let run_ms = self.turn_started_ms.map_or(0, |t0| (ev.time - t0).max(0));
+                    self.turn_started_ms = None;
                     self.push_node(ChatNode::TurnTail {
                         key: format!("turn-end:{}", ev.seq),
                         aborted,
-                        meta,
+                        turn: ev.data["turn"].as_u64().unwrap_or(0),
+                        ended_ms: ev.time,
+                        run_ms,
                         deliverables,
                     });
                 }
@@ -689,28 +711,8 @@ impl ChatState {
         self.nodes.iter().position(|n| n.key() == key)
     }
 
-    /// 回合用量摘要:自尾部最近带用量的 assistant 节点取
-    /// `耗时 x · 首 token xms · x tok/s`
-    fn usage_meta(&self) -> Option<String> {
-        for n in self.nodes.iter().rev() {
-            let ChatNode::Assistant { usage: Some(u), .. } = n else {
-                continue;
-            };
-            let ms = u["durationMs"].as_i64()?;
-            let ttft = u["ttftMs"].as_i64().unwrap_or(0);
-            let toks = u["outputTokens"].as_u64().unwrap_or(0);
-            let mut meta = format!("耗时 {}", fmt_duration(ms));
-            if ttft > 0 {
-                meta.push_str(&format!(" · 首 token {ttft}ms"));
-            }
-            if ms > 0 && toks > 0 {
-                let tps = (toks as f64 / (ms as f64 / 1000.0)).round() as u64;
-                meta.push_str(&format!(" · {tps} tok/s"));
-            }
-            return Some(meta);
-        }
-        None
-    }
+    // 回合用量摘要已退役(旧「耗时 · 首 token · tok/s」文本行):轮尾
+    // 统计改由 turn_usage 桶驱动 pill + 详情卡(照源 TurnUsagePanel)
 }
 
 /// 零高节点:空正文且无思考的定稿 Assistant(纯 tool_calls 步的
@@ -941,15 +943,6 @@ pub fn nav_anchors(slots: &[RowSlot], nodes: &[ChatNode]) -> Vec<NavAnchor> {
         });
     }
     out
-}
-
-/// 毫秒 → 人读时长(与 statsbar 同形)
-fn fmt_duration(ms: i64) -> String {
-    if ms >= 1000 {
-        format!("{:.1}s", ms as f64 / 1000.0)
-    } else {
-        format!("{ms}ms")
-    }
 }
 
 /// 流式节点 key:a:<turn>:<step>
@@ -1282,17 +1275,53 @@ mod tests {
             }
             other => panic!("expected tool, got {other:?}"),
         }
-        // 回合收尾:用量摘要自尾部最近带用量 assistant(a:1:1)聚合
+        // 回合收尾:轮号/收尾时刻入节点(turn_usage 桶由 stats 帧另行喂入)
         match &st.nodes[4] {
-            ChatNode::TurnTail { aborted, meta, .. } => {
+            ChatNode::TurnTail {
+                aborted,
+                turn,
+                ended_ms,
+                run_ms,
+                ..
+            } => {
                 assert!(!aborted);
-                assert_eq!(
-                    meta.as_deref(),
-                    Some("耗时 100ms · 首 token 50ms · 50 tok/s")
-                );
+                assert_eq!(*turn, 1);
+                assert_eq!(*ended_ms, 0);
+                assert_eq!(*run_ms, 0);
             }
             other => panic!("expected turn tail, got {other:?}"),
         }
+    }
+
+    /// 轮墙钟用时:turn/start 与 turn/end 信封时刻差;turn_usage 桶按
+    /// 轮号喂入后可被尾行查询
+    #[test]
+    fn turn_tail_tracks_run_ms_and_usage_bucket() {
+        let mut st = ChatState::default();
+        let mut start = ev("turn/start", 1, json!({ "turn": 1 }));
+        start.time = 1_000;
+        st.apply(&start);
+        let mut end = ev(
+            "turn/end",
+            9,
+            json!({ "turn": 1, "reason": { "kind": "completed" } }),
+        );
+        end.time = 31_000;
+        st.apply(&end);
+        match &st.nodes[0] {
+            ChatNode::TurnTail { turn, run_ms, .. } => {
+                assert_eq!(*turn, 1);
+                assert_eq!(*run_ms, 30_000);
+            }
+            other => panic!("expected turn tail, got {other:?}"),
+        }
+        // 桶喂入(宿主 stats lastTurn 同形)→ 按轮号可查
+        st.note_turn_usage(
+            1,
+            &json!({ "turn": 1, "runMs": 30_000, "outputTokens": 2645 }),
+        );
+        assert!(st.turn_usage.contains_key(&1));
+        assert_eq!(st.turn_usage.get(&1).unwrap()["outputTokens"], 2645);
     }
 
     /// 压缩事件对:summary → Compaction 标记行(带统计);error →

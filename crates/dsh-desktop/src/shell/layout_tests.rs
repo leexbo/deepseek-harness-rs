@@ -79,7 +79,9 @@ fn workspace_chat_nodes_do_not_overlap(cx: &mut TestAppContext) {
         chat.nodes.push(ChatNode::TurnTail {
             key: "turn-end:99".into(),
             aborted: false,
-            meta: Some("耗时 1.2s".into()),
+            turn: 1,
+            ended_ms: 0,
+            run_ms: 1_200,
             deliverables: vec![],
         });
         for (n, node) in chat.nodes.iter().enumerate() {
@@ -5247,6 +5249,183 @@ fn statusbar_badges_render(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 状态栏统计 pill(照源 StatsPills):数据在场渲染两 pill,点击各弹
+/// 详情卡且互斥(开一关另一);turns==0 整组不渲染
+#[gpui_kit::test]
+fn statusbar_stats_pills_open_detail_cards(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "stats-pills");
+    let id = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("当前会话");
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.stats_by_id.insert(
+                id.clone(),
+                serde_json::json!({
+                    "turns": 8, "steps": 371,
+                    "llmMs": 1_081_000, "toolMs": 1_266_000,
+                    "firstTokenMs": 1_300, "tokensPerSecond": 262,
+                    "inputTokens": 74_887_088, "outputTokens": 161_652,
+                    "uncachedInputTokens": 235_440,
+                    "cacheReadTokens": 74_651_648, "cacheWriteTokens": 0,
+                    "reasoningTokens": 0,
+                }),
+            );
+            cx.notify();
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("statusbar-stats-time").is_some(),
+        "仪表 pill 未渲染"
+    );
+    assert!(
+        wcx.debug_bounds("statusbar-stats-usage").is_some(),
+        "用量 pill 未渲染"
+    );
+
+    // 点用量 pill → Token 用量卡;再点仪表 pill → 会话统计卡(互斥)
+    click_sel(&mut wcx, "statusbar-stats-usage");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds("stats-card").is_some(), "用量卡未弹出");
+    assert_eq!(
+        cx.update(|app| store.read(app).stats_card),
+        Some(crate::shell::store::StatsCardKind::Usage)
+    );
+    click_sel(&mut wcx, "statusbar-stats-time");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).stats_card),
+        Some(crate::shell::store::StatsCardKind::Time),
+        "开仪表卡应收起用量卡(互斥)"
+    );
+
+    // 无统计(turns==0)整组不渲染
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.stats_by_id
+                .insert(id.clone(), serde_json::json!({ "turns": 0 }));
+            st.stats_card = None;
+            cx.notify();
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("statusbar-stats-time").is_none(),
+        "turns==0 仪表 pill 应隐藏"
+    );
+    assert!(wcx.debug_bounds("statusbar-stats-usage").is_none());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 轮尾统计 pill(照源 TurnTailNodeView):用量/用时 pill + 两张详情卡,
+/// 桶按轮号喂入(冷读 turnList 与直播 lastTurn 同形)
+#[gpui_kit::test]
+fn turn_tail_pills_open_detail_cards(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "turn-tail-pills");
+    let id = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("当前会话");
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let mut chat = crate::features::chat::ChatState::default();
+            chat.nodes.push(crate::features::chat::ChatNode::Assistant {
+                key: "a:1:1".into(),
+                text: "答复".into(),
+                reasoning: String::new(),
+                streaming: false,
+                usage: None,
+                message_id: String::new(),
+            });
+            chat.nodes.push(crate::features::chat::ChatNode::TurnTail {
+                key: "turn-end:9".into(),
+                aborted: false,
+                turn: 1,
+                ended_ms: 1_758_000_000_000,
+                run_ms: 30_000,
+                deliverables: vec![],
+            });
+            st.state.chats.insert(id.clone(), chat);
+            st.chat.chat_version += 1;
+            cx.notify();
+        });
+    });
+    // 冷读喂桶(session_stats turnList 同形;历史轮尾即有用量)
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.note_turn_usage_list(
+                &id,
+                &serde_json::json!([
+                    {
+                        "turn": 1, "runMs": 30_000, "llmMs": 4_000, "toolMs": 0,
+                        "ttftMs": 1_300, "tokensPerSecond": 262,
+                        "uncachedInputTokens": 1_516,
+                        "cacheReadTokens": 2_477_952,
+                        "cacheWriteTokens": 0,
+                        "outputTokens": 2_645, "reasoningTokens": 1_505,
+                        "routes": ["deepseek-official/deepseek-flash"],
+                    }
+                ]),
+                cx,
+            );
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("turn-tail-turn-end:9-usage").is_some(),
+        "轮尾用量 pill 未渲染"
+    );
+    assert!(
+        wcx.debug_bounds("turn-tail-turn-end:9-time").is_some(),
+        "轮尾用时 pill 未渲染"
+    );
+
+    // 点用量 pill → 本轮用量卡;点用时 pill → 本轮用时和速度卡
+    click_sel(&mut wcx, "turn-tail-turn-end:9-usage");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds("turn-tail-card").is_some(), "轮尾卡未弹出");
+    assert_eq!(
+        cx.update(|app| {
+            store
+                .read(app)
+                .chat
+                .tail_card
+                .as_ref()
+                .map(|c| (c.turn, c.kind))
+        }),
+        Some((1, crate::features::chat::store::TailCardKind::Usage))
+    );
+    click_sel(&mut wcx, "turn-tail-turn-end:9-time");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| {
+            store
+                .read(app)
+                .chat
+                .tail_card
+                .as_ref()
+                .map(|c| (c.turn, c.kind))
+        }),
+        Some((1, crate::features::chat::store::TailCardKind::Time)),
+        "用时卡应替换用量卡"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// hero 模式(preset)选择:点 chip → 卡片 → 选「最小模式」→
 /// 宿主 override + 缓存回写 + 菜单关
 #[gpui_kit::test]
@@ -6592,7 +6771,9 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
             chat.nodes.push(ChatNode::TurnTail {
                 key: "turn-end:99".into(),
                 aborted: false,
-                meta: None,
+                turn: 1,
+                ended_ms: 0,
+                run_ms: 0,
                 deliverables: vec![],
             });
             st.state.chats.insert(id, chat);
@@ -6920,7 +7101,9 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
                 chat.nodes.push(ChatNode::TurnTail {
                     key: format!("turn-end:{t}"),
                     aborted: false,
-                    meta: None,
+                    turn: t as u64,
+                    ended_ms: 0,
+                    run_ms: 0,
                     deliverables: vec![],
                 });
             }

@@ -3,6 +3,7 @@
 
 pub(crate) mod cache;
 pub(crate) mod filetype;
+pub(crate) mod fmt;
 pub(crate) mod highlight;
 pub(crate) mod icons;
 pub(crate) mod markdown_tv;

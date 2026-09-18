@@ -277,6 +277,31 @@ pub(crate) struct ChatStore {
     pub tv_streams: crate::kits::markdown_tv::TvStreamRegistry,
     /// TextView 观察者订阅(异步解析落地 → 外层行重测;随会话清理)
     pub tv_subs: Vec<gpui_kit::Subscription>,
+    /// 轮尾统计卡开态(用量/用时 pill 点击;点击坐标锚定,根级渲染)
+    pub tail_card: Option<TailCard>,
+}
+
+/// 轮尾统计卡(照源 TurnUsagePanel/TurnTimePanel 的 popover)
+#[derive(Debug, Clone, PartialEq)]
+pub struct TailCard {
+    /// 归属会话(切会话后残留卡不渲染)
+    pub session_id: String,
+    /// 尾行 key(turn-end:<seq>)
+    pub turn_key: String,
+    /// 轮号(用量桶查询键)
+    pub turn: u64,
+    pub kind: TailCardKind,
+    /// 触发点击的窗口坐标(根级卡片左上锚,同 row_menu)
+    pub pos: gpui_kit::Point<gpui_kit::Pixels>,
+}
+
+/// 轮尾统计卡种类
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TailCardKind {
+    /// 本轮用量
+    Usage,
+    /// 本轮用时和速度
+    Time,
 }
 
 impl Default for ChatStore {
@@ -316,6 +341,7 @@ impl Default for ChatStore {
             rendered_version: 0,
             composer_menu: ComposerMenu::None,
             perm_chip_bounds: None,
+            tail_card: None,
             composer_submenu: None,
             queue_dock_collapsed: true,
             queue_editing: None,
@@ -1568,6 +1594,75 @@ impl AppStore {
     /// Esc 关 @ 补全
     pub fn cancel_at_completion(&mut self, cx: &mut Context<Self>) {
         if self.chat.at_completion.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// 轮尾统计卡开态(pill 点击恒开;关闭走外点全关。绝对方向,
+    /// 禁 toggle——真机嵌套 on_click 连发纪律)
+    pub fn open_turn_tail_card(
+        &mut self,
+        session_id: &str,
+        turn_key: &str,
+        turn: u64,
+        kind: TailCardKind,
+        pos: gpui_kit::Point<gpui_kit::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.chat.tail_card = Some(TailCard {
+            session_id: session_id.to_string(),
+            turn_key: turn_key.to_string(),
+            turn,
+            kind,
+            pos,
+        });
+        cx.notify();
+    }
+
+    /// 喂入最近完成轮的用量桶(session/stats `lastTurn` 直播推送;
+    /// 同值幂等不重复 notify)
+    pub fn note_last_turn_usage(
+        &mut self,
+        id: &str,
+        last_turn: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(turn) = last_turn["turn"].as_u64() else {
+            return;
+        };
+        let Some(chat) = self.state.chats.get_mut(id) else {
+            return;
+        };
+        if chat.turn_usage.get(&turn) != Some(last_turn) {
+            chat.note_turn_usage(turn, last_turn);
+            cx.notify();
+        }
+    }
+
+    /// 整批喂入历史轮桶(冷读 session_stats `turnList`;打开旧会话时
+    /// 历史轮尾即有用量)
+    pub fn note_turn_usage_list(
+        &mut self,
+        id: &str,
+        turn_list: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(list) = turn_list.as_array() else {
+            return;
+        };
+        let Some(chat) = self.state.chats.get_mut(id) else {
+            return;
+        };
+        let mut changed = false;
+        for bucket in list {
+            if let Some(turn) = bucket["turn"].as_u64()
+                && chat.turn_usage.get(&turn) != Some(bucket)
+            {
+                chat.note_turn_usage(turn, bucket);
+                changed = true;
+            }
+        }
+        if changed {
             cx.notify();
         }
     }

@@ -32,6 +32,15 @@ pub enum HeroMenu {
     Preset,
 }
 
+/// 状态栏统计卡种类(两 pill 各自的详情卡;与计费卡互斥)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatsCardKind {
+    /// 会话统计(仪表 pill:模型用时/工具用时/TTFT/TPS)
+    Time,
+    /// Token 用量(数据库 pill:缓存命中/输入侧桶/输出)
+    Usage,
+}
+
 /// 会话级配置缓存(打开会话时拉取,设置成功后回写)
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionCfg {
@@ -74,6 +83,11 @@ pub struct AppStore {
     pub billing_card_open: bool,
     /// 徽标渲染期捕获 bounds(计费卡片根级渲染的锚定分子,同权限 chip)
     pub billing_chip_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
+    /// 状态栏统计卡开态(仪表/数据库 pill 点击恒开;与计费卡互斥,关闭走外点全关)
+    pub stats_card: Option<StatsCardKind>,
+    /// 两统计 pill 渲染期捕获 bounds(统计卡根级渲染的锚定分子,同计费徽标)
+    pub stats_time_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
+    pub stats_usage_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
     /// 剪贴板快捷键 App 级拦截订阅(cmd-v 图片粘贴 / cmd-c 文档选中复制;
     /// 挂窗一次;见 attach_window_state 注册点)
     pub clipboard_intercept: Option<gpui_kit::Subscription>,
@@ -177,6 +191,9 @@ impl AppStore {
             billing_tick: None,
             billing_card_open: false,
             billing_chip_bounds: None,
+            stats_card: None,
+            stats_time_bounds: None,
+            stats_usage_bounds: None,
             clipboard_intercept: None,
             attachments: AttachmentsStore::default(),
             ask: AskStore::default(),
@@ -534,6 +551,11 @@ impl AppStore {
             }
             Effect::StatsUpsert(id, stats) => {
                 // 事件驱动实时统计(宿主落档点增量聚合的推送)
+                let last_turn = stats.get("lastTurn").cloned();
+                if let Some(lt) = last_turn {
+                    // 最近完成轮桶 → 对应会话投影(轮尾 pill/卡的查询源)
+                    self.note_last_turn_usage(&id, &lt, cx);
+                }
                 self.stats_by_id.insert(id, stats);
                 // 顺带刷分支:模型可经 bash 切分支(非准静态),HEAD
                 // 微秒级单文件读,搭统计事件车足够新
@@ -566,6 +588,11 @@ impl AppStore {
             let v = rx.await;
             store.update(cx, |s, cx| {
                 if let Ok(Ok(v)) = v {
+                    // 历史轮桶整批喂入(轮尾用量 pill 对全部轮次生效)
+                    let turn_list = v.get("turnList").cloned();
+                    if let Some(list) = turn_list {
+                        s.note_turn_usage_list(&sid, &list, cx);
+                    }
                     s.stats_by_id.insert(sid, v);
                 }
                 cx.notify();
@@ -637,6 +664,8 @@ impl AppStore {
         self.panel_plus_menu_at = None;
         self.preview.menu = None;
         self.billing_card_open = false;
+        self.stats_card = None;
+        self.chat.tail_card = None;
         self.sync_lineage_tick(cx);
         cx.notify();
     }
