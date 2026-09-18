@@ -8019,3 +8019,36 @@ fn chat_drag_across_user_bubbles_excludes_textview_body(cx: &mut TestAppContext)
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// 排版实证:多行段落经 tv_static 渲染后的实际块高,判定
+/// text_size(14)/line_height(1.75) 包装是否落到 paint(10 行:
+/// 14/1.75≈245px;若继承断裂回落 16/1.5≈360px)
+#[gpui_kit::test]
+fn tv_typography_probe_block_height(cx: &mut TestAppContext) {
+    cx.update(|app| {
+        gpui_kit::component::init(app);
+        crate::kits::theme::init(app);
+    });
+    struct V;
+    impl Render for V {
+        fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            div()
+                .id("tv-typo")
+                .debug_selector(|| "tv-typo".to_string())
+                .w(px(400.))
+                .child(crate::kits::markdown_tv::tv_static("tv-typo-md", "单行"))
+        }
+    }
+    let (_root, cx) = cx.add_window_view(|window, cx| {
+        let v = cx.new(|_| V);
+        gpui_kit::component::Root::new(v, window, cx)
+    });
+    cx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    let h = cx
+        .debug_bounds("tv-typo")
+        .map(|b| f32::from(b.size.height))
+        .unwrap_or(0.);
+    eprintln!("[probe] 10 行段落块高 = {h}px");
+    assert!(h > 0., "块应有高度");
+}

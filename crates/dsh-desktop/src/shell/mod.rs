@@ -433,12 +433,11 @@ impl Render for WorkspaceView {
                     .h_full()
                     // 自绘标题栏(拖拽/双击缩放由 TitleBar 提供;
                     // pl 覆盖 = 交通灯已移左列侧栏上,右列无让位;
-                    // h 覆盖 = 组件库默认 34,与右栏面板头 40 同高对齐);
                     // 无底部分割线(靠留白分层)
                     .child(
                         gpui_kit::component::TitleBar::new()
                             .pl(px(8.))
-                            .h(px(40.))
+                            .h(px(34.))
                             .child(topbar::title_bar_row(&self.store, window, cx)),
                     )
                     .child(

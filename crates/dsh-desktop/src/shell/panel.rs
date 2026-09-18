@@ -257,7 +257,7 @@ fn panel_header(
         .id("panel-drag")
         .flex()
         .flex_shrink_0()
-        .h(px(40.))
+        .h(px(34.))
         .items_center()
         .on_mouse_down(MouseButton::Left, |_, window, _| {
             window.start_window_move();

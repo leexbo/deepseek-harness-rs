@@ -94,7 +94,7 @@ const fn color(hex: u32, a: f32) -> Rgba {
 
 /// 毛玻璃 tint 涂层不透明度:macOS 深盘的 Root 涂层盖住大部分透视,
 /// 非 macOS 无模糊落地,保持实色
-const WINDOW_TINT_A: f32 = if cfg!(target_os = "macos") { 0.92 } else { 1.0 };
+const WINDOW_TINT_A: f32 = if cfg!(target_os = "macos") { 0.96 } else { 1.0 };
 
 /// 深盘侧栏与标题栏同源色(Finder 板岩蓝灰采样一族;用户拍板顶条
 /// 与侧栏同色,同源常量防漂移)

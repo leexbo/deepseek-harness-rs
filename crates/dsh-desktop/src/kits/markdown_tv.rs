@@ -24,7 +24,7 @@ use gpui_kit::{
 /// 经 [`TextViewStyle`] 调
 fn styled_view(view: TextView) -> gpui_kit::AnyElement {
     div()
-        .text_size(px(14.))
+        .text_size(px(13.))
         .line_height(relative(1.75))
         // 滚动条槽预留(旧渲染器世界由列宽计算扣除,TextView 路径
         // 丢失 = 换行宽度吃满整行,右缘数个字符被裁);行尾不可断段
@@ -43,7 +43,7 @@ fn view_style() -> TextViewStyle {
         // 标题与正文同字号,仅粗细区分(多级字号混排显「大大小小」)
         heading_font_size: Some(std::sync::Arc::new(|_level: u8, base| base)),
         // 代码块字号 13;配色全部走 theme 派生默认(不另行改色)
-        code_block: StyleRefinement::default().text_size(px(13.)),
+        code_block: StyleRefinement::default().text_size(px(12.)),
         is_dark: crate::kits::theme::is_dark(),
         ..Default::default()
     }
