@@ -1942,23 +1942,26 @@ impl AppHost {
         Ok(crate::trajectory::page_of(data, max_records, before_index))
     }
 
-    /// session.stats:轮/步/LLM 与工具时长/首 token/速率/缓存/tokens/上下文占用。
+    /// session.stats:轮/步/LLM 与工具时长/首 token/速率/缓存/tokens/上下文占用,
+    /// 另带 turnList(全部完成轮桶,桌面按轮号喂历史轮尾用量)。
     /// 全量 fold 与直播推送([`stats::StatsAgg`])共用同一 apply 逻辑;
     /// 冷读(打开会话/丢帧自愈)走此路径,直播增量见 driver_loop
     pub fn session_stats(&self, id: &str) -> Result<Value, RpcError> {
         let log = self.session_log(id)?;
-        let mut agg = stats::StatsAgg::default();
+        let mut agg = stats::StatsAgg::with_retained_turns();
         for ev in &log {
-            agg.apply(&ev.r#type, &ev.data);
+            agg.apply(&ev.r#type, ev.time, &ev.data);
         }
         let breakdown = crate::context::context_breakdown(log.iter());
-        Ok(agg.to_json(
+        let provider_label = self.provider_for(&self.resolve_session(id).0).id.clone();
+        Ok(agg.to_json_full(
             stats::Breakdown {
                 system_tokens: breakdown.system_tokens,
                 tools_tokens: breakdown.tools_tokens,
                 message_tokens: breakdown.message_tokens,
             },
             self.session_context_window(id),
+            &provider_label,
         ))
     }
 
@@ -7173,9 +7176,15 @@ async fn driver_loop(
         if let Ok(l) = inner.log.lock() {
             for ev in l.iter() {
                 translator.translate(ev);
-                stats_agg.apply(&ev.r#type, &ev.data);
+                stats_agg.apply(&ev.r#type, ev.time, &ev.data);
             }
         }
+        // routes 的提供方半边:会话生效 provider = 工作区当前 provider
+        // (会话级切换即 set_workspace_provider + 重附着,无独立会话覆盖)
+        let provider_label = host0
+            .provider_for(&host0.resolve_session(&session_id).0)
+            .id
+            .clone();
         let mux = host0.mux.clone();
         let sid = session_id.clone();
         // 4a 完整溯源模型:本 turn 的注入上下文队列(contexts,transient,不
@@ -7248,7 +7257,7 @@ async fn driver_loop(
                     // 客户端轮询;chunk 等高频非统计事件不推)。构成三段
                     // 为字符启发式线性扫,随推随算保鲜
                     if stats::StatsAgg::is_stats_event(&ev.r#type) {
-                        stats_agg.apply(&ev.r#type, &ev.data);
+                        stats_agg.apply(&ev.r#type, ev.time, &ev.data);
                         let breakdown = inner
                             .log
                             .lock()
@@ -7262,9 +7271,15 @@ async fn driver_loop(
                                 }
                             })
                             .unwrap_or_default();
+                        let mut stats_json = stats_agg.to_json(breakdown, context_window);
+                        // 最近完成轮桶(turn/end 收口即推,轮尾即时拿到
+                        // 本轮用量;无完成轮时缺键)
+                        if let Some(lt) = stats_agg.last_turn_json(&provider_label) {
+                            stats_json["lastTurn"] = lt;
+                        }
                         let _ = mux.send(frame(
                             "session/stats",
-                            json!({ "sessionId": sid, "stats": stats_agg.to_json(breakdown, context_window) }),
+                            json!({ "sessionId": sid, "stats": stats_json }),
                         ));
                     }
                 },
@@ -8805,6 +8820,25 @@ mod tests {
             rpc["contextUsed"],
             "推送与 RPC 恒等(contextUsed)"
         );
+        // turn/end 收口即推:事件帧后的下一帧 stats 带 lastTurn(轮桶),
+        // RPC turnList 同值(同一 apply 折叠,两路不漂移)
+        let closing = recv_until(&mut mux, |f| f.method == "session/stats")
+            .await
+            .expect("turn/end 触发的统计推送");
+        let lt = &closing.payload["stats"]["lastTurn"];
+        assert_eq!(lt["turn"], 1, "轮桶轮号");
+        assert!(lt["runMs"].is_u64(), "轮桶带 runMs: {lt}");
+        assert!(
+            lt["routes"].as_array().is_some_and(|r| {
+                r.iter()
+                    .any(|x| x.as_str().is_some_and(|s| s.contains('/')))
+            }),
+            "routes 形如 provider/model: {lt}"
+        );
+        let list = rpc["turnList"].as_array().expect("RPC turnList");
+        assert_eq!(list.len(), 1, "冷读全留轮桶");
+        assert_eq!(list[0]["turn"], lt["turn"], "两路轮桶恒等");
+        assert_eq!(list[0]["outputTokens"], lt["outputTokens"]);
     }
 
     /// 队列串行:两个 prompt 依次各跑一个 turn
