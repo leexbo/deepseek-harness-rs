@@ -23,8 +23,9 @@ tokio.workspace = true
 futures.workspace = true
 # GPUI Kit 门面:重导出 gpui(=gpui-pre)+ component/base/assets
 smallvec.workspace = true
-# tree-sitter = MCP JSON 粘贴区语法高亮(经 gpui-kit 透传)
-gpui-kit = { workspace = true, features = ["tree-sitter"] }
+# tree-sitter = 预览代码高亮(Zed 同款管线;29 种语言聚合,
+# SyntaxHighlighter 独立使用经 gpui-kit 透传;MCP JSON 粘贴区共用)
+gpui-kit = { workspace = true, features = ["tree-sitter", "tree-sitter-languages"] }
 pulldown-cmark.workspace = true
 # Mermaid 图渲染(markdown```mermaid 围栏 → SVG → gpui 光栅;kits/mermaid.rs)
 merman.workspace = true

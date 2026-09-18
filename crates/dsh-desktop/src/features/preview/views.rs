@@ -643,22 +643,22 @@ fn preview_lines_body(
         };
         if code {
             let spans_line = spans.as_ref().and_then(|s| s.get(ix)).map(|line_spans| {
-                let mut ranges: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
-                let mut off = 0usize;
-                for s in line_spans {
-                    let end = off + s.text.len();
-                    if off < end {
-                        ranges.push((
-                            off..end,
-                            HighlightStyle {
-                                color: Some(s.color.into()),
-                                ..Default::default()
-                            },
-                        ));
-                    }
-                    off = end;
-                }
-                ranges
+                line_spans
+                    .iter()
+                    .filter_map(|s| {
+                        let start = s.offset;
+                        let end = start + s.text.len();
+                        (start < end).then(|| {
+                            (
+                                start..end,
+                                HighlightStyle {
+                                    color: Some(s.color.into()),
+                                    ..Default::default()
+                                },
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
             });
             let mut row = div()
                 .id(("preview-code-line", ix))
