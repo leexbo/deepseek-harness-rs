@@ -62,16 +62,6 @@ impl TvStreamRegistry {
     pub(crate) fn clear(&mut self) {
         self.map.clear();
     }
-
-    /// 在册条目数(诊断/测试)
-    pub(crate) fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    /// 是否空注册表
-    pub(crate) fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
 }
 
 #[cfg(test)]
@@ -228,7 +218,7 @@ mod tests {
                             .id("tv-stream-full")
                             .debug_selector(|| "tv-stream-full".to_string())
                             .w(px(400.))
-                            .child(tv_static("full", &Self::TARGET)),
+                            .child(tv_static("full", Self::TARGET)),
                     )
             }
         }

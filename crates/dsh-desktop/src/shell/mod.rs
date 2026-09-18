@@ -394,7 +394,7 @@ impl Render for WorkspaceView {
             // 不经 predecessor 回退跳进右栏(见 SelectionDomainSink)
             .child(div().absolute().size_full().child(SelectionDomainSink::new(
                 "sel-sink-chat",
-                crate::kits::markdown::CHAT_TAIL_ORDER,
+                crate::kits::selection_order::CHAT_TAIL_ORDER,
             )))
             .when(any_menu_open, |el| {
                 el.on_mouse_down(gpui_kit::MouseButton::Left, {

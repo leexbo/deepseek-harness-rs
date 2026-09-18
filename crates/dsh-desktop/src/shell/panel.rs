@@ -143,7 +143,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 .size_full()
                 .child(crate::shell::SelectionDomainSink::new(
                     "sel-sink-panel",
-                    crate::kits::markdown::PANEL_TAIL_ORDER,
+                    crate::kits::selection_order::PANEL_TAIL_ORDER,
                 )),
         )
         .child(panel_header(store, &tabs, active_tab.clone()))
@@ -605,13 +605,12 @@ fn panel_plan_content(latest: Option<(String, PlanStatus)>) -> impl IntoElement 
                                 .child(status_text),
                         ),
                 )
-                .child(div().text_size(px(13.)).text_color(theme::LABEL_2()).child(
-                    crate::kits::markdown::render(
-                        "panel-plan",
-                        &plan,
-                        crate::kits::markdown::PANEL_ORDER_BASE,
-                    ),
-                ));
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(theme::LABEL_2())
+                        .child(crate::kits::markdown_tv::tv_static("panel-plan", &plan)),
+                );
         }
     }
     col

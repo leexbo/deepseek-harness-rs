@@ -694,10 +694,6 @@ fn at_completion_rows_truncate_and_cap(cx: &mut TestAppContext) {
     );
 }
 
-/// Mermaid 查看器全链路:内嵌**卡片**工具有控(图表/代码、±缩放、下载、
-/// 放大);点击卡片图 → 查看器(纯图:画布 + 角落关闭钮,无工具栏)→
-/// Esc 关闭。放大/下载动作落在卡片上,查看器"放大只放大图片"。
-
 /// 提取文本中第一个 mermaid 围栏的源码(mermaid 插件卡片键的输入)
 fn first_mermaid_source(text: &str) -> Option<String> {
     let start = text.find("```mermaid")? + "```mermaid".len();

@@ -24,7 +24,6 @@ use gpui_kit::{
 use super::store::PreviewBucket;
 use crate::kits::filetype::{self, DocRenderer};
 use crate::kits::icons::{DshIcon, fixed};
-use crate::kits::markdown;
 use crate::kits::theme;
 use crate::shell::panel::PreviewTab;
 use crate::shell::scroll::FullTrackHandle;
@@ -352,7 +351,7 @@ fn preview_body(
                 .overflow_y_scroll()
                 .p(px(14.))
                 .child(div().text_size(px(13.)).text_color(theme::LABEL_2()).child(
-                    markdown::render("preview-markdown", &text, PREVIEW_ORDER_BASE),
+                    crate::kits::markdown_tv::tv_static("preview-markdown", &text),
                 ))
                 .into_any_element()
         }

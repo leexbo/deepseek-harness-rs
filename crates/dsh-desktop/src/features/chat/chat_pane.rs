@@ -908,14 +908,13 @@ fn compaction_block(
                 ),
         )
         .when(open, |el| {
-            let order = crate::kits::markdown::CHAT_ORDER_BASE
-                + (1 + ix as u64) * crate::kits::markdown::ORDER_STRIDE;
             el.child(
                 div()
                     .mt(px(4.))
                     .pl(px(20.))
-                    .child(crate::kits::markdown::render_clickable(
-                        &key_owned, summary, None, order,
+                    .child(crate::kits::markdown_tv::tv_static(
+                        key_owned.clone(),
+                        summary,
                     )),
             )
         })
@@ -1390,12 +1389,7 @@ fn plan_archive_card(
                     .overflow_y_scroll()
                     .text_size(px(13.))
                     .text_color(theme::LABEL_2())
-                    .child(crate::kits::markdown::render(
-                        key,
-                        plan,
-                        crate::kits::markdown::CHAT_ORDER_BASE
-                            + (1 + ix as u64) * crate::kits::markdown::ORDER_STRIDE,
-                    )),
+                    .child(crate::kits::markdown_tv::tv_static(key.to_string(), plan)),
             )
         })
 }
@@ -1465,11 +1459,11 @@ fn user_bubble(
 /// [`gpui_kit::base::SelectableText`] 参与窗口选择(拖选/复制)。
 fn bubble_rich_text(ix: usize, text: &str) -> impl IntoElement {
     let tokens = super::reference::scan_at_tokens(text);
-    // 气泡 order:聊天域 + 消息序 × 步长 + 段序(与 assistant 正文/
-    // 计划卡同一公式;分区背景见 markdown::PANEL_ORDER_BASE 注释)
+    // 气泡 order:聊天域 + 消息序 × 步长 + 段序(分区常量见
+    // kits::selection_order)
     let order = |seg: usize| {
-        crate::kits::markdown::CHAT_ORDER_BASE
-            + (1 + ix as u64) * crate::kits::markdown::ORDER_STRIDE
+        crate::kits::selection_order::CHAT_ORDER_BASE
+            + (1 + ix as u64) * crate::kits::selection_order::ORDER_STRIDE
             + seg as u64
     };
     if tokens.is_empty() {

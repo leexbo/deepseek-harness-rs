@@ -3003,11 +3003,9 @@ fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryReco
         );
     }
     if let Some(o) = &r.output_detail {
-        col = col.child(div().mt(px(6.)).child(crate::kits::markdown::render(
-            &format!("traj-preview-{}", r.index),
+        col = col.child(div().mt(px(6.)).child(crate::kits::markdown_tv::tv_static(
+            gpui_kit::SharedString::from(format!("traj-preview-{}", r.index)),
             o,
-            crate::kits::markdown::PANEL_ORDER_BASE
-                + (1 + r.index) * crate::kits::markdown::ORDER_STRIDE,
         )));
     }
     if r.output_detail.is_none() && r.thinking_detail.is_none() {
@@ -3101,13 +3099,7 @@ fn context_markdown_body(r: &TrajectoryRecord, key: &str) -> Div {
     let mut col = div().v_flex();
     match r.payload.as_deref() {
         Some(text) if !text.is_empty() => {
-            col = col.child(crate::kits::markdown::render(
-                key,
-                text,
-                crate::kits::markdown::PANEL_ORDER_BASE
-                    + (1 + r.index) * crate::kits::markdown::ORDER_STRIDE
-                    + 1024,
-            ));
+            col = col.child(crate::kits::markdown_tv::tv_static(key.to_string(), text));
         }
         _ => col = col.child(empty_text("No content")),
     }
@@ -3120,11 +3112,9 @@ fn preview_tab_body(r: &TrajectoryRecord) -> Div {
     let mut col = div().debug_selector(move || key.clone()).v_flex();
     match r.payload.as_deref() {
         Some(text) if !text.is_empty() => {
-            col = col.child(crate::kits::markdown::render(
-                &format!("traj-preview-{}", r.index),
+            col = col.child(crate::kits::markdown_tv::tv_static(
+                gpui_kit::SharedString::from(format!("traj-preview-{}", r.index)),
                 text,
-                crate::kits::markdown::PANEL_ORDER_BASE
-                    + (1 + r.index) * crate::kits::markdown::ORDER_STRIDE,
             ));
         }
         _ => col = col.child(empty_text("No content")),
@@ -3185,13 +3175,7 @@ fn system_body(r: &TrajectoryRecord) -> Div {
     match &r.system_prompt {
         Some(p) if !p.is_empty() => {
             let key = format!("traj-sys-{}", r.index);
-            col = col.child(crate::kits::markdown::render(
-                &key,
-                p,
-                crate::kits::markdown::PANEL_ORDER_BASE
-                    + (1 + r.index) * crate::kits::markdown::ORDER_STRIDE
-                    + 2048,
-            ));
+            col = col.child(crate::kits::markdown_tv::tv_static(key.clone(), p));
         }
         _ => col = col.child(empty_text("No system prompt in this request")),
     }
