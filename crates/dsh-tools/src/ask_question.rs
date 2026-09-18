@@ -71,7 +71,7 @@ impl ToolPort for AskQuestionTool {
             "type": "function",
             "function": {
                 "name": "ask_user_question",
-                "description": "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Send one or more questions, each with a stable id that will be echoed in the answer.",
+                "description": "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Send one or more questions, each with a stable id that will be echoed in the answer. An answer item with an empty `selected` array means the user skipped the question: treat it as 'no answer' — never choose an option on the user's behalf and never continue the skipped decision; re-ask with different wording or stop and wait for the user's explicit direction.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -207,6 +207,44 @@ fn args_or_json_string(args: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 模型面 skip 契约锁:空 selected = 用户跳过,描述必须载明
+    /// 「不得代选、不得推进,应重问或停止等待」(真机事故:模型把空
+    /// selected 读成「按推荐项继续」并擅自推进)
+    #[test]
+    fn description_carries_skip_contract() {
+        let tool = super::AskQuestionTool::new(std::sync::Arc::new(RecordingPort), "ws");
+        let spec = tool.specs()[0]["function"]["description"]
+            .as_str()
+            .expect("描述应在场")
+            .to_string();
+        assert!(
+            spec.contains("empty `selected` array means the user skipped"),
+            "描述应载明空选择的 skip 语义"
+        );
+        assert!(
+            spec.contains("never choose an option on the user's behalf"),
+            "描述应禁止代用户选择"
+        );
+        assert!(
+            spec.contains("wait for the user's explicit direction"),
+            "描述应要求停止等待用户明确指示"
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingPort;
+
+    impl super::AskQuestionPort for RecordingPort {
+        fn ask(
+            &self,
+            _session_id: &str,
+            _questions: &[super::QuestionItem],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        {
+            Box::pin(std::future::ready(Err("未应答".into())))
+        }
+    }
 
     #[test]
     fn parse_questions_valid() {
