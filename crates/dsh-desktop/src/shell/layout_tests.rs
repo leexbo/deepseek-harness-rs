@@ -7821,3 +7821,201 @@ fn tv_wrap_width_matches_container(cx: &mut TestAppContext) {
         f32::from(b.origin.x) + f32::from(b.size.width)
     );
 }
+
+/// 验收矩阵 ④(跨域拖选泄漏)取证:聊天正文与右栏面板同为 gpui-kit
+/// TextView,共享**帧内**全局自增 order(每帧从 1 起、按绘制序发号);
+/// 用户气泡段则带手动分区 order(CHAT_ORDER_BASE = 1<<20)。选择参与
+/// 判定是 `(min..=max).contains(order)`,因此聊天内任一覆盖到气泡的
+/// 拖选区间都会把右栏(绘制序更晚、order 落在区间内)整段卷入。
+#[gpui_kit::test]
+fn cross_domain_drag_selection_stays_in_chat(cx: &mut TestAppContext) {
+    const USER_MARK: &str = "用户气泡唯一文本AAA";
+    const ASST_MARK: &str = "助手正文唯一文本BBB";
+    const PANEL_MARK: &str = "面板计划唯一文本CCC";
+    let (store, mut wcx, root) = menu_harness(cx, "sel-domain");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().expect("当前会话应在场");
+            let chat = st.state.chats.entry(id).or_default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:sel".into(),
+                text: USER_MARK.into(),
+                images: Vec::new(),
+                files: Vec::new(),
+            });
+            chat.nodes.push(ChatNode::Assistant {
+                key: "a:sel:0".into(),
+                text: ASST_MARK.into(),
+                reasoning: String::new(),
+                streaming: false,
+                usage: None,
+                message_id: "m-sel".into(),
+            });
+            chat.nodes.push(ChatNode::Plan {
+                key: "plan:sel".into(),
+                plan: PANEL_MARK.into(),
+                status: crate::features::chat::PlanStatus::Approved,
+            });
+            cx.notify();
+        });
+    });
+    redraw(cx, &mut wcx);
+    // 右栏开计划标签:面板正文与聊天正文同帧注册为选择参与者
+    wcx.simulate_keystrokes("shift-cmd-p");
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("panel-plan-view").is_some(),
+        "面板计划视图应在场(取证前提)"
+    );
+    let body_sel: &'static str = Box::leak("asst-body-a:sel:0".to_string().into_boxed_str());
+    let body = wait_bounds(cx, &mut wcx, body_sel);
+    let bubble = wcx.debug_bounds("user-bubble-0").expect("用户气泡应在场");
+    // 聊天内拖选:助手正文 → 向上拖到用户气泡(区间必然横跨两段)
+    let start = gpui_kit::Point {
+        x: body.origin.x + px(6.),
+        y: body.origin.y + px(10.),
+    };
+    let end = gpui_kit::Point {
+        x: bubble.origin.x + px(6.),
+        y: bubble.origin.y + bubble.size.height / 2.,
+    };
+    wcx.simulate_mouse_down(
+        start,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    wcx.simulate_mouse_move(
+        end,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    wcx.simulate_mouse_up(
+        end,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    redraw(cx, &mut wcx);
+    let selected = wcx.update(gpui_kit::base::TextSelection::selected_text);
+    eprintln!("[probe] cross-domain selected = {selected:?}");
+    assert!(
+        selected.contains(USER_MARK) || selected.contains(ASST_MARK),
+        "聊天内拖选应取到聊天文本,实际 {selected:?}"
+    );
+    assert!(
+        !selected.contains(PANEL_MARK),
+        "跨域拖选泄漏:右栏面板文本被卷入聊天选中区间,实际 {selected:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 验收矩阵 ④ 取证(聊天内跨气泡):用户气泡带手动大分区 order,
+/// 助手正文是帧内自增小 order → 两个气泡之间的区间里没有正文的号,
+/// 跨气泡拖选会丢掉中间的助手正文。
+#[gpui_kit::test]
+fn chat_drag_across_user_bubbles_excludes_textview_body(cx: &mut TestAppContext) {
+    const A_MARK: &str = "用户A唯一文本AAA";
+    const B_MARK: &str = "助手B唯一文本BBB";
+    const C_MARK: &str = "用户C唯一文本CCC";
+    let (store, mut wcx, root) = menu_harness(cx, "sel-bubbles");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().expect("当前会话应在场");
+            let chat = st.state.chats.entry(id).or_default();
+            for (key, text) in [
+                ("user:0", A_MARK.to_string()),
+                ("a:0:0", B_MARK.to_string()),
+                ("user:2", C_MARK.to_string()),
+            ] {
+                if key.starts_with("user") {
+                    chat.nodes.push(ChatNode::User {
+                        key: key.into(),
+                        text,
+                        images: Vec::new(),
+                        files: Vec::new(),
+                    });
+                } else {
+                    chat.nodes.push(ChatNode::Assistant {
+                        key: key.into(),
+                        text,
+                        reasoning: String::new(),
+                        streaming: false,
+                        usage: None,
+                        message_id: format!("m-{key}"),
+                    });
+                }
+            }
+            cx.notify();
+        });
+    });
+    redraw(cx, &mut wcx);
+    let body_sel: &'static str = Box::leak("asst-body-a:0:0".to_string().into_boxed_str());
+    let body = wait_bounds(cx, &mut wcx, body_sel);
+    let first = wcx.debug_bounds("user-bubble-0").expect("首个气泡应在场");
+    let last = wcx.debug_bounds("user-bubble-2").expect("末个气泡应在场");
+    eprintln!(
+        "[probe] first={:?} last={:?} body={:?} composer={:?}",
+        first,
+        last,
+        body,
+        wcx.debug_bounds("composer-hit")
+    );
+    // 跨气泡拖选:首气泡 → 末气泡(区间跨越中间的助手正文)
+    let start = gpui_kit::Point {
+        x: first.origin.x + px(22.),
+        y: first.origin.y + first.size.height / 2.,
+    };
+    let end = gpui_kit::Point {
+        x: last.origin.x + px(22.),
+        y: last.origin.y + last.size.height / 2.,
+    };
+    wcx.simulate_mouse_down(
+        start,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    wcx.simulate_mouse_move(
+        end,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    wcx.simulate_mouse_up(
+        end,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    redraw(cx, &mut wcx);
+    let selected = wcx.update(gpui_kit::base::TextSelection::selected_text);
+    eprintln!(
+        "[probe] cross-bubble selected = {selected:?} (asst body y={} h={})",
+        f32::from(body.origin.y),
+        f32::from(body.size.height)
+    );
+    // 新体制语义:助手正文 = TextView 帧内自增小 order,不在两个
+    // 气泡(手动大 order)的区间里 → 跨气泡拖选只选中气泡段
+    assert!(
+        !selected.contains(B_MARK),
+        "跨气泡拖选不应卷入 TextView 正文(帧内小 order 在区间外),实际 {selected:?}"
+    );
+    // 拖选端点落在气泡行内中段:A 取到尾部片段,C 取到首字符
+    assert!(
+        selected.contains("唯一文本AAA") && selected.contains('用'),
+        "两端气泡段应照常选中,实际 {selected:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
