@@ -54,6 +54,16 @@ pub(crate) fn tv_static(id: impl Into<gpui_kit::ElementId>, text: &str) -> gpui_
     styled_view(TextView::markdown(id, text).style(view_style()))
 }
 
+/// 驱动结果
+pub(crate) enum DriveOutcome {
+    /// 新建视图(>4KiB 历史的首轮解析是异步的,落地晚于挂载)
+    Created(Entity<TextViewState>),
+    /// 既有视图文本变化(push_str 增量或 set_text 回退)
+    Updated,
+    /// 无变化
+    None,
+}
+
 /// 流式驱动注册表(挂 ChatStore;渲染前 flush 驱动,渲染闭包只读)
 #[derive(Default)]
 pub(crate) struct TvStreamRegistry {
@@ -65,27 +75,29 @@ pub(crate) struct TvStreamRegistry {
 impl TvStreamRegistry {
     /// 渲染前 flush 驱动:前缀匹配 → push_str 增量;文本漂移(回退/
     /// 重写)→ set_text 全量;新 key → 建状态。幂等(无变化零开销)。
-    /// 返回是否发生文本变化(调用方据此触发外层列表行重测)
-    pub(crate) fn drive(&mut self, key: &str, text: &str, cx: &mut App) -> bool {
+    /// 返回结果类别(新建视图须挂观察者:异步解析落地会改变高度,
+    /// 外层虚拟化列表的行高缓存不会自愈)
+    pub(crate) fn drive(&mut self, key: &str, text: &str, cx: &mut App) -> DriveOutcome {
         match self.map.get_mut(key) {
             Some((state, last)) => {
                 if text.len() > last.len() && text.starts_with(last.as_str()) {
                     let delta = text[last.len()..].to_string();
                     state.update(cx, |s, cx| s.push_str(&delta, cx));
                     last.push_str(&delta);
-                    return true;
+                    return DriveOutcome::Updated;
                 }
                 if text != last {
                     state.update(cx, |s, cx| s.set_text(text, cx));
                     *last = text.to_string();
-                    return true;
+                    return DriveOutcome::Updated;
                 }
-                false
+                DriveOutcome::None
             }
             None => {
                 let state = cx.new(|cx| TextViewState::markdown(text, cx));
-                self.map.insert(key.to_string(), (state, text.to_string()));
-                true
+                self.map
+                    .insert(key.to_string(), (state.clone(), text.to_string()));
+                DriveOutcome::Created(state)
             }
         }
     }

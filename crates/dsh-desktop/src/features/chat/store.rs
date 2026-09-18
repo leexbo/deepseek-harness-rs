@@ -275,6 +275,8 @@ pub(crate) struct ChatStore {
     /// 聊天正文 TextView 流式注册表(渲染前 flush 驱动;见
     /// kits::markdown_tv)
     pub tv_streams: crate::kits::markdown_tv::TvStreamRegistry,
+    /// TextView 观察者订阅(异步解析落地 → 外层行重测;随会话清理)
+    pub tv_subs: Vec<gpui_kit::Subscription>,
 }
 
 impl Default for ChatStore {
@@ -331,6 +333,7 @@ impl Default for ChatStore {
             mermaid_reraster: None,
             mermaid_cards: HashMap::new(),
             tv_streams: crate::kits::markdown_tv::TvStreamRegistry::default(),
+            tv_subs: Vec::new(),
         }
     }
 }
@@ -703,16 +706,37 @@ impl AppStore {
                     .collect()
             })
             .unwrap_or_default();
-        let mut tv_changed = false;
+        // TextView 驱动 + 行高重测:外层虚拟化列表的行高缓存不会自愈,
+        // 两个重测触发面——①drive 文本变化(流式增长,尾部两行)
+        // ②新视图挂观察者(>4KiB 历史的首轮解析是异步的,落地晚于挂载)
+        let mut tv_touched = false;
+        let mut tv_created: Vec<gpui_kit::Entity<gpui_kit::component::text::TextViewState>> =
+            Vec::new();
         for (k, t) in &assistant_feed {
-            tv_changed |= self.chat.tv_streams.drive(k, t, cx);
+            match self.chat.tv_streams.drive(k, t, cx) {
+                crate::kits::markdown_tv::DriveOutcome::Created(state) => {
+                    tv_created.push(state);
+                    tv_touched = true;
+                }
+                crate::kits::markdown_tv::DriveOutcome::Updated => tv_touched = true,
+                crate::kits::markdown_tv::DriveOutcome::None => {}
+            }
         }
-        // TextView 行高随流式增长:外层虚拟化列表的行高缓存不会自愈,
-        // 变化即重测流式尾部两行(下一行按旧偏移叠上来 = 重叠的根因)
-        if tv_changed {
+        if tv_touched {
             let n = self.chat.chat_list.item_count();
             let start = n.saturating_sub(2);
             self.chat.chat_list.remeasure_items(start..n);
+        }
+        // 新视图挂观察者:异步解析落地 → 全量重测(历史批量载入被
+        // schedule_chat_remeasure 的 250ms 防抖收敛为一次)
+        for state in tv_created {
+            let sub = cx.observe(&state, |host, _state, cx| {
+                // 异步解析落地:全行重臂测量,下一帧按真实高度布局
+                let n = host.chat.chat_list.item_count();
+                host.chat.chat_list.remeasure_items(0..n);
+                cx.notify();
+            });
+            self.chat.tv_subs.push(sub);
         }
         let sid = self.state.current_id.clone();
         // 列表行数 = 行槽 + 流尾插队气泡(伪行;session/queue 帧驱动增减)
