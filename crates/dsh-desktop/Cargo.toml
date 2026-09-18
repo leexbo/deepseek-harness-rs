@@ -26,7 +26,6 @@ smallvec.workspace = true
 # tree-sitter = 预览代码高亮(Zed 同款管线;29 种语言聚合,
 # SyntaxHighlighter 独立使用经 gpui-kit 透传;MCP JSON 粘贴区共用)
 gpui-kit = { workspace = true, features = ["tree-sitter", "tree-sitter-languages"] }
-pulldown-cmark.workspace = true
 # Mermaid 图渲染(markdown```mermaid 围栏 → SVG → gpui 光栅;kits/mermaid.rs)
 merman.workspace = true
 # 查看器视口裁剪光栅(resvg 根变换只渲染可见区;与 gpui 锁同版)
