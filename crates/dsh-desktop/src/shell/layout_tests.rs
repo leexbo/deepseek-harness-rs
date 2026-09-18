@@ -7677,3 +7677,147 @@ fn chat_history_assistant_body_visible(cx: &mut TestAppContext) {
     assert!(h > 0., "历史大消息正文应可见(实测高度 {h})");
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// 流式后行不重叠回归锁(真机「重叠」事故):多 chunk 流式长回复
+/// 落定后,相邻助手正文行的边界不得交叠(外层虚拟化列表行高缓存
+/// 陈旧 → 下一行按旧偏移叠上来;修复 = drive 增量即 remeasure_items)
+#[gpui_kit::test]
+fn chat_streaming_rows_do_not_overlap(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "tv-overlap");
+    let bounds = wcx
+        .debug_bounds("composer-hit")
+        .expect("composer 输入区缺失");
+    wcx.simulate_click(
+        gpui_kit::Point {
+            x: bounds.origin.x + bounds.size.width / 2.,
+            y: bounds.origin.y + bounds.size.height / 2.,
+        },
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.run_until_parked();
+    wcx.simulate_input("长回复");
+    wcx.simulate_keystrokes("enter");
+    wcx.run_until_parked();
+    // 等助手行出现并流式落定
+    let mut bodies: Vec<(&'static str, gpui_kit::Bounds<gpui_kit::Pixels>)> = Vec::new();
+    for _ in 0..200 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+        bodies.clear();
+        let keys = cx.update(|app| {
+            store
+                .read(app)
+                .current_nodes()
+                .iter()
+                .filter_map(|n| match n {
+                    crate::features::chat::ChatNode::Assistant { key, text, .. }
+                        if !text.is_empty() =>
+                    {
+                        Some(key.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        for key in &keys {
+            let sel: &'static str = Box::leak(format!("asst-body-{key}").into_boxed_str());
+            if let Some(b) = wcx.debug_bounds(sel) {
+                bodies.push((sel, b));
+            }
+        }
+        if !bodies.is_empty() {
+            // 连续两帧尺寸稳定 = 流式落定
+            let stable = bodies.clone();
+            wcx.refresh().expect("刷新失败");
+            cx.update(|_: &mut gpui_kit::App| {});
+            cx.run_until_parked();
+            let stable2: Vec<_> = stable
+                .iter()
+                .map(|(sel, _)| (*sel, wcx.debug_bounds(sel)))
+                .collect();
+            if !stable.is_empty()
+                && stable.iter().zip(stable2.iter()).all(|((_, a), b)| {
+                    b.1.is_some_and(|b2| b2.origin == a.origin && b2.size == a.size)
+                })
+            {
+                break;
+            }
+        }
+    }
+    assert!(!bodies.is_empty(), "助手正文应渲染");
+    // 相邻行不重叠:前行底 ≤ 后行顶 + 1px 容差
+    for pair in bodies.windows(2) {
+        let (_, a) = pair[0];
+        let (_, b) = pair[1];
+        let a_bottom = f32::from(a.origin.y) + f32::from(a.size.height);
+        let b_top = f32::from(b.origin.y);
+        assert!(
+            a_bottom <= b_top + 1.0,
+            "相邻助手行重叠:前行底 {a_bottom} > 后行顶 {b_top}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 换行宽度取证:列表+行内代码的长行消息,TextView 包装层宽度必须
+/// 等于所在行宽(截切=换行宽度大于可视宽度)
+#[gpui_kit::test]
+fn tv_wrap_width_matches_container(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "tv-wrap");
+    let bounds = wcx
+        .debug_bounds("composer-hit")
+        .expect("composer 输入区缺失");
+    wcx.simulate_click(
+        gpui_kit::Point {
+            x: bounds.origin.x + bounds.size.width / 2.,
+            y: bounds.origin.y + bounds.size.height / 2.,
+        },
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.run_until_parked();
+    wcx.simulate_input("宽度取证");
+    wcx.simulate_keystrokes("enter");
+    wcx.run_until_parked();
+    let _ = std::fs::remove_dir_all(root);
+
+    // 直注入:列表 + 行内代码 + 长中文段(真实消息形态)
+    let md = "- 分支 `feat/textview-markdown` @ 9a2a99a，领先 main 6 个提交，工作区干净，全部未推送;main @ 15f166d（日志 append 排序修复）本身也还没推，且它是本分支的祖先，所以一次 fast-forward 就能把两者一起并入。\n\n计划稿 docs/plans/textview-markdown.md 的终态是「验收后线性并入 main」。验收矩阵 6 项里，工程项已全部完成。\n";
+    let key = "a:0:1";
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.entry(id).or_default();
+            chat.nodes.push(crate::features::chat::ChatNode::Assistant {
+                key: key.into(),
+                text: md.into(),
+                reasoning: String::new(),
+                streaming: false,
+                usage: None,
+                message_id: "m1".into(),
+            });
+            // 走 drive 装配 TextViewState
+            st.chat.tv_streams.drive(key, md, cx);
+        });
+    });
+    let mut body = None;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+        let sel: &'static str = Box::leak(format!("asst-body-{key}").into_boxed_str());
+        if let Some(b) = wcx.debug_bounds(sel) {
+            body = Some(b);
+            break;
+        }
+    }
+    let b = body.expect("助手正文应在场");
+    eprintln!(
+        "[probe] asst-body: x={} w={} right={}",
+        f32::from(b.origin.x),
+        f32::from(b.size.width),
+        f32::from(b.origin.x) + f32::from(b.size.width)
+    );
+}

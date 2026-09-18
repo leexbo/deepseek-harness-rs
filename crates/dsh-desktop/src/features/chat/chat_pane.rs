@@ -1628,11 +1628,17 @@ fn assistant_block(
         // 正文 = gpui-kit TextView(流式经渲染前 flush 的 push_str 增量
         // 驱动,见 ChatStore::sync_chat_list;定稿幂等)。流式光标在
         // 文档尾外层追加(试验形态;mermaid 待插件批次接入)
-        let body_view = store.read(cx).chat.tv_streams.view(&key, text).plugin(
-            crate::features::chat::mermaid_plugin::MermaidTextViewPlugin {
-                store: store.clone(),
-            },
-        );
+        let body_view = store
+            .read(cx)
+            .chat
+            .tv_streams
+            .view_composed(&key, text, |v| {
+                v.plugin(
+                    crate::features::chat::mermaid_plugin::MermaidTextViewPlugin {
+                        store: store.clone(),
+                    },
+                )
+            });
         let body_key = key.clone();
         let body = div()
             .debug_selector(move || format!("asst-body-{body_key}"))

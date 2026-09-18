@@ -12,12 +12,46 @@
 
 use std::collections::HashMap;
 
-use gpui_kit::component::text::{TextView, TextViewState};
-use gpui_kit::{App, AppContext as _, Entity, SharedString};
+use gpui_kit::component::text::{TextView, TextViewState, TextViewStyle};
+use gpui_kit::{
+    App, AppContext as _, Entity, IntoElement, ParentElement as _, SharedString, StyleRefinement,
+    Styled, div, px, relative,
+};
+
+/// 正文排版(照旧手调渲染器指标,双盘):
+/// 正文 14px/1.75、标题 16/15/14、块距 8px、代码块 13px/黑底。
+/// TextView 的正文字号/行高走继承,由外层包装承担;标题/间距/代码块
+/// 经 [`TextViewStyle`] 调
+fn styled_view(view: TextView) -> gpui_kit::AnyElement {
+    div()
+        .text_size(px(14.))
+        .line_height(relative(1.75))
+        // 滚动条槽预留(旧渲染器世界由列宽计算扣除,TextView 路径
+        // 丢失 = 换行宽度吃满整行,右缘数个字符被裁);行尾不可断段
+        // (行内代码 chip)的少量溢出由裁剪兜底
+        .pr(px(crate::shell::metrics::SCROLLBAR_GUTTER_W))
+        .overflow_hidden()
+        .child(view)
+        .into_any_element()
+}
+
+fn view_style() -> TextViewStyle {
+    TextViewStyle {
+        // 旧块距 mb(8)
+        paragraph_gap: gpui_kit::rems(0.5),
+        heading_base_font_size: px(14.),
+        // 标题与正文同字号,仅粗细区分(多级字号混排显「大大小小」)
+        heading_font_size: Some(std::sync::Arc::new(|_level: u8, base| base)),
+        // 代码块字号 13;配色全部走 theme 派生默认(不另行改色)
+        code_block: StyleRefinement::default().text_size(px(13.)),
+        is_dark: crate::kits::theme::is_dark(),
+        ..Default::default()
+    }
+}
 
 /// 静态 markdown 挂载(keyed 便捷构造;id 需调用点稳定)
-pub(crate) fn tv_static(id: impl Into<gpui_kit::ElementId>, text: &str) -> TextView {
-    TextView::markdown(id, text)
+pub(crate) fn tv_static(id: impl Into<gpui_kit::ElementId>, text: &str) -> gpui_kit::AnyElement {
+    styled_view(TextView::markdown(id, text).style(view_style()))
 }
 
 /// 流式驱动注册表(挂 ChatStore;渲染前 flush 驱动,渲染闭包只读)
@@ -30,32 +64,48 @@ pub(crate) struct TvStreamRegistry {
 
 impl TvStreamRegistry {
     /// 渲染前 flush 驱动:前缀匹配 → push_str 增量;文本漂移(回退/
-    /// 重写)→ set_text 全量;新 key → 建状态。幂等(无变化零开销)
-    pub(crate) fn drive(&mut self, key: &str, text: &str, cx: &mut App) {
+    /// 重写)→ set_text 全量;新 key → 建状态。幂等(无变化零开销)。
+    /// 返回是否发生文本变化(调用方据此触发外层列表行重测)
+    pub(crate) fn drive(&mut self, key: &str, text: &str, cx: &mut App) -> bool {
         match self.map.get_mut(key) {
             Some((state, last)) => {
                 if text.len() > last.len() && text.starts_with(last.as_str()) {
                     let delta = text[last.len()..].to_string();
                     state.update(cx, |s, cx| s.push_str(&delta, cx));
                     last.push_str(&delta);
-                } else if text != last {
+                    return true;
+                }
+                if text != last {
                     state.update(cx, |s, cx| s.set_text(text, cx));
                     *last = text.to_string();
+                    return true;
                 }
+                false
             }
             None => {
                 let state = cx.new(|cx| TextViewState::markdown(text, cx));
                 self.map.insert(key.to_string(), (state, text.to_string()));
+                true
             }
         }
     }
 
-    /// 渲染闭包取挂载(state 缺失 = flush 未及,兜底 keyed 静态)
-    pub(crate) fn view(&self, key: &str, fallback_text: &str) -> TextView {
-        match self.map.get(key) {
-            Some((state, _)) => TextView::new(state),
-            None => TextView::markdown(SharedString::from(key.to_string()), fallback_text),
-        }
+    /// 带组合的挂载(state 缺失 = flush 未及,兜底 keyed 静态;插件等
+    /// TextView 级修饰经 compose,样式统一在适配层收口)
+    pub(crate) fn view_composed(
+        &self,
+        key: &str,
+        fallback_text: &str,
+        compose: impl FnOnce(TextView) -> TextView,
+    ) -> gpui_kit::AnyElement {
+        let view = match self.map.get(key) {
+            Some((state, _)) => compose(TextView::new(state)),
+            None => compose(TextView::markdown(
+                SharedString::from(key.to_string()),
+                fallback_text,
+            )),
+        };
+        styled_view(view.style(view_style()))
     }
 
     /// 会话切换清理(state 随旧会话焚毁,重开重解析一次)
@@ -69,7 +119,7 @@ mod tests {
     use super::*;
     use gpui_kit::component::{Root, StyledExt as _};
     use gpui_kit::{
-        InteractiveElement as _, IntoElement, ListAlignment, ListState, ParentElement as _, Render,
+        InteractiveElement as _, IntoElement, ListAlignment, ListState, Render,
         StatefulInteractiveElement as _, Styled, TestAppContext, VisualTestContext, Window, div,
         px,
     };
@@ -211,7 +261,7 @@ mod tests {
                             .id("tv-stream-inc")
                             .debug_selector(|| "tv-stream-inc".to_string())
                             .w(px(400.))
-                            .child(self.reg.view("k", "")),
+                            .child(self.reg.view_composed("k", "", |v| v)),
                     )
                     .child(
                         div()

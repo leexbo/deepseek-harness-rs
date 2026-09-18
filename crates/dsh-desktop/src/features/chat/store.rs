@@ -703,8 +703,16 @@ impl AppStore {
                     .collect()
             })
             .unwrap_or_default();
+        let mut tv_changed = false;
         for (k, t) in &assistant_feed {
-            self.chat.tv_streams.drive(k, t, cx);
+            tv_changed |= self.chat.tv_streams.drive(k, t, cx);
+        }
+        // TextView 行高随流式增长:外层虚拟化列表的行高缓存不会自愈,
+        // 变化即重测流式尾部两行(下一行按旧偏移叠上来 = 重叠的根因)
+        if tv_changed {
+            let n = self.chat.chat_list.item_count();
+            let start = n.saturating_sub(2);
+            self.chat.chat_list.remeasure_items(start..n);
         }
         let sid = self.state.current_id.clone();
         // 列表行数 = 行槽 + 流尾插队气泡(伪行;session/queue 帧驱动增减)
