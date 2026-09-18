@@ -82,7 +82,6 @@ pub struct PlanReviewChannel {
 
 struct ReviewInner {
     log: Arc<Mutex<EventLog>>,
-    backend: JsonlBackend,
     /// 在审评审的应答通道(评审打开期间 Some)
     tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<dsh_plan::PlanReviewDecision>>>,
     /// 下行通知通道(serve 层注入;None = 不通知)
@@ -92,12 +91,12 @@ struct ReviewInner {
 }
 
 impl PlanReviewChannel {
-    /// 以共享日志与持久化后端构建(log/backend 须与 engine 同一视图)
-    pub fn new(log: Arc<Mutex<EventLog>>, backend: JsonlBackend) -> Self {
+    /// 以共享日志构建(持久化经日志上的持久化汇;log 须与 engine
+    /// 同一视图)
+    pub fn new(log: Arc<Mutex<EventLog>>) -> Self {
         Self {
             inner: Arc::new(ReviewInner {
                 log,
-                backend,
                 tx: std::sync::Mutex::new(None),
                 downlink: std::sync::Mutex::new(None),
                 cancel: std::sync::Mutex::new(None),
@@ -131,18 +130,17 @@ impl PlanReviewChannel {
         }
     }
 
-    /// log-only 事件落档(锁内定 seq + 落盘;失败记日志不阻断评审)
+    /// log-only 事件落档(锁内定 seq + 经持久化汇落盘,原子;失败记
+    /// 日志不阻断评审)
     fn append(&self, ev: EventEnvelope) {
-        let committed = self
+        if let Err(e) = self
             .inner
             .log
             .lock()
-            .ok()
-            .and_then(|mut l| l.append(ev).ok().and_then(|seq| l.get(seq).cloned()));
-        if let Some(ev) = committed
-            && let Err(e) = self.inner.backend.append(&ev)
+            .unwrap_or_else(|p| p.into_inner())
+            .append(ev)
         {
-            eprintln!("[dsh-host] plan 事件落盘失败: {e}");
+            eprintln!("[dsh-host] plan 事件落档失败: {e}");
         }
     }
 
@@ -274,13 +272,13 @@ pub struct Gateway<T, TOOLS = NoTools> {
 impl<T, TOOLS> Gateway<T, TOOLS> {
     /// 装配:header(模型/system prompt)、传输、工具集、持久化后端。
     pub fn new(header: RequestHeader, transport: T, tools: TOOLS, backend: JsonlBackend) -> Self {
-        Self::with_log(
-            header,
-            transport,
-            tools,
-            backend,
-            Arc::new(Mutex::new(EventLog::new())),
-        )
+        let log = {
+            let b = backend.clone();
+            let mut l = EventLog::new();
+            l.set_durability_sink(Box::new(move |ev| b.append(ev).map_err(|e| e.to_string())));
+            Arc::new(Mutex::new(l))
+        };
+        Self::with_log(header, transport, tools, backend, log)
     }
 
     /// 以外部共享日志构建(工具集含日志依赖项时使用:todo/plan/goal
@@ -292,6 +290,12 @@ impl<T, TOOLS> Gateway<T, TOOLS> {
         backend: JsonlBackend,
         log: Arc<Mutex<EventLog>>,
     ) -> Self {
+        let sink_backend = backend.clone();
+        log.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .set_durability_sink(Box::new(move |ev| {
+                sink_backend.append(ev).map_err(|e| e.to_string())
+            }));
         let cancel = CancelToken::new();
         let mut engine = LoopEngine::new(header, Arc::clone(&log));
         engine.set_cancel(cancel.clone());
@@ -452,7 +456,6 @@ impl<T: LlmTransport + Summarizer + Send, TOOLS: ToolPort + Send> Gateway<T, TOO
                 .unwrap_or(0)
         };
         let downlink = self.downlink.clone();
-        let backend = &self.backend;
         let mut sink = |ev: &EventEnvelope| {
             let notification = json!({
                 "jsonrpc": "2.0",
@@ -461,9 +464,6 @@ impl<T: LlmTransport + Summarizer + Send, TOOLS: ToolPort + Send> Gateway<T, TOO
             });
             if let Some(tx) = &downlink {
                 let _ = tx.send(notification);
-            }
-            if let Err(e) = backend.append(ev) {
-                eprintln!("[gateway] 持久化失败:{e}");
             }
         };
         self.engine

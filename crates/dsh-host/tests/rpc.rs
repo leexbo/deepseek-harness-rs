@@ -329,11 +329,8 @@ async fn gateway_mode_and_approve_roundtrip() {
     let (result, _) = gw.handle("mode", &json!({ "mode": "plan" })).await.unwrap();
     assert_eq!(result["mode"], "plan");
 
-    // 接线评审通道(与 engine/工具同一日志视图;测试侧独立落盘文件)
-    let channel = PlanReviewChannel::new(
-        gw.log(),
-        JsonlBackend::create(dir.join("plan.jsonl")).unwrap(),
-    );
+    // 接线评审通道(与 engine/工具同一日志视图;落盘经日志持久化汇)
+    let channel = PlanReviewChannel::new(gw.log());
     gw.set_plan_review(channel.clone());
 
     // 通道在场但无在审评审

@@ -346,6 +346,15 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
         session_path: String,
         cancel: CancelToken,
     ) -> Self {
+        // 持久化汇 = 日志锁内定 seq 即写盘(单写权威)。替换语义:attach
+        // 已装配过的场景重复装配为等价闭包;engine sink 一律不再手动
+        // backend.append(双写)
+        let sink_backend = backend.clone();
+        if let Ok(mut l) = log.lock() {
+            l.set_durability_sink(Box::new(move |ev| {
+                sink_backend.append(ev).map_err(|e| e.to_string())
+            }));
+        }
         let header = match log.lock() {
             Ok(l) => build_header(&parts, &l),
             // 装配期无并发,锁中毒以默认态兜底;首 turn 的 refresh 仍重建
@@ -447,14 +456,8 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
     /// plan 族载荷形状在此 chokepoint 校验(镜像源 invariant 插件)。
     pub fn session_event(&mut self, ty: &str, data: Value) -> Result<u64> {
         dsh_plan::invariant::validate_payload(ty, &data).map_err(|e| anyhow::anyhow!("{e}"))?;
-        let Session {
-            engine, backend, ..
-        } = self;
-        let mut sink = |ev: &EventEnvelope| {
-            if let Err(e) = backend.append(ev) {
-                eprintln!("持久化失败:{e}");
-            }
-        };
+        let Session { engine, .. } = self;
+        let mut sink = |_ev: &EventEnvelope| {};
         let clock = wall_clock;
         engine
             .commit_session_event(ty, data, &clock, &mut sink)
@@ -505,14 +508,10 @@ where
             engine,
             gate,
             tools,
-            backend,
             ..
         } = self;
         let mut sink = |ev: &EventEnvelope| {
             on_event(ev);
-            if let Err(e) = backend.append(ev) {
-                eprintln!("持久化失败:{e}");
-            }
         };
         let clock = wall_clock;
         let outcome = engine

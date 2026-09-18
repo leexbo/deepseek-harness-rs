@@ -293,7 +293,6 @@ struct ChildParts {
     child_root: std::path::PathBuf,
     header: RequestHeader,
     log: Arc<Mutex<EventLog>>,
-    backend: JsonlBackend,
     /// 子代理自己的后台任务注册表(bash 后台 + jobs 工具共享)
     jobs: crate::JobsRegistry,
 }
@@ -342,15 +341,58 @@ async fn prepare_child_parts(
         reasoning_effort: None,
         tools: Vec::new(),
     };
-    let log = Arc::new(Mutex::new(EventLog::new()));
     // open(追加,缺则建)而非 create(截断):重挂形态必须保全既有历史
     let backend = JsonlBackend::open(&handle.session_path)
         .map_err(|e| format!("subagent session create failed: {e}"))?;
+    // 日志从**现文件**重建高水位(fresh 子会话种子 seq 1/2 在档,续写从
+    // 3 起——空日志从 1 起会与种子重复,整份日志非连续)。
+    // 接手即治愈:文件若带历史损伤(seq 断裂/重复块,旧版本「空日志
+    // 重复写」的遗留),以最长连续前缀重建并把文件重写为该前缀——接手
+    // 点是单写者,重写安全;新追加自此保持连续
+    let mut log_inner = EventLog::new();
+    {
+        let raw = backend
+            .load()
+            .map_err(|e| format!("subagent session reload failed: {e}"))?;
+        let mut broken = false;
+        for ev in raw {
+            // append 拒绝非连续(含旧版本重复块损伤):断裂即停,内存
+            // 日志恰好持有最长连续前缀
+            if log_inner.append(ev).is_err() {
+                broken = true;
+                break;
+            }
+        }
+        if broken {
+            // 接手即治愈:文件重写为最长连续前缀——接手点是单写者,
+            // 重写安全;损伤尾段(旧版本重复块遗留)自此收敛
+            eprintln!(
+                "[subagent] 日志含损伤,按最长连续前缀治愈: {}",
+                handle.session_path.display()
+            );
+            let mut f = std::fs::File::create(&handle.session_path)
+                .map_err(|e| format!("subagent session heal failed: {e}"))?;
+            use std::io::Write as _;
+            for ev in log_inner.iter() {
+                serde_json::to_writer(&mut f, ev)
+                    .map_err(|e| format!("subagent session heal failed: {e}"))?;
+                f.write_all(b"\n")
+                    .map_err(|e| format!("subagent session heal failed: {e}"))?;
+            }
+            f.flush()
+                .map_err(|e| format!("subagent session heal failed: {e}"))?;
+        }
+    }
+    // 持久化汇 = 日志锁内定 seq 即写盘(单写权威;turn sink 不再手动落盘)
+    let sink_backend = backend.clone();
+    log_inner.set_durability_sink(Box::new(move |ev| {
+        sink_backend.append(ev).map_err(|e| e.to_string())
+    }));
+    let log = Arc::new(Mutex::new(log_inner));
     Ok(ChildParts {
         child_root,
         header,
         log,
-        backend,
         jobs: Arc::new(Mutex::new(Vec::new())),
     })
 }
@@ -487,7 +529,6 @@ async fn run_child_turn<G>(
     turn_token: &CancelToken,
     parent_cancel: &CancelToken,
     interrupt: impl std::future::Future<Output = ()> + Send,
-    backend: &JsonlBackend,
     session_id: &str,
     event_sink: Option<&SubagentEventSink>,
 ) -> Result<dsh_agent_loop::TurnOutcome, LoopError>
@@ -507,10 +548,7 @@ where
         }
     };
     let mut sink = |ev: &EventEnvelope| {
-        if let Err(e) = backend.append(ev) {
-            eprintln!("子会话持久化失败:{e}");
-        }
-        // 实时流出口(桌面广播)
+        // 实时流出口(桌面广播);落盘经日志持久化汇
         if let Some(relay) = event_sink {
             relay(session_id, ev);
         }
@@ -564,18 +602,13 @@ fn set_status(registry: &SubagentRegistry, session_id: &str, status: &str) {
     }
 }
 
-/// 子会话标记事件落档(descriptor/settled;重启恢复的判据)
-fn commit_child_marker(log: &Arc<Mutex<EventLog>>, backend: &JsonlBackend, ty: &str, data: Value) {
+/// 子会话标记事件落档(descriptor/settled;重启恢复的判据;落盘经
+/// 日志持久化汇,锁内原子)
+fn commit_child_marker(log: &Arc<Mutex<EventLog>>, ty: &str, data: Value) {
     if let Ok(mut l) = log.lock() {
         // 归因事件照守卫约定标 ignorable:未登记类型不拒绝旧读取方重建日志
         let ev = EventEnvelope::new_ignorable(ty, now_ms(), data);
-        // 照 engine commit 模式:append 赋 seq 后取回信封落盘(直接落原始
-        // clone 会把 seq=0 写进日志)
-        if let Ok(seq) = l.append(ev)
-            && let Some(envelope) = l.get(seq)
-        {
-            let _ = backend.append(envelope);
-        }
+        let _ = l.append(ev);
     }
 }
 
@@ -785,7 +818,6 @@ where
             &parent_cancel,
             // 前台无 interrupt 句柄:永不就绪的 future 占位
             std::future::pending::<()>(),
-            &parts.backend,
             &handle.session_id,
             self.event_sink.as_ref(),
         )
@@ -1030,7 +1062,6 @@ where
         // descriptor 标记(重启恢复的判据;重挂形态不重写)
         commit_child_marker(
             &parts.log,
-            &parts.backend,
             "subagent/descriptor",
             json!({
                 "parentSessionId": parent_id,
@@ -1039,23 +1070,9 @@ where
                 "mode": "continuable",
             }),
         );
-    } else {
-        // 重挂形态:重载子日志(扫描侧已冷修夏)重建引擎历史
-        let events = match dsh_host::persistence::jsonl::load_jsonl(&handle.session_path) {
-            Ok(events) => events,
-            Err(_) => {
-                set_status(&registry, &handle.session_id, "failed");
-                let (text, source) = settlement_notice(&handle.session_id, "error", None);
-                notify.notify(&parent_id, text, source).await;
-                return;
-            }
-        };
-        if let Ok(mut l) = parts.log.lock() {
-            for ev in events {
-                let _ = l.append(ev);
-            }
-        }
     }
+    // 重挂形态的引擎历史已由 prepare 从现文件重建(空日志重复写缺陷
+    // 的遗留 re-load 已删:对已装载历史的日志再 append 恒被守卫拒绝)
     let transport = match (transport_factory)() {
         Ok(t) => t,
         Err(_) => {
@@ -1076,7 +1093,6 @@ where
         notify.notify(&parent_id, text, source).await;
         commit_child_marker(
             &parts.log,
-            &parts.backend,
             "subagent/settled",
             json!({ "stopReason": "resumed" }),
         );
@@ -1103,7 +1119,7 @@ where
                     set_status(&registry, &handle.session_id, "cancelled");
                     commit_child_marker(
                         &parts.log,
-                        &parts.backend,
+
                         "subagent/settled",
                         json!({ "stopReason": "aborted" }),
                     );
@@ -1119,7 +1135,6 @@ where
                 set_status(&registry, &handle.session_id, "cancelled");
                 commit_child_marker(
                     &parts.log,
-                    &parts.backend,
                     "subagent/settled",
                     json!({ "stopReason": "aborted" }),
                 );
@@ -1160,7 +1175,6 @@ where
                 &turn_token,
                 &parent_cancel,
                 interrupt,
-                &parts.backend,
                 &handle.session_id,
                 event_sink.as_ref(),
             )
@@ -1171,7 +1185,6 @@ where
                 set_status(&registry, &handle.session_id, "cancelled");
                 commit_child_marker(
                     &parts.log,
-                    &parts.backend,
                     "subagent/settled",
                     json!({ "stopReason": "aborted" }),
                 );
@@ -1191,7 +1204,6 @@ where
             notify.notify(&parent_id, text, source).await;
             commit_child_marker(
                 &parts.log,
-                &parts.backend,
                 "subagent/settled",
                 json!({ "stopReason": stop_reason }),
             );

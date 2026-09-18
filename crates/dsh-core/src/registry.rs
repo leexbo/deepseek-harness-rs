@@ -280,6 +280,20 @@ struct PendingItem {
 }
 
 /// 附着态(OnceLock 一次性装配)
+/// 会话文件追加锁表(冷路径互斥;attach 装配窗口与冷追加互斥)。
+/// 冷落档(文件尾读 + append)与驻留汇(日志锁内写盘)是两个写者域:
+/// 冷侧必须持本锁
+#[derive(Default)]
+struct AppendLocks(std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>);
+
+impl AppendLocks {
+    /// 取(或建)某会话的追加锁
+    fn lock_for(&self, id: &str) -> Arc<std::sync::Mutex<()>> {
+        let mut map = self.0.lock_recover();
+        map.entry(id.to_string()).or_default().clone()
+    }
+}
+
 struct SlotInner {
     queue_tx: mpsc::UnboundedSender<Job>,
     driver_cmd: mpsc::UnboundedSender<DriverCmd>,
@@ -295,6 +309,9 @@ struct SlotInner {
     /// 落盘句柄克隆(durable 队列:泵侧 splice 事件的持久化通道;
     /// 与驱动共享同一写者互斥,行完整性不破)
     backend: dsh_host::JsonlBackend,
+    /// 槽已摘除(detach):旧泵/驱动任务对后续 Job/命令弃处理,防以
+    /// 冻结高水位的旧 log 追加(重挂后双写)
+    closed: std::sync::atomic::AtomicBool,
 }
 
 /// 会话槽:冷(仅文件)→ 附着(worker 驱动)
@@ -560,6 +577,8 @@ pub struct AppHost {
     /// 装配默认(model/dialect/prompt;workspace 级 dsh.toml 在 attach 时读)
     base: Resolved,
     sessions: std::sync::RwLock<HashMap<String, Arc<SessionSlot>>>,
+    /// 冷路径文件追加锁(见 [`AppendLocks`])
+    append_locks: AppendLocks,
     /// 驻留子代理认领集(防双挂:同一子会话同时至多一个驻留任务)
     live_children: std::sync::Mutex<std::collections::HashSet<String>>,
     /// 子代理注册表 jobs 源(父会话 id → 弱引用;registry 随工具释放)
@@ -1238,6 +1257,7 @@ impl AppHost {
             settings,
             provider_fp: Mutex::new(HashMap::new()),
             sessions: std::sync::RwLock::new(HashMap::new()),
+            append_locks: AppendLocks::default(),
             live_children: std::sync::Mutex::new(std::collections::HashSet::new()),
             jobs_sources: std::sync::Mutex::new(HashMap::new()),
             subagent_translators: std::sync::Mutex::new(HashMap::new()),
@@ -2193,6 +2213,17 @@ impl AppHost {
                 return Err(RpcError::bad_request("会话运行中,请先停止"));
             }
             drop(slots);
+            // 封「旧泵双写」窗口:pump/driver 任务持有旧 inner Arc 不退
+            // 出,detach 前被取走的 queue_tx 仍可投递 Job → 旧泵以冻结
+            // 高水位的旧 log 追加(重挂后与新日志双写)。置 closed 后
+            // 旧任务对后续 Job/命令一律弃处理
+            if let Some(slot) = self.sessions.read_recover().get(id)
+                && let Some(inner) = slot.inner.get()
+            {
+                inner
+                    .closed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             self.sessions.write_recover().remove(id);
         }
         Ok(())
@@ -2543,7 +2574,7 @@ impl AppHost {
         reason: &str,
     ) -> dsh_hooks::service::ToolApprovalOutcome {
         use dsh_hooks::service::ToolApprovalOutcome;
-        let (log, backend) = {
+        let log = {
             let slots = self.sessions.read_recover();
             let Some(slot) = slots.get(session_id) else {
                 return ToolApprovalOutcome::Unavailable;
@@ -2554,10 +2585,10 @@ impl AppHost {
             let Ok(inner) = slot.inner() else {
                 return ToolApprovalOutcome::Unavailable;
             };
-            (Arc::clone(&inner.log), inner.backend.clone())
+            Arc::clone(&inner.log)
         };
         let audit_id = Uuid::now_v7().to_string();
-        let splice = |ev: EventEnvelope| splice_event(&log, &backend, ev);
+        let splice = |ev: EventEnvelope| splice_event(&log, ev);
         let asked = splice(EventEnvelope::new(
             "approval/asked",
             now_ms() as i64,
@@ -3492,6 +3523,18 @@ impl AppHost {
         if !src.exists() {
             return Err(RpcError::session_not_found(id));
         }
+        // 源在跑时复制会撕裂、读尾会漂移(与 archive 同一防线):拒绝
+        if self
+            .sessions
+            .read_recover()
+            .get(id)
+            .is_some_and(|slot| slot.running.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            return Err(RpcError::bad_request("会话运行中,请先停止"));
+        }
+        // copy→读尾→append 与 attach 装配/其它冷路径互斥(见 AppendLocks)
+        let append_lock = self.append_locks.lock_for(id);
+        let _guard = append_lock.lock_recover();
         // 分叉留在同一工作区(沿用 id 前缀)
         let prefix = match id.split_once('/') {
             Some((ws, _)) if self.workspace_of(ws).is_some() => format!("{ws}/"),
@@ -3667,13 +3710,24 @@ impl AppHost {
             .map_err(|e| RpcError::internal(format!("打开会话日志失败:{e}")))?;
         // 泵侧落盘句柄克隆(见 SlotInner.backend)
         let backend_shared = backend.clone();
-        let log = dsh_app::load_log(&resolved.session)
-            .map_err(|e| RpcError::internal(format!("会话日志重载失败:{e}")))?;
-        let log = Arc::new(Mutex::new(log));
+        let log = {
+            // attach 装配(建日志+装配持久化汇)与冷路径追加互斥
+            // (见 AppendLocks):冷读尾→append 不得落进装配窗口
+            let append_lock = self.append_locks.lock_for(id);
+            let _guard = append_lock.lock_recover();
+            let log = dsh_app::load_log(&resolved.session)
+                .map_err(|e| RpcError::internal(format!("会话日志重载失败:{e}")))?;
+            let log = Arc::new(Mutex::new(log));
+            // 持久化汇 = 日志锁内定 seq 即写盘(单写权威;此后任何
+            // log.append 都不允许再手动 backend.append,否则双写)
+            log.lock_recover()
+                .set_durability_sink(durability_sink(backend.clone()));
+            log
+        };
         // 冷加载修夏:此刻 pump/driver 未 spawn,单写者;OnceLock 保证每
         // 会话每进程只跑一次。悬挂 tool/call(重启遗留)在此收口成
         // isError result + turn/end,桌面投影/轨迹/模型三层自然一致
-        repair_dangling_calls(&log, &backend);
+        repair_dangling_calls(&log);
         let cancel = CancelToken::new();
         let provider_info = self.provider_info();
         // 会话血缘(slot.path = session.jsonl 文件;header 在其所在目录):
@@ -3860,6 +3914,7 @@ impl AppHost {
             log: session_log,
             traj: Mutex::new(crate::trajectory::TrajectoryFolder::new()),
             backend: backend_shared,
+            closed: std::sync::atomic::AtomicBool::new(false),
         };
         if slot.inner.set(inner).is_err() {
             return Ok(slot); // 并发装配:另一线程赢了,worker 已由它起
@@ -4013,21 +4068,19 @@ impl AppHost {
         if let Some(slot) = self.get_slot(id)
             && let Some(inner) = slot.inner.get()
         {
-            let committed = inner.log.lock().ok().and_then(|mut l| {
-                let seq = l.append(ev).ok()?;
-                l.get(seq).cloned()
-            });
-            if let Some(ev) = committed
-                && let Err(e) = inner.backend.append(&ev)
-            {
-                return Err(RpcError::internal(format!("goal 落盘失败:{e}")));
+            if let Err(e) = inner.log.lock_recover().append(ev) {
+                return Err(RpcError::internal(format!("goal 落档失败:{e}")));
             }
             // UI 经 goal_state 拉取(goal/state 不在 translate 客方词汇内,
             // 不做事件帧直播)
             return Ok(());
         }
-        // 冷会话:文件追加(JsonlBackend append 模式)
+        // 冷会话:文件追加(JsonlBackend append 模式)。持会话追加锁:
+        // 尾读→append 与 attach 装配(持久化汇)/其它冷路径互斥,防
+        // seq 分配交错(见 AppendLocks)
         let path = self.slot_path(id);
+        let append_lock = self.append_locks.lock_for(id);
+        let _guard = append_lock.lock_recover();
         let backend = dsh_app::open_backend(&path.display().to_string())
             .map_err(|e| RpcError::internal(format!("goal 落盘失败:{e}")))?;
         // seq = 文件尾 seq + 1(load 全量只为尾序——冷路径频次低,可接受)
@@ -4533,7 +4586,7 @@ impl AppHost {
         plan: &str,
     ) -> Result<dsh_plan::PlanReviewDecision, String> {
         let provider_info = self.provider_info();
-        let (log, backend) = {
+        let log = {
             let slots = self.sessions.read_recover();
             let Some(slot) = slots.get(session_id) else {
                 return Err("计划评审:会话不存在".into());
@@ -4541,13 +4594,12 @@ impl AppHost {
             let Ok(inner) = slot.inner() else {
                 return Err("计划评审:会话未完成装配".into());
             };
-            (Arc::clone(&inner.log), inner.backend.clone())
+            Arc::clone(&inner.log)
         };
         // plan/submitted 先落档(评审打开期间聊天流即有计划卡);
         // 落档失败不放评审(照源审计原子性)
         let submitted_seq = splice_event(
             &log,
-            &backend,
             dsh_plan::plan_envelope("plan/submitted", plan, None, now_ms() as i64),
         )
         .ok_or_else(|| "计划评审:计划提交落档失败".to_string())?;
@@ -4582,7 +4634,6 @@ impl AppHost {
             rpc_id: rpc_id.clone(),
             plan: plan.to_string(),
             log: Arc::clone(&log),
-            backend: backend.clone(),
             provider: provider_info.clone(),
             disarmed: false,
         };
@@ -4606,14 +4657,9 @@ impl AppHost {
                 let seqs = [
                     splice_event(
                         &log,
-                        &backend,
                         dsh_plan::plan_envelope("plan/approved", plan, None, now_ms() as i64),
                     ),
-                    splice_event(
-                        &log,
-                        &backend,
-                        dsh_plan::mode_envelope("standard", now_ms() as i64),
-                    ),
+                    splice_event(&log, dsh_plan::mode_envelope("standard", now_ms() as i64)),
                 ];
                 for seq in seqs.into_iter().flatten() {
                     broadcast_event(&provider_info, &log, session_id, &self.mux, Some(seq));
@@ -4623,7 +4669,6 @@ impl AppHost {
             Ok(QuestionAnswer::Decline { feedback }) => {
                 let seq = splice_event(
                     &log,
-                    &backend,
                     dsh_plan::plan_envelope(
                         "plan/declined",
                         plan,
@@ -4643,7 +4688,6 @@ impl AppHost {
             Ok(QuestionAnswer::Cancel) | Err(_) => {
                 let seq = splice_event(
                     &log,
-                    &backend,
                     dsh_plan::plan_envelope("plan/cancelled", plan, None, now_ms() as i64),
                 );
                 if let Some(seq) = seq {
@@ -4678,7 +4722,7 @@ impl AppHost {
     ) -> dsh_tools::ApprovalOutcome {
         use dsh_tools::ApprovalOutcome;
         // open turn 校验:闸门只能由运行中的工具发起(闲时不问不落档)
-        let (log, backend) = {
+        let log = {
             let slots = self.sessions.read_recover();
             let Some(slot) = slots.get(session_id) else {
                 return ApprovalOutcome::Unavailable;
@@ -4689,7 +4733,7 @@ impl AppHost {
             let Ok(inner) = slot.inner() else {
                 return ApprovalOutcome::Unavailable;
             };
-            (Arc::clone(&inner.log), inner.backend.clone())
+            Arc::clone(&inner.log)
         };
 
         // 审计对:asked(理由自包含,审计与审批卡同源)
@@ -4702,8 +4746,7 @@ impl AppHost {
         eprintln!("P3a: splice asked 前");
         // 守卫持独立克隆(闭包借用原值;守卫的生命周期覆盖 await)
         let guard_log = Arc::clone(&log);
-        let guard_backend = backend.clone();
-        let splice = |ev: EventEnvelope| splice_event(&log, &backend, ev);
+        let splice = |ev: EventEnvelope| splice_event(&log, ev);
         let asked = splice(EventEnvelope::new(
             "approval/asked",
             now_ms() as i64,
@@ -4774,7 +4817,6 @@ impl AppHost {
             rpc_id: rpc_id.clone(),
             audit_id: audit_id.clone(),
             log: guard_log,
-            backend: guard_backend,
             disarmed: false,
         };
         // 取消竞速(同 ask_questions):工具裸 await 使引擎走不到取消
@@ -5713,7 +5755,6 @@ struct PlanReviewGuard {
     rpc_id: String,
     plan: String,
     log: Arc<Mutex<EventLog>>,
-    backend: dsh_host::JsonlBackend,
     provider: ProviderInfo,
     /// 正常路径置 true(drop 不再收口)
     disarmed: bool,
@@ -5727,7 +5768,6 @@ impl Drop for PlanReviewGuard {
         self.host.pending.lock_recover().remove(&self.rpc_id);
         let seq = splice_event(
             &self.log,
-            &self.backend,
             dsh_plan::plan_envelope("plan/cancelled", &self.plan, None, now_ms() as i64),
         );
         if let Some(seq) = seq {
@@ -5797,7 +5837,7 @@ fn inject_plan_guide_turn(session_id: &str, inner: &SlotInner, host: &Arc<AppHos
             source: None,
         }],
     };
-    commit_splice(&inner.log, &inner.backend, &rec);
+    commit_splice(&inner.log, &rec);
     inner.wake.notify_one();
     let _ = host.mux.send(queue_frame(session_id, inner));
 }
@@ -5922,7 +5962,7 @@ impl SpliceRecord {
 /// 派生层常量,模型视角与旧派生占位一致。
 /// 幂等:修夏后调用均有 result、turn 均闭合,再跑零追加。
 /// 只在 attach 冷路径调用(此刻 pump/driver 未 spawn,单写者)。
-fn repair_dangling_calls(log: &Arc<Mutex<EventLog>>, backend: &dsh_host::JsonlBackend) {
+fn repair_dangling_calls(log: &Arc<Mutex<EventLog>>) {
     let committed = log.lock().ok().and_then(|mut l| {
         // 单临界区内「扫描 + 追加」:与引擎 commit / splice / goal_commit 互斥
         let mut turn_open = false;
@@ -6013,27 +6053,25 @@ fn repair_dangling_calls(log: &Arc<Mutex<EventLog>>, backend: &dsh_host::JsonlBa
         }
         Some(out)
     });
-    if let Some(committed) = committed {
-        for ev in &committed {
-            if let Err(e) = backend.append(ev) {
-                eprintln!("[dsh-core] 修夏落盘失败: {e}");
-            }
-        }
-    }
+    drop(committed);
 }
 
-/// 提交 splice 事件:日志(锁内定 seq)+ 落盘。持久化失败仅 stderr——
-/// 内存队列态仍是权威,失败降级为瞬态队列(旧行为),不阻断提交
-fn commit_splice(log: &Arc<Mutex<EventLog>>, backend: &dsh_host::JsonlBackend, rec: &SpliceRecord) {
+/// 持久化汇形态(装配进 EventLog,在调用方日志锁内执行;锁内只做
+/// 小缓冲写+flush)
+type DurabilitySinkFn = Box<dyn Fn(&dsh_session::EventEnvelope) -> Result<(), String> + Send>;
+
+/// 持久化汇构造:信封 → 该槽 JsonlBackend 追加
+fn durability_sink(backend: dsh_host::JsonlBackend) -> DurabilitySinkFn {
+    Box::new(move |ev| backend.append(ev).map_err(|e| e.to_string()))
+}
+
+/// 提交 splice 事件(锁内定 seq + 经持久化汇落盘,原子)。持久化失败
+/// 仅 stderr——内存队列态仍是权威,失败降级为瞬态队列(旧行为),
+/// 不阻断提交
+fn commit_splice(log: &Arc<Mutex<EventLog>>, rec: &SpliceRecord) {
     let ev = EventEnvelope::new("agent/inbox/spliced", now_ms() as i64, rec.payload());
-    let committed = log.lock().ok().and_then(|mut l| {
-        let seq = l.append(ev).ok()?;
-        l.get(seq).cloned()
-    });
-    if let Some(ev) = committed
-        && let Err(e) = backend.append(&ev)
-    {
-        eprintln!("[dsh-core] splice 落盘失败: {e}");
+    if let Err(e) = log.lock_recover().append(ev) {
+        eprintln!("[dsh-core] splice 落档失败: {e}");
     }
 }
 
@@ -6398,18 +6436,22 @@ impl dsh_tools::subagent::SessionFactory for SessionFactoryImpl {
             if interrupted {
                 // 中断者先冷修夏(与主会话同规则:悬挂 tool/call 补合成 result、
                 // 开 turn 补收口)并持久化,重挂引擎才见一致历史
+                // open(追加)而非 create(截断):修夏是补事件,不得清史
+                let Ok(backend) = dsh_host::JsonlBackend::open(&path) else {
+                    continue;
+                };
                 let log = Arc::new(Mutex::new(EventLog::new()));
+                // 冷修夏(单写者)同样走持久化汇:重放历史 + repair 合成
+                // 收尾事件统一经汇落盘
+                log.lock_recover()
+                    .set_durability_sink(durability_sink(backend.clone()));
                 {
                     let mut l = log.lock_recover();
                     for ev in &events {
                         let _ = l.append(ev.clone());
                     }
                 }
-                // open(追加)而非 create(截断):修夏是补事件,不得清史
-                let Ok(backend) = dsh_host::JsonlBackend::open(&path) else {
-                    continue;
-                };
-                repair_dangling_calls(&log, &backend);
+                repair_dangling_calls(&log);
             }
             if !self.0.claim_child(&s.session_id) {
                 continue;
@@ -6508,7 +6550,6 @@ struct ApprovalGuard {
     rpc_id: String,
     audit_id: String,
     log: Arc<Mutex<EventLog>>,
-    backend: dsh_host::JsonlBackend,
     /// 正常应答路径置 true(drop 不再收口)
     disarmed: bool,
 }
@@ -6519,11 +6560,7 @@ impl Drop for ApprovalGuard {
             return;
         }
         self.host.pending.lock_recover().remove(&self.rpc_id);
-        splice_event(
-            &self.log,
-            &self.backend,
-            decided_envelope(&self.audit_id, "cancelled"),
-        );
+        splice_event(&self.log, decided_envelope(&self.audit_id, "cancelled"));
         let _ = self.host.mux.send(frame(
             "question/resolved",
             serde_json::to_value(crate::proto::QuestionResolvedFrame {
@@ -6538,22 +6575,12 @@ impl Drop for ApprovalGuard {
 
 /// log-only 事件落档(turn 运行中;锁内定 seq + 落盘;泵侧 splice 同款)。
 /// 返回落档 seq(调用方回声广播按 seq 定向,防并发 append 插队丢帧)
-fn splice_event(
-    log: &Arc<Mutex<EventLog>>,
-    backend: &dsh_host::JsonlBackend,
-    ev: EventEnvelope,
-) -> Option<u64> {
-    let committed = log.lock().ok().and_then(|mut l| {
-        let seq = l.append(ev).ok()?;
-        l.get(seq).cloned().map(|ev| (seq, ev))
-    });
-    let ok = committed.is_some();
-    if let Some((_, ev)) = committed.clone()
-        && let Err(e) = backend.append(&ev)
-    {
-        eprintln!("[dsh-core] 审批事件落盘失败: {e}");
+fn splice_event(log: &Arc<Mutex<EventLog>>, ev: EventEnvelope) -> Option<u64> {
+    let committed = log.lock_recover().append(ev);
+    if let Err(e) = &committed {
+        eprintln!("[dsh-core] 审批事件落档失败: {e}");
     }
-    ok.then_some(committed.map(|(seq, _)| seq).unwrap_or_default())
+    committed.ok()
 }
 
 fn decided_envelope(audit_id: &str, outcome: &str) -> EventEnvelope {
@@ -6634,6 +6661,11 @@ async fn pump_loop(
     let driver_cmd = inner.driver_cmd.clone();
     let mux = host.mux.clone();
     while let Some(job) = queue_rx.recv().await {
+        // 槽已摘除(detach):弃处理后续 Job,防旧泵以冻结高水位的
+        // 旧 log 追加(重挂后与新日志双写)
+        if inner.closed.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
         match job {
             Job::Prompt {
                 id,
@@ -6694,7 +6726,7 @@ async fn pump_loop(
                         }
                     }
                 };
-                commit_splice(&inner.log, &inner.backend, &rec);
+                commit_splice(&inner.log, &rec);
                 wake.notify_one();
                 let _ = mux.send(queue_frame(&session_id, inner));
             }
@@ -6706,7 +6738,7 @@ async fn pump_loop(
                 let result = apply_queue_action(&qs, &wake, &item_id, action);
                 if let Ok((_, recs)) = &result {
                     for rec in recs {
-                        commit_splice(&inner.log, &inner.backend, rec);
+                        commit_splice(&inner.log, rec);
                     }
                 }
                 let _ = mux.send(queue_frame(&session_id, inner));
@@ -6739,7 +6771,7 @@ async fn pump_loop(
                         }],
                     }
                 };
-                commit_splice(&inner.log, &inner.backend, &rec);
+                commit_splice(&inner.log, &rec);
                 wake.notify_one();
                 let _ = mux.send(queue_frame(&session_id, inner));
             }
@@ -7093,6 +7125,10 @@ async fn driver_loop(
                 _ = wake.notified() => {}
                 cmd = driver_rx.recv() => {
                     let Some(cmd) = cmd else { return }; // 泵已死(槽被移除)
+                    // 槽已摘除:命令弃处理(同泵 closed 守卫,防旧 log 双写)
+                    if inner.closed.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
                     handle_driver_cmd(
                         &mut session, &provider_info, inner, &session_id, &host0.mux, cmd,
                     )
@@ -7379,9 +7415,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dsh-core-repair-{}", Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         let backend = dsh_host::JsonlBackend::open(dir.join("s.jsonl")).unwrap();
+        // 持久化汇装配(与 attach 同形态):repair 的 append 经汇落盘
+        let mk_sink = |b: dsh_host::JsonlBackend| {
+            move |ev: &dsh_session::EventEnvelope| b.append(ev).map_err(|e| e.to_string())
+        };
 
         // 场景 A:turn 开着 + ask_user_question 无 result(重启遗留现场)
         let log = Arc::new(Mutex::new(EventLog::new()));
+        log.lock()
+            .unwrap()
+            .set_durability_sink(Box::new(mk_sink(backend.clone())));
         {
             let mut l = log.lock().unwrap();
             for (ty, data) in [
@@ -7403,7 +7446,7 @@ mod tests {
                 l.append(EventEnvelope::new(ty, 0, data)).unwrap();
             }
         }
-        repair_dangling_calls(&log, &backend);
+        repair_dangling_calls(&log);
         {
             let l = log.lock().unwrap();
             let evs: Vec<&EventEnvelope> = l.iter().collect();
@@ -7426,11 +7469,14 @@ mod tests {
             assert!(t.data.get("cancelled").is_some(), "中止收口");
         }
         // 幂等:再跑零追加
-        repair_dangling_calls(&log, &backend);
+        repair_dangling_calls(&log);
         assert_eq!(log.lock().unwrap().iter().count(), 5, "再跑应零追加");
 
         // 场景 B:turn 已闭合(取消路径遗留)→ 只补 result,不动 turn
         let log2 = Arc::new(Mutex::new(EventLog::new()));
+        log2.lock()
+            .unwrap()
+            .set_durability_sink(Box::new(mk_sink(backend.clone())));
         {
             let mut l = log2.lock().unwrap();
             for (ty, data) in [
@@ -7444,7 +7490,7 @@ mod tests {
                 l.append(EventEnvelope::new(ty, 0, data)).unwrap();
             }
         }
-        repair_dangling_calls(&log2, &backend);
+        repair_dangling_calls(&log2);
         {
             let l = log2.lock().unwrap();
             let evs: Vec<&EventEnvelope> = l.iter().collect();
@@ -11778,5 +11824,94 @@ for line in sys.stdin:
             types.iter().filter(|t| **t == "assistant/message").count() >= 2,
             "Stop deny 应强制续跑(≥2 条 assistant/message)"
         );
+    }
+
+    /// seq 乱序回归锁(事故核心):流式 turn(driver 侧 engine commit,
+    /// 含 audit/call)与并发 steer/queue(spump 侧 splice 落档)交错
+    /// 后,整份日志必须 seq 连续——持久化汇使「定 seq+落盘」在日志锁
+    /// 内原子,文件行序恒等于 seq 序(修复前此场景可复现乱序拒载)
+    #[tokio::test]
+    async fn concurrent_splice_and_turn_keeps_log_contiguous() {
+        for round in 0..8 {
+            let tag = format!("seq-order-{round}");
+            let host = temp_host(&tag);
+            host.set_fake_script(script(&["第一段", "第二段", "第三段"]));
+            let id = host.create_session(None, None, None);
+            // 后台 turn:driver 任务连续 commit 事件
+            let host2 = host.clone();
+            let id2 = id.clone();
+            let turn = tokio::spawn(async move {
+                host2
+                    .prompt(
+                        &id2,
+                        &[serde_json::json!({ "type": "text", "text": "并发压力" })],
+                        "queue",
+                    )
+                    .await
+            });
+            // 主任务连发 steer/queue:pump 任务并发 commit splice
+            for i in 0..6 {
+                let _ = host
+                    .prompt(
+                        &id,
+                        &[serde_json::json!({
+                            "type": "text",
+                            "text": format!("插队 {i}")
+                        })],
+                        "steer",
+                    )
+                    .await;
+            }
+            turn.await.unwrap().unwrap();
+            // 队列里残留的排队 prompt 跑完(逐个消费)
+            for _ in 0..12 {
+                let qs_len = host
+                    .get_slot(&id)
+                    .and_then(|slot| {
+                        slot.inner
+                            .get()
+                            .map(|inner| inner.qs.lock_recover().pending.len())
+                    })
+                    .unwrap_or(0);
+                if qs_len == 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            // 守卫:整份日志 seq 连续(修复前可复现乱序 → load 拒绝)
+            let log = dsh_app::load_log(&host.session_log_path(&id).display().to_string())
+                .unwrap_or_else(|e| panic!("round {round}: 日志应连续可载: {e}"));
+            // 交错前提:两类写者的事件都必须在场(否则测的是空跑)
+            assert!(
+                log.query(Some("agent/inbox/spliced")).len() >= 6,
+                "round {round}: 应有 steer/queue splice 在场"
+            );
+            assert!(
+                !log.query(Some("audit/call")).is_empty(),
+                "round {round}: 应有 driver 侧 audit 事件在场"
+            );
+            let seqs: Vec<u64> = log.iter().map(|ev| ev.seq).collect();
+            for w in seqs.windows(2) {
+                assert_eq!(w[1], w[0] + 1, "round {round}: seq 应逐行连续");
+            }
+        }
+    }
+
+    /// fork-while-running 拒绝:源运行中复制会撕裂、读尾会漂移
+    /// (与 archive 同一防线;同根 seq 权威问题的防线性收口)
+    #[tokio::test]
+    async fn fork_while_running_is_rejected() {
+        let host = temp_host("fork-running");
+        let id = host.create_session(None, None, None);
+        // 手动置运行位(不经 prompt:只验 fork 的防线本身)
+        let slot = host.get_slot(&id).expect("槽应在场");
+        slot.running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let err = host.fork_session(&id).unwrap_err();
+        assert_eq!(err.code, "bad-request", "运行中 fork 应被拒");
+        slot.running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        // 停止后 fork 放行
+        assert!(host.fork_session(&id).is_ok());
     }
 }

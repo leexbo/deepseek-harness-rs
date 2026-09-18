@@ -703,7 +703,7 @@ async fn serve(common: CommonOpts) -> anyhow::Result<()> {
     // 工具与网关共享同一日志(todo/plan/goal 状态恢复的期望侧)
     let log = app::fresh_log();
     // 计划评审通道:turn 内阻塞评审(port)+ approve/decline RPC 直答
-    let plan_review = dsh_host::rpc::PlanReviewChannel::new(Arc::clone(&log), backend.clone());
+    let plan_review = dsh_host::rpc::PlanReviewChannel::new(Arc::clone(&log));
     let tools: ToolSet = app::build_tools(
         &resolved,
         &api_key,

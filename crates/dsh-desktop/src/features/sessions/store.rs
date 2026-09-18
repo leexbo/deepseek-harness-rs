@@ -96,7 +96,17 @@ impl AppStore {
         cx.spawn(async move |_this, cx| {
             let page = rx.await;
             store.update(cx, |s, cx| {
-                let Ok(Ok(page)) = page else { return };
+                let Ok(Ok(page)) = page else {
+                    // 历史加载失败(最常见:日志 seq 守卫拒载)不再静默——
+                    // 聊天区通告带宿主错误原文,故障可见
+                    let detail = match &page {
+                        Ok(Err(rpc)) => rpc.message.clone(),
+                        Err(e) => format!("{e}"),
+                        _ => String::new(),
+                    };
+                    s.push_local_notice(&format!("历史加载失败:{detail}"), cx);
+                    return;
+                };
                 let HistoryValue {
                     events,
                     projections,
