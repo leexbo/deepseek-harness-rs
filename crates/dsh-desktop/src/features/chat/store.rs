@@ -703,8 +703,8 @@ impl AppStore {
                     .collect()
             })
             .unwrap_or_default();
-        for (k, t) in assistant_feed {
-            self.chat.tv_streams.drive(&k, &t, cx);
+        for (k, t) in &assistant_feed {
+            self.chat.tv_streams.drive(k, t, cx);
         }
         let sid = self.state.current_id.clone();
         // 列表行数 = 行槽 + 流尾插队气泡(伪行;session/queue 帧驱动增减)

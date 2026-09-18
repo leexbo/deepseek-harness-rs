@@ -7578,3 +7578,102 @@ fn preview_code_rows_render_before_highlight(cx: &mut TestAppContext) {
     assert!(spans_ready, "后台高亮应渐进落桶(600 行 spans)");
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// TextView 迁移真实路径回归锁:发消息走 fake 流式,助手正文
+/// (asst-body)必须有非零高度。flex_1 塌陷回归锁(垂直 flex 列 +
+/// 父行高 auto 下 flex-basis 0 = 塌 0,真机表现为「聊天被吞」)
+#[gpui_kit::test]
+fn chat_assistant_body_visible_in_real_flow(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "tv-chat-visible");
+    let bounds = wcx
+        .debug_bounds("composer-hit")
+        .expect("composer 输入区缺失");
+    wcx.simulate_click(
+        gpui_kit::Point {
+            x: bounds.origin.x + bounds.size.width / 2.,
+            y: bounds.origin.y + bounds.size.height / 2.,
+        },
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.run_until_parked();
+    wcx.simulate_input("你好");
+    wcx.simulate_keystrokes("enter");
+    wcx.run_until_parked();
+    // 等助手节点出现并可见(真实路径:sync_chat_list flush 驱动 +
+    // TvStreamRegistry 挂载)
+    let mut seen = None;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+        let key = cx.update(|app| {
+            store
+                .read(app)
+                .current_nodes()
+                .iter()
+                .find_map(|n| match n {
+                    crate::features::chat::ChatNode::Assistant { key, text, .. }
+                        if !text.is_empty() =>
+                    {
+                        Some(key.clone())
+                    }
+                    _ => None,
+                })
+        });
+        if let Some(key) = key {
+            let sel: &'static str = Box::leak(format!("asst-body-{key}").into_boxed_str());
+            if let Some(b) = wcx.debug_bounds(sel) {
+                if f32::from(b.size.height) > 0. && f32::from(b.size.width) > 0. {
+                    seen = Some((sel, f32::from(b.size.height)));
+                    break;
+                }
+                seen = Some((sel, f32::from(b.size.height)));
+            }
+        }
+    }
+    let (sel, h) = seen.expect("助手正文行从未出现在视口(或无助手节点)");
+    assert!(h > 0., "助手正文 {sel} 应有非零高度(实测 {h})");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 历史路径(非流式)助手正文可见性:直注入 Assistant 节点(小消息 +
+/// >4KiB 大消息各一)后,asst-body 必须有非零尺寸。大消息走异步解析
+/// (≤4KiB 才同步),覆盖真机冷启动读历史的形态
+#[gpui_kit::test]
+fn chat_history_assistant_body_visible(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "tv-hist-visible");
+    let big: String = (0..300)
+        .map(|i| format!("第 {i} 行,包含一些中文与 `code` 内容。\n\n"))
+        .collect();
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.entry(id).or_default();
+            chat.nodes.push(ChatNode::Assistant {
+                key: "a:0:1".into(),
+                text: big,
+                reasoning: String::new(),
+                streaming: false,
+                usage: None,
+                message_id: "m1".into(),
+            });
+        });
+    });
+    // 单条大消息:钉底跟随显示其尾部,asst-body 必然在场且有视口级
+    // 高度(>4KiB 历史文本走 TextView 异步解析路径的可见性锁)
+    let mut h = 0.0f32;
+    for _ in 0..200 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+        if let Some(b) = wcx.debug_bounds("asst-body-a:0:1") {
+            h = f32::from(b.size.height);
+            if h > 0. {
+                break;
+            }
+        }
+    }
+    assert!(h > 0., "历史大消息正文应可见(实测高度 {h})");
+    let _ = std::fs::remove_dir_all(root);
+}

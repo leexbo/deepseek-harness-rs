@@ -1633,9 +1633,10 @@ fn assistant_block(
                 store: store.clone(),
             },
         );
+        let body_key = key.clone();
         let body = div()
+            .debug_selector(move || format!("asst-body-{body_key}"))
             .min_w(px(0.))
-            .flex_1()
             .child(body_view)
             .when(streaming, |el| {
                 el.child(
