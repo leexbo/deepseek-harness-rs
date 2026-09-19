@@ -141,8 +141,8 @@ pub struct TrajectoryRecord {
     pub tools_catalog: Option<Vec<Value>>,
     /// TOOL 详情:Schema(name/description/parameters;取自当前信封目录)
     pub schema_detail: Option<String>,
-    /// CONTEXT 详情:注入染色对象(ev.data.source;源 messageSource——
-    /// Summary 的 Source 行与 Source tab 的数据面)
+    /// CONTEXT 详情:注入染色对象(ev.data.source;Summary 的
+    /// Source 行与 Source tab 的数据面)
     pub source: Option<Value>,
 }
 
@@ -534,7 +534,7 @@ impl TrajectoryFolder {
                     system_prompt: None,
                     tools_catalog: None,
                     schema_detail: None,
-                    // 源 messageSource:注入行带 source 染色(真用户消息无)
+                    // 注入行带 source 染色(真用户消息无)
                     source: inject.then(|| ev.data["source"].clone()),
                 });
                 if !inject {
@@ -634,8 +634,8 @@ impl TrajectoryFolder {
                             source: None,
                         };
                         if label == "Initial System Prompt" {
-                            // 置顶(源 layoutEntryOrder 对 initial 给
-                            // NEGATIVE_INFINITY:事件时序上晚于首条用户消息,
+                            // 置顶(Initial System Prompt 事件时序上
+                            // 晚于首条用户消息,
                             // 显示层钉在台账首位;Turn 标签仍归属用户行)。
                             // 插队首 + 全量重编号,脏缓冲全量重发
                             self.records.insert(0, rec);
@@ -1001,7 +1001,7 @@ mod tests {
         let data = fold_trajectory(&log);
 
         // 记录:SYSTEM + USER + MESSAGE + TOOL(Initial System Prompt 显示层
-        // 置顶——源 layoutEntryOrder 对 initial 给 NEGATIVE_INFINITY;事件
+        // 置顶——事件
         // 时序上它本晚于 user/message,折叠后钉到台账首位并重编号)
         let kinds: Vec<&str> = data.records.iter().map(|r| r.kind.as_str()).collect();
         assert_eq!(kinds, vec!["system", "user", "message", "tool"]);
@@ -1046,7 +1046,7 @@ mod tests {
     }
 
     /// 4a:user/message + source.kind≠user(注入上下文)折叠为独立 CONTEXT 记录。
-    /// 源以 `source.kind !== 'user'` 落 kind:'context',独立于用户行。
+    /// 源事件以 `source.kind !== 'user'` 落 kind:'context',独立于用户行。
     #[test]
     fn context_message_folds_to_context_record() {
         let log = vec![

@@ -285,7 +285,7 @@ pub(crate) struct ChatStore {
     pub turn_usage: HashMap<(String, u64), serde_json::Value>,
 }
 
-/// 轮尾统计卡(照源 TurnUsagePanel/TurnTimePanel 的 popover)
+/// 轮尾统计卡(用量/用时 pill 的详情弹层)
 #[derive(Debug, Clone, PartialEq)]
 pub struct TailCard {
     /// 归属会话(切会话后残留卡不渲染)
@@ -702,7 +702,7 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 消息列是否钉在底部(24px 阈值,对齐 web FOLLOW_THRESHOLD)。
+    /// 消息列是否钉在底部(24px 阈值)。
     /// ListState 语义:Bottom 对齐下 logical_scroll_top 为 None 即自动
     /// 钉底(item_ix = 末项);用户上滚后 Some(具体项),距底以已测
     /// 高度合计推导——近尾(≤24px)仍视为钉底,流式跟底不轻易断
@@ -1063,11 +1063,11 @@ impl AppStore {
         let is_command = text.trim().starts_with('/');
         if !is_command {
             self.state.running_by_id.insert(id.clone(), true);
-            // 用户消息强制钉底(web:新内容 toBottom)
+            // 用户消息强制钉底(新内容 toBottom)
             self.chat.pinned = true;
         }
         let host = self.bridge.host().clone();
-        // 附件在前文本在后(源 serializeImages 序):content 按草稿插入序
+        // 附件在前文本在后:content 按草稿插入序
         // 组装——图片块内联 base64,文件块直传源路径(host 流式落盘,
         // 原件不上 wire)
         use crate::features::attachments::DraftAttachment as Draft;
@@ -1093,7 +1093,7 @@ impl AppStore {
         if !text.is_empty() {
             content.push(serde_json::json!({ "type": "text", "text": text }));
         }
-        // 命令 claim 拒绝附件:源 command.imagesUnsupported(整批拒绝,
+        // 命令 claim 拒绝附件(imagesUnsupported:整批拒绝,
         // 草稿与文本保留)
         let is_cmd = is_command;
         let drafts = std::mem::take(&mut self.attachments.drafts);
@@ -1120,8 +1120,8 @@ impl AppStore {
         }
         let sid = id.clone();
         let text_owned = text.to_string();
-        // 运行中 Enter 行为按偏好(queue = 排队 / steer = 转向;
-        // 源 ui-conversation EnterBehaviorRow 对应物);空闲/命令恒排队
+        // 运行中 Enter 行为按偏好(queue = 排队 / steer = 转向);
+        // 空闲/命令恒排队
         let running = self.state.running_by_id.get(&id).copied().unwrap_or(false);
         let mode = if !is_command && running {
             self.bridge.host().busy_enter()
@@ -1140,7 +1140,7 @@ impl AppStore {
             if !refs.is_empty() {
                 for (label, ref_sid) in refs.iter().take(super::reference::MAX_REFERENCES) {
                     if ref_sid == &sid {
-                        continue; // 自引用跳过(源 SELF_REFERENCE)
+                        continue; // 自引用跳过
                     }
                     if let Ok(history) = host.history(ref_sid, None, 1024).await {
                         let events: Vec<serde_json::Value> = history
@@ -1193,7 +1193,7 @@ impl AppStore {
                 eprintln!("[liuma-desktop] prompt 被拒: {} ({})", e.message, e.code);
             }
             match rpc {
-                // 成功:草稿附件已提交,清空(失败保留——源 sendFailed 语义)
+                // 成功:草稿附件已提交,清空(失败保留)
                 Ok(Ok(_)) => {
                     store.update(cx, |s, cx| {
                         s.attachments.drafts.clear();
@@ -1201,7 +1201,7 @@ impl AppStore {
                     });
                 }
                 Ok(Err(e)) => {
-                    // 附件准入被拒(attachment-error):源 image.sendFailed ——
+                    // 附件准入被拒(attachment-error)——
                     // 展示 reason 中文映射,清空失败草稿 + 复位 running
                     // (附件未进 turn,无 turn/end;不复位发送钮会永卡红色停止态)
                     if e.code == "attachment-error" {
@@ -1606,7 +1606,7 @@ impl AppStore {
         }
     }
 
-    /// 轮尾「分支」:按本轮收口 seq 截断分叉(照源 forkAt(closing.seq)
+    /// 轮尾「分支」:按本轮收口 seq 截断分叉(fork 点 = closing.seq
     /// ——边界 = 首个 ≥ seq 的 turn/end,含该整轮;失败走通告行)
     pub fn fork_from_turn(&mut self, session_id: &str, turn_key: &str, cx: &mut Context<Self>) {
         let at_seq = turn_key

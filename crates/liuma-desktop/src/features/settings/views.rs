@@ -69,7 +69,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .justify_center()
                 .px(px(16.))
                 .py(px(16.))
-                // 区容器宽度(源 section max-width 720)
+                // 区容器宽度(max-width 720)
                 .child(div().v_flex().w(px(720.)).child(
                     match store.read(cx).settings.settings_nav {
                         SettingsNav::Models => models_section(store, cx).into_any_element(),
@@ -82,7 +82,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         )
 }
 
-/// 区说明行(源 .intro:13/tertiary)
+/// 区说明行(13/tertiary)
 fn intro_line(text: impl Into<String>) -> impl IntoElement {
     div()
         .text_size(px(14.))
@@ -90,7 +90,7 @@ fn intro_line(text: impl Into<String>) -> impl IntoElement {
         .child(text.into())
 }
 
-/// 区标题(源 .title 16/500)
+/// 区标题(16/500)
 fn section_title(text: &str) -> impl IntoElement {
     div()
         .text_size(px(16.))
@@ -1050,7 +1050,7 @@ fn models_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .as_array()
         .cloned()
         .unwrap_or_default();
-    // 行卡列表(源 .rows:与标题块之间 extra 12 空气,gap 8)
+    // 行卡列表(与标题块之间 extra 12 空气,gap 8)
     let mut rows = div().v_flex().gap(px(8.)).mt(px(12.));
     if providers.is_empty() {
         rows = rows.child(caption_line(
@@ -1070,7 +1070,7 @@ fn models_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     col
 }
 
-/// 保存通告行(源 .savedNotice:12/success)
+/// 保存通告行(12/success)
 fn saved_notice(name: &str) -> impl IntoElement {
     div()
         .id("provider-saved-notice")
@@ -1079,7 +1079,7 @@ fn saved_notice(name: &str) -> impl IntoElement {
         .child(format!("已保存 {name}"))
 }
 
-/// 单个 provider 卡片(参考图1 形态):圆标 avatar + 名称 + URL 链接行;
+/// 单个 provider 卡片:圆标 avatar + 名称 + URL 链接行;
 /// 右侧 = 上次刷新「N 小时前」+ 刷新钮 + 计费行;当前 defaultProvider
 /// = BRAND 蓝描边。点卡片展开编辑器
 fn provider_row_card(
@@ -1386,7 +1386,7 @@ fn relative_time(ms: u64) -> String {
     }
 }
 
-/// 凭据状态圆点(源 .credentialDot:8px 实心,success/error)
+/// 凭据状态圆点(8px 实心,success/error)
 fn credential_dot(configured: bool) -> impl IntoElement {
     div()
         .flex()
@@ -1400,7 +1400,7 @@ fn credential_dot(configured: bool) -> impl IntoElement {
         })
 }
 
-/// 行头「编辑」钮(源 .secondaryButton dense:28h r14 边框胶囊;再点收起)
+/// 行头「编辑」钮(28h r14 边框胶囊;再点收起)
 fn row_edit_button(store: &Entity<AppStore>, id: &str) -> impl IntoElement {
     let s = store.clone();
     let pid = id.to_string();
@@ -1433,7 +1433,7 @@ fn row_edit_button(store: &Entity<AppStore>, id: &str) -> impl IntoElement {
         })
 }
 
-/// 行头「移除」钮(源 .dangerButton dense:28h 胶囊,危险色文字)
+/// 行头「移除」钮(28h 胶囊,危险色文字)
 fn row_remove_button(store: &Entity<AppStore>, id: &str) -> impl IntoElement {
     let s = store.clone();
     let pid = id.to_string();
@@ -1458,7 +1458,7 @@ fn row_remove_button(store: &Entity<AppStore>, id: &str) -> impl IntoElement {
         })
 }
 
-/// 首运行 setup 卡(源 .setupCard:填充模块 = 该 provider 在页面上的
+/// 首运行 setup 卡(填充模块 = 该 provider 在页面上的
 /// 存在形式,内嵌编辑卡且凭据必填)
 fn setup_card(store: &Entity<AppStore>, cx: &App, id: &str) -> impl IntoElement {
     let sel = sid("provider-setup", id);
@@ -1473,7 +1473,7 @@ fn setup_card(store: &Entity<AppStore>, cx: &App, id: &str) -> impl IntoElement 
         .child(provider_editor(store, cx, id, true))
 }
 
-/// 添加块(源 .addBlock + 两入口):目录选择卡 / 自定义表单卡 /
+/// 添加块(两入口):目录选择卡 / 自定义表单卡 /
 /// 闭态 = 两个 dashed 添加钮(「添加提供方」= 目录流;「添加自定义
 /// 提供方」= 自由表单)
 fn add_block(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
@@ -1689,7 +1689,7 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
                 })),
         )
         .when(builtin, |el| {
-            // 「自定义设置」折叠(源 ProviderEditor disclosure):目录
+            // 「自定义设置」折叠:目录
             // 契约字段只读展示——适配器与目录绑定,改写走自定义流
             el.child(
                 div()
@@ -1756,7 +1756,7 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
             .children(advanced())
         });
     let _ = (&s_add_model, &s_fetch, &s_billing, &s_kind);
-    // 页脚:右对齐 取消/应用(源 .editorActions 胶囊钮)
+    // 页脚:右对齐 取消/应用(胶囊钮)
     card = card.child(
         div()
             .flex()
@@ -2290,7 +2290,7 @@ fn billing_kind_chip(
         })
 }
 
-/// 字段标签(源 .fieldLabel:12/500 secondary)
+/// 字段标签(12/500 secondary)
 fn field_label(text: &str) -> impl IntoElement {
     div()
         .text_size(px(12.))
@@ -2359,7 +2359,7 @@ fn general_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .v_flex()
         .child(section_title("常规"))
         .mt(px(12.))
-        // 源序:Agent 预设 / 权限 / 语言 / 外观 / 繁忙时 Enter 键行为
+        // 行序:Agent 预设 / 权限 / 语言 / 外观 / 繁忙时 Enter 键行为
         .child(selector_row(
             "agent-preset",
             "Agent 预设",
@@ -2411,8 +2411,7 @@ fn snapshot_options(v: &serde_json::Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// 选择器行(源 AgentPresetRow / PermissionRow / LanguageRow /
-/// EnterBehaviorRow:左 title+desc,右 Select 下拉[gpui-component])
+/// 选择器行(左 title+desc,右 Select 下拉[gpui-component])
 fn selector_row(
     id: &'static str,
     title: &str,
@@ -2464,7 +2463,7 @@ fn selector_row(
         )
 }
 
-/// 外观组(源 AppearanceRow:标题 + cube 行;cube = 图标上文字下,
+/// 外观组(标题 + cube 行;cube = 图标上文字下,
 /// r16,选中 = 模块填充 + 描边)
 fn appearance_group(store: &Entity<AppStore>, current: &str) -> impl IntoElement {
     let cubes: [(&str, &str, gpui_kit::component::Icon); 3] = [
@@ -2562,7 +2561,7 @@ fn caption_line(text: impl Into<String>) -> impl IntoElement {
         .child(text.into())
 }
 
-/// Provider 删除确认模态(shell/mod.rs 根级渲染;源 deleteDialog)
+/// Provider 删除确认模态(shell/mod.rs 根级渲染)
 /// 从端点获取模型弹层(候选多选 + 采纳;loading 态获取中)
 pub fn provider_models_fetch_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
     let st = store.read(cx);
@@ -2740,7 +2739,7 @@ pub fn provider_models_fetch_modal(store: &Entity<AppStore>, cx: &App) -> gpui_k
         .into_any_element()
 }
 
-/// 首运行 onboarding 模态(源 DeepSeekOnboardingDialog):无任何可用
+/// 首运行 onboarding 模态:无任何可用
 /// 凭据时弹出,默认 deepseek provider,只填 key。稍后配置 = 完成引导
 /// (不再弹);保存并继续 = key 写入 deepseek 并完成
 pub(crate) fn onboarding_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
@@ -3220,7 +3219,7 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         )))
 }
 
-/// 分组导航组头(源无分类,目标形态对齐参考图:小号说明字)
+/// 分组导航组头(小号说明字)
 fn nav_group_header(text: &str) -> impl IntoElement {
     div()
         .px(px(8.))

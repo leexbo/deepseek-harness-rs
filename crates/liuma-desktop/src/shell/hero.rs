@@ -1,4 +1,4 @@
-//! Hero 空态(web `Hero.tsx`):居中输入卡 + 工作区/模式 chip 行
+//! Hero 空态:居中输入卡 + 工作区/模式 chip 行
 //! (列宽由根布局按 metrics 策略给定)。空会话时由根布局挂载。
 //! 两 chip 均为实装下拉:工作区 = 切换/添加(标题栏下拉同源行),
 //! 模式 = preset 选择(describe presets)。

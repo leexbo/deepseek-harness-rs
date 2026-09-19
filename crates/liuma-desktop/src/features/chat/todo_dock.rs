@@ -1,4 +1,4 @@
-//! TodoDock(web `TodoPanel`):composer 上方的计划条,默认折叠一行
+//! TodoDock:composer 上方的计划条,默认折叠一行
 //! (标题 + 计数);展开为条目列表。空列表不渲染。
 
 use gpui_kit::component::IconName;

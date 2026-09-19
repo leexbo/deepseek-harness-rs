@@ -417,7 +417,7 @@ impl Rendered {
     }
 }
 
-/// 有界渲染主流程(镜像源 renderInstructionContext 的四级收敛):
+/// 有界渲染主流程(四级收敛):
 /// ①全量装得下直接出;②弃宽保窄逐个前缀尝试;③最深层二分截断
 /// (原导语→紧凑导语两轮);④紧凑通告/标题兜底。
 fn render_instruction_context(
@@ -634,7 +634,7 @@ pub fn render_changes(items: &[ChangeItem]) -> (Rendered, Vec<InstructionChange>
     (rendered, kept)
 }
 
-// ── 逐步重扫运行态(宿主持有,镜像源 state.ts reconcile + index.ts compose)──
+// ── 逐步重扫运行态(宿主持有)──
 
 /// 单作用域版本缓存值(mtime+size 热路径;digest 慢路径比对)
 #[derive(Debug, Clone)]
@@ -1056,7 +1056,7 @@ impl InstructionRuntimeState {
 // ── 基线身份(逐步重扫共用同一公式,认可既存基线) ─────────────────────
 
 /// 发现/预算语义身份(JSON 串;resume 时校验既有基线是否仍然适用)。
-/// 与源 workspaceBaselineIdentity 同构;候选集固定 [AGENTS.md] 已入串,
+/// 候选集固定 [AGENTS.md] 已入串,
 /// 未来加 CLAUDE 时身份自然翻转(→ 整段替换基线)。
 pub fn baseline_identity(workspace: &Path, project_root: &Path) -> String {
     serde_json::json!({

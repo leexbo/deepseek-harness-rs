@@ -1,4 +1,4 @@
-//! 队列条带(源 QueueDock 对应物):composer 上方渲染 `queued` 落位的
+//! 队列条带:composer 上方渲染 `queued` 落位的
 //! 待运行条目。单条直显;多条 = 计数头 + 可折叠列表。行内动作:
 //! 编辑(行内输入)/ 立即投递(steer)/ 移除——走 host `update_queue`
 //! (edit/remove/steer),变更后 `session/queue` 帧自动广播回填。

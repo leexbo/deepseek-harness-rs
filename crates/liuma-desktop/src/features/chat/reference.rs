@@ -12,7 +12,7 @@ use serde_json::json;
 
 /// 字节预算(@session 快照)
 pub const MAX_REFERENCE_BYTES: usize = 65_536;
-/// 单条消息最多引用会话数(源 MAX_REFERENCES)
+/// 单条消息最多引用会话数
 pub const MAX_REFERENCES: usize = 3;
 
 /// 一个激活中的 `@` token(触发检测结果)
@@ -26,7 +26,7 @@ pub struct ActiveAtToken {
     pub quoted: bool,
 }
 
-/// 用户气泡内 `@` 引用 token 的语义分类(源 ReferenceIconKind)
+/// 用户气泡内 `@` 引用 token 的语义分类
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtKind {
     /// 会话(@[label](liuma-session:...))
@@ -49,7 +49,7 @@ pub struct AtToken {
     pub end: usize,
 }
 
-/// 扫描用户气泡文本里的 `@` 引用 token(源 projectUserText 语义便携版):
+/// 扫描用户气泡文本里的 `@` 引用 token:
 /// - 会话:`@[label](liuma-session:...)` 整段(优先级高于其余)
 /// - 文件/目录:`@path`(无空格)与 `@"path with space"`;`@` 前须行首或空白
 ///   (不误伤 `user@host`);裸 token 尾随标点剥除;斜杠结尾 = 目录。
@@ -94,7 +94,7 @@ pub fn scan_at_tokens(text: &str) -> Vec<AtToken> {
 }
 /// 判定光标前的 `@` 是否构成待补全 token。
 ///
-/// 源 grammar.ts `activeAtToken` 语义:`@` 必须在**行首或紧跟空白/标点**
+/// 判定规则:`@` 必须在**行首或紧跟空白/标点**
 /// 之后;`user@host`、`done @src/x"` 这类不触发。返回 None = 无激活 token
 /// (不弹菜单)。`caret` 为光标 byte offset(0..=text.len)。
 pub fn active_at_token(text: &str, caret: usize) -> Option<ActiveAtToken> {
@@ -132,7 +132,7 @@ pub fn active_at_token(text: &str, caret: usize) -> Option<ActiveAtToken> {
     })
 }
 
-/// @file mention(源 formatFileMention:含空格用 `@"..."`,否则裸路径)
+/// @file mention(含空格用 `@"..."`,否则裸路径)
 pub fn file_mention(path: &str) -> String {
     if path.contains(char::is_whitespace) {
         format!("@\"{path}\"")
@@ -141,7 +141,7 @@ pub fn file_mention(path: &str) -> String {
     }
 }
 
-/// @session URI(源 encodeSessionReferenceUri:base64url JSON)
+/// @session URI(base64url JSON 编码)
 pub fn session_uri(session_id: &str) -> String {
     use base64::Engine as _;
     let json = serde_json::json!({ "sessionId": session_id });
@@ -152,12 +152,12 @@ pub fn session_uri(session_id: &str) -> String {
     format!("liuma-session:{b64}")
 }
 
-/// @session mention(源 formatSessionReferenceMention)
+/// @session mention
 pub fn session_mention(label: &str, session_id: &str) -> String {
     format!("@[{label}]({})", session_uri(session_id))
 }
 
-/// 从 mention 文本解析 session 引用(源 parseSessionReferenceText):
+/// 从 mention 文本解析 session 引用:
 /// 匹配 `@[label](liuma-session:...)` 或裸 `liuma-session:...` URI。
 /// 返回 (label, session_id) 列表。
 pub fn parse_session_references(text: &str) -> Vec<(String, String)> {
@@ -209,7 +209,7 @@ pub struct SnapshotSession {
     pub original: usize,
 }
 
-/// 快照投影(源 retainReferencedSession):只保留 user/assistant 文本,
+/// 快照投影:只保留 user/assistant 文本,
 /// 丢弃 tool/reasoning/嵌套 context;逐条塞进 [`MAX_REFERENCE_BYTES`] 预算,
 /// 超了先丢非保留整条,再 head/tail 截断最长消息。
 ///
@@ -263,7 +263,7 @@ pub fn session_snapshot(refs: &[SnapshotSession], messages: &[serde_json::Value]
     format!("<referenced-sessions>\n{escaped}\n</referenced-sessions>")
 }
 
-/// 预算裁剪(源 truncateWithNotice):全部保留不超预算;超则先丢非 checkpoint
+/// 预算裁剪:全部保留不超预算;超则先丢非 checkpoint
 /// 且非最新的整条,再对最长消息 head/tail 截断并注明省略。
 fn fit_budget(mut messages: Vec<(String, String)>) -> (Vec<(String, String)>, bool) {
     let mut total = messages.iter().map(|(_, t)| t.len()).sum::<usize>();
@@ -301,7 +301,7 @@ fn fit_budget(mut messages: Vec<(String, String)>) -> (Vec<(String, String)>, bo
     (messages, truncated || total > MAX_REFERENCE_BYTES)
 }
 
-/// 一条文件/目录补全候选(源 FileReferenceCandidate)
+/// 一条文件/目录补全候选
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileCandidate {
     /// 相对 workspace 根的路径(如 `src/main.rs` 或 `src/`)
@@ -310,14 +310,14 @@ pub struct FileCandidate {
     pub is_dir: bool,
 }
 
-/// 排除目录(源 DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES)
+/// 排除目录
 pub const EXCLUDED_DIRS: &[&str] = &[".git", "node_modules"];
-/// 扫描上限(源 maxEntries)
+/// 扫描上限
 const MAX_ENTRIES: usize = 10_000;
-/// 结果上限(源 maxResults)
+/// 结果上限
 const MAX_RESULTS: usize = 20;
 
-/// BFS 扫描 workspace(源 scanWorkspace):记 {path, kind},排除目录与
+/// BFS 扫描 workspace:记 {path, kind},排除目录与
 /// 隐藏(除非 query 以 `.` 开头或含 `/.`),上限 [`MAX_ENTRIES`]。
 pub fn scan_workspace(root: &std::path::Path) -> Vec<FileCandidate> {
     let mut out = Vec::new();
@@ -366,7 +366,7 @@ pub fn scan_workspace(root: &std::path::Path) -> Vec<FileCandidate> {
     out
 }
 
-/// fuzzy 排名(源 scoreCandidate):basename 精确/前缀/包含/全路径包含/子序列;
+/// fuzzy 排名:basename 精确/前缀/包含/全路径包含/子序列;
 /// 目录 +25。`query` 可为空(列根,按 kind 目录优先 + 字母序)。
 pub fn rank_file_candidates(query: &str, candidates: &[FileCandidate]) -> Vec<FileCandidate> {
     let q = query.to_lowercase();
@@ -408,7 +408,7 @@ pub fn rank_file_candidates(query: &str, candidates: &[FileCandidate]) -> Vec<Fi
         .collect()
 }
 
-/// 子序列匹配(源 subsequence,带 gap 惩罚简化:仅判断是否为子序列)
+/// 子序列匹配(带 gap 惩罚简化:仅判断是否为子序列)
 fn is_subsequence(needle: &str, hay: &str) -> bool {
     let mut it = hay.chars();
     'outer: for n in needle.chars() {
@@ -446,7 +446,7 @@ pub fn at_hit(text: &str, caret: usize) -> Option<AtHit> {
     })
 }
 
-/// @session 候选(源 SessionReferenceCandidate)
+/// @session 候选
 #[derive(Debug, Clone)]
 pub struct SessionCandidate {
     /// 会话 id
@@ -457,7 +457,7 @@ pub struct SessionCandidate {
     pub same_cwd: bool,
 }
 
-/// 会话候选排序(源 candidateRank):同 cwd 优先 → cwd 未定 → 其余;
+/// 会话候选排序:同 cwd 优先 → cwd 未定 → 其余;
 /// query 匹配 sessionId/label 子串。
 pub fn rank_session_candidates(
     query: &str,
@@ -555,7 +555,7 @@ fn find_span(text: &str, pat: &str) -> Option<(usize, usize)> {
     None
 }
 
-/// 词边界扫描 `@file`/`@folder`(源 projectUserText 的 plain 分支)。
+/// 词边界扫描 `@file`/`@folder`。
 /// 已有 out 里的 session span 覆盖区跳过;`@"` quoted 支持空格路径;
 /// 尾部中文/西文句读剥除;斜杠结尾 = 目录。
 fn scan_plain_at(text: &str, out: &mut Vec<AtToken>) {

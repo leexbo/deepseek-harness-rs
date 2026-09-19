@@ -1,10 +1,9 @@
-//! liuma-hooks:Claude Code / Codex shell hooks 桥(源 packages/hooks/
-//! hook-protocol + 两桥逐字对齐移植)。
+//! liuma-hooks:Claude Code / Codex shell hooks 桥。
 //!
 //! 分层:matcher/codec/merge/events 是纯函数内核;config 两方言解析;
 //! payloads 两方言 stdin 载荷;runner 经 liuma_sandbox spawn(沙箱链
 //! fail-closed,拍板 2)执行;service 逐点运行 + 最严格合并,并实现
-//! liuma-agent-loop 的 HookPort(引擎拦截点)。桥的定位与源一致:
+//! liuma-agent-loop 的 HookPort(引擎拦截点)。桥的定位是
 //! **兼容适配器**——只跑既有 hooks.json 的 command-hook 子集,每一步
 //! 降级绝不抛(钩子崩不掉调用 turn)。
 

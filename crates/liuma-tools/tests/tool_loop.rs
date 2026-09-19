@@ -526,7 +526,7 @@ async fn todo_write_events_flow_through_engine_and_restore() {
 #[tokio::test]
 async fn plan_mode_in_turn_review_flow() {
     // 计划模式 in-turn 评审状态机(turn 内阻塞:结果作为 tool/result 回传)。
-    // 标准态拒绝;plan 态经评审 port 批准/拒绝/关闭三种终局文本照源;
+    // 标准态拒绝;plan 态经评审 port 批准/拒绝/关闭三种终局文本;
     // 批准(plan/approved + 回标准态)后再提交被拒;全程事件入日志可重放
     use liuma_agent_loop::ToolSet;
     use liuma_plan::{PlanReviewDecision, PlanReviewPort, PlanTool};
@@ -606,7 +606,7 @@ async fn plan_mode_in_turn_review_flow() {
         assert_eq!(result.data["success"], false, "标准态不得提交计划");
     }
 
-    // 进入 plan 态:批准终局 = 成功结果携带「carry out」指令(照源逐字)
+    // 进入 plan 态:批准终局 = 成功结果携带「carry out」指令(逐字断言)
     engine
         .commit_session_event("session/mode", json!({ "mode": "plan" }), &clock, &mut sink)
         .unwrap();
@@ -707,10 +707,10 @@ async fn plan_mode_in_turn_review_flow() {
             .rev()
             .find(|e| e.r#type == "session/mode")
             .expect("session/mode");
-        assert_eq!(mode.data["mode"], "plan", "拒绝留在 plan 模式(照源)");
+        assert_eq!(mode.data["mode"], "plan", "拒绝留在 plan 模式");
     }
 
-    // 关闭评审终局:错误结果 = 「等待用户说话」(照源逐字)
+    // 关闭评审终局:错误结果 = 「等待用户说话」(逐字断言)
     let mut provider = FakeProvider::new();
     provider.then(vec![LlmEvent::AssistantMessage(json!({
         "content": "", "tool_calls": [

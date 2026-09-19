@@ -1,6 +1,6 @@
 //! 上下文压缩策略(纯函数层)。
 //!
-//! 照源 `packages/compaction` 包族语义:压力阈值与保留尾按上下文窗口的
+//! 压力阈值与保留尾按上下文窗口的
 //! token 预算计(threshold=0.8×窗口,retain=0.16×窗口);压缩范围 = 连续
 //! 头部区间,切点回退到 tool 配对平衡处(永不拆散 assistant tool_calls
 //! 与其 tool/result);摘要指令以最终 user 消息追加在逐字前缀之后。
@@ -11,11 +11,11 @@
 
 use liuma_session::EventEnvelope;
 
-/// 上下文窗口缺省值(未配置 per-model 窗口时;照源 DEFAULT_CONTEXT_WINDOW)
+/// 上下文窗口缺省值(未配置 per-model 窗口时)
 pub const DEFAULT_CONTEXT_WINDOW: u64 = 1_000_000;
-/// 压力阈值占比:上下文 ≥ 窗口×此值时自动折叠(源 thresholdRatio)
+/// 压力阈值占比:上下文 ≥ 窗口×此值时自动折叠
 pub const THRESHOLD_RATIO: f64 = 0.8;
-/// 保留尾占比:最近窗口×此值的上下文逐字保留(源 retainRatio)
+/// 保留尾占比:最近窗口×此值的上下文逐字保留
 pub const RETAIN_RATIO: f64 = 0.16;
 /// 无真实 usage 时的 token 估算启发式(中文文本 ≈ 4 字符/token)
 pub const CHARS_PER_TOKEN: u64 = 4;
@@ -66,7 +66,7 @@ pub struct CompactRange {
 }
 
 /// 消息面事件的 tool 配对增量:assistant/message 带 tool_calls 计 +
-/// N,tool/result 计 −1,其余 0(照源 tool-pairing eventDelta)。
+/// N,tool/result 计 −1,其余 0。
 fn pairing_delta(ty: &str, data: &serde_json::Value) -> i64 {
     match ty {
         "assistant/message" => data["tool_calls"].as_array().map_or(0, |a| a.len() as i64),
@@ -156,7 +156,7 @@ pub fn select_range(events: &[EventEnvelope], retain: u64) -> Option<CompactRang
     })
 }
 
-/// 摘要指令(照源 COMPACTION_INSTRUCTION 逐字):以最终 user 消息追加
+/// 摘要指令:以最终 user 消息追加
 /// 在逐字前缀之后——前缀复用上次路由请求的 system/tools/消息形态,
 /// 命中 provider KV cache。
 pub const COMPACTION_INSTRUCTION: &str = r#"You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.
@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn below_retain_selects_nothing() {
-        // 全部消息估算 token < retain(160K)→ 无可压缩(源同款:小会话 no-op)
+        // 全部消息估算 token < retain(160K)→ 无可压缩(小会话 no-op)
         let all = logged(&[user_msg("hi"), assistant_msg("hello")]);
         assert_eq!(
             select_range(&all, retain_tokens(DEFAULT_CONTEXT_WINDOW)),
@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(arr.len(), 3);
         assert_eq!(arr[2]["role"], "user");
         assert_eq!(arr[2]["content"], COMPACTION_INSTRUCTION);
-        // 指令内含结构化八节标题(照源逐字的锚)
+        // 指令内含结构化八节标题(锚定断言)
         for section in [
             "## Primary Request and Intent",
             "## Files and Code",
@@ -390,7 +390,7 @@ mod tests {
 
     /// 阈值随窗口线性缩放(默认 1M 与 128K 两档锚点)
     #[test]
-    fn thresholds_follow_source_ratios() {
+    fn thresholds_follow_window_ratios() {
         assert_eq!(threshold_tokens(DEFAULT_CONTEXT_WINDOW), 800_000);
         assert_eq!(retain_tokens(DEFAULT_CONTEXT_WINDOW), 160_000);
         // 128K 窗口:阈值 102_400 / 保留尾 20_480(旧硬编码 1M 会晚触发 8 倍)

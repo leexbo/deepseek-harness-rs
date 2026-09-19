@@ -5,7 +5,7 @@
 //! - 用户 `<home>/.agents/skills`(rank 200)
 //!
 //! 形态两种:目录 `<name>/SKILL.md` 与扁平文件 `<name>.md`;只扫一层
-//! (不递归,照源)。项目根 = 向上找最近 `.git`,找不到回退 cwd
+//! (不递归)。项目根 = 向上找最近 `.git`,找不到回退 cwd
 //! (与 liuma-host instructions 的发现语义同源)。`slot` 是文件系统定位名
 //! (目录名/文件 stem),模型面身份以 frontmatter `name` 为准。
 

@@ -165,7 +165,7 @@ pub struct PromptParts {
 /// (persona 文本即插值模板;无 persona 行 = 只有 harness 句)。
 /// 工具指南节由装配注册表收集(在场组件的 prompt 节,tool:<name> 语义);
 /// `subagent_background` = subagent 装配为后台形态(结算通知 port 在场)时
-/// 追加源 tool:subagent 节(见 mount::tool_prompt_sections_with)。
+/// 追加 subagent 后台节(见 mount::tool_prompt_sections_with)。
 pub fn prompt_parts(resolved: &Resolved, subagent_background: bool) -> PromptParts {
     let persona = resolved
         .preset
@@ -198,7 +198,7 @@ pub fn prompt_parts(resolved: &Resolved, subagent_background: bool) -> PromptPar
             .and_then(|c| c["append"].as_str())
             .filter(|s| !s.is_empty())
             .map(interpolate),
-        // @file 引用提示(恒注入;standard preset 有 read 工具,源 context:file-reference)
+        // @file 引用提示(恒注入;standard preset 有 read 工具)
         file_reference_hint: Some(
             "Paths prefixed with @ are files explicitly referenced by the user. \
 Use the read tool when their contents are needed; do not claim to have inspected a file before reading it."
@@ -363,7 +363,7 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
         Self {
             engine: {
                 let mut e = LoopEngine::new(header, log);
-                // 每 step 重建 header(照源 per-request 组装):turn 中途落档的
+                // 每 step 重建 header:turn 中途落档的
                 // 状态事件(计划批准切 standard)立即生效于下一步提示词段。
                 // 状态面(prompt 段)来自日志,工具面由引擎重注
                 e.set_header_rebuilder(header_rebuilder(parts.clone()));
@@ -456,7 +456,7 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
     /// 追加会话级事件(mode 切换/计划批准;经 engine 唯一写入口)。
     /// 返回落档 seq——回声广播按 seq 定向,避免「只翻最后一条」被并发
     /// append 插队丢帧(见 registry broadcast_event 注释)。
-    /// plan 族载荷形状在此 chokepoint 校验(镜像源 invariant 插件)。
+    /// plan 族载荷形状在此 chokepoint 校验(liuma-plan invariant)。
     pub fn session_event(&mut self, ty: &str, data: Value) -> Result<u64> {
         liuma_plan::invariant::validate_payload(ty, &data).map_err(|e| anyhow::anyhow!("{e}"))?;
         let Session { engine, .. } = self;
@@ -532,7 +532,7 @@ where
             .await
     }
 
-    /// 手动压缩(/compact;照源 runMaintenance:非 turn 维护任务)。
+    /// 手动压缩(/compact;非 turn 维护任务)。
     /// 无压力阈值门槛,选段/摘要/落档与自动折叠同路径;失败上抛。
     /// 返回 `Some((seq, items, tokens))` = 落档的 compaction/summary
     /// 事件 seq 与压缩统计;`None` = 无可压缩历史。

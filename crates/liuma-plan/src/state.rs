@@ -5,7 +5,7 @@ use serde_json::json;
 
 /// plan 族事件信封构造(`ty` ∈ plan/submitted|approved|declined|cancelled;
 /// `feedback` 仅 declined 携带,空白视同无)。落档与回声由各宿主评审 port
-/// 负责(liuma-core/Gateway/CLI 共用此构造——单一语义源)。
+/// 负责(liuma-core/Gateway/CLI 共用此构造——单一事实来源)。
 pub fn plan_envelope(ty: &str, plan: &str, feedback: Option<&str>, ts: i64) -> EventEnvelope {
     let mut data = json!({ "plan": plan });
     if let Some(fb) = feedback.filter(|t| !t.trim().is_empty()) {

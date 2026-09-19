@@ -5,7 +5,7 @@
 //! 选中语义,可接受)。lazy 语义:目录行未载/已载空目录各挂一条禁用
 //! 占位子行,既驱动 `is_folder()`(kit 契约:children 非空才有折叠
 //! 箭头),又充当「正在读取…」/「空目录」状态行。折叠保留已载层、
-//! 失败层不自动重试(重开不重试,刷新即重试)——照源。
+//! 失败层不自动重试(重开不重试,刷新即重试)。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -69,7 +69,7 @@ pub struct FilesStore {
     pub root: Option<PathBuf>,
     /// 已载/装载中/失败的层(键 = 目录绝对路径)
     pub levels: HashMap<PathBuf, LevelState>,
-    /// 展开中的目录(折叠保留 levels,照源)
+    /// 展开中的目录(折叠保留 levels)
     pub expanded: HashSet<PathBuf>,
     /// 树控件实体(展示投影;mount 时创建)
     pub tree: Option<Entity<TreeState>>,
@@ -108,7 +108,7 @@ impl AppStore {
     }
 
     /// 标签切入:根失配(首次打开/已切会话)才刷新;同根保持缓存
-    /// (照源:tab 常驻,切入不重载)
+    /// (tab 常驻,切入不重载)
     pub fn files_ensure(&mut self, cx: &mut Context<Self>) {
         let want = self.current_workspace_dir();
         if want != self.files.root {
@@ -117,7 +117,7 @@ impl AppStore {
     }
 
     /// 刷新(手动钮 / 换根):清层、保留 expanded(换根时清空)、
-    /// root 与 expanded 各层重拉(照源 reload 语义)
+    /// root 与 expanded 各层重拉(过期层全部重载)
     pub fn refresh_files(&mut self, cx: &mut Context<Self>) {
         let root = self.current_workspace_dir();
         let root_changed = root != self.files.root;

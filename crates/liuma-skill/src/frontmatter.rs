@@ -1,5 +1,5 @@
-//! SKILL.md 解析:手写栅栏扫描 + serde_norway(源 skill-filesystem
-//! parseSkillFile 同构:首行恰 `---`、逐行找闭合、CRLF 兼容)。
+//! SKILL.md 解析:手写栅栏扫描 + serde_norway(首行恰 `---`、
+//! 逐行找闭合、CRLF 兼容)。
 //!
 //! 失败 warn-and-skip:解析错误以 Err 文案上行,调用方按文件粒度打日志
 //! 跳过,单文件坏不影响其余技能。正文(闭合栅栏之后)仅 trim,无截断
@@ -13,7 +13,7 @@ pub struct ParsedSkill {
     pub name: String,
     pub description: String,
     pub when_to_use: Option<String>,
-    /// 任意 object,原样透传、不进模型面(源 metadata 语义)
+    /// 任意 object,原样透传、不进模型面
     pub metadata: Option<serde_json::Value>,
     pub disable_model_invocation: bool,
     pub user_invocable: bool,
@@ -21,7 +21,7 @@ pub struct ParsedSkill {
     pub body: String,
 }
 
-/// 解析一段 SKILL.md 源文本(错误文案逐字照源)
+/// 解析一段 SKILL.md 源文本(错误文案逐字固定)
 pub fn parse_skill_source(source: &str) -> Result<ParsedSkill, String> {
     let lines: Vec<&str> = source.split('\n').collect();
     if lines.first().copied().unwrap_or("").trim_end_matches('\r') != "---" {
@@ -41,7 +41,7 @@ pub fn parse_skill_source(source: &str) -> Result<ParsedSkill, String> {
         return Err("invalid YAML frontmatter: frontmatter must be a mapping".into());
     };
 
-    // 旧驼峰键直接拒绝(源 rejectLegacyInvocationKey 逐字)
+    // 旧驼峰键直接拒绝
     for legacy in ["disableModelInvocation", "userInvocable"] {
         if map.contains_key(Yaml::String(legacy.into())) {
             return Err(format!(
@@ -98,8 +98,8 @@ pub fn parse_skill_source(source: &str) -> Result<ParsedSkill, String> {
     })
 }
 
-/// frontmatter 布尔:true/false/yes/no/on/off/1/0(大小写不敏感,源
-/// frontmatterBoolean 词表);缺席 = 缺省,其他类型 = 错
+/// frontmatter 布尔:true/false/yes/no/on/off/1/0(大小写不敏感);
+/// 缺席 = 缺省,其他类型 = 错
 fn invocation_bool(map: &serde_norway::Mapping, key: &str, default: bool) -> Result<bool, String> {
     match map.get(Yaml::String(key.into())) {
         None | Some(Yaml::Null) => Ok(default),
@@ -126,7 +126,7 @@ fn bool_of_yaml(v: &Yaml) -> Option<bool> {
     }
 }
 
-/// 技能名语法:`^[a-z0-9]+(?:-[a-z0-9]+)*$`(源 SKILL_NAME;无 regex 依赖)
+/// 技能名语法:`^[a-z0-9]+(?:-[a-z0-9]+)*$`(无 regex 依赖)
 pub fn is_skill_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -136,7 +136,7 @@ pub fn is_skill_name(name: &str) -> bool {
 }
 
 impl ParsedSkill {
-    /// 模型可调用 = 未显式禁用(源 isModelInvocable)
+    /// 模型可调用 = 未显式禁用
     pub fn model_invocable(&self) -> bool {
         !self.disable_model_invocation
     }

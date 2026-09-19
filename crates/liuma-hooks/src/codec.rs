@@ -1,4 +1,4 @@
-//! codec:hook 进程输出解码(源 hook-protocol/codec.ts 逐字对齐)。
+//! codec:hook 进程输出解码。
 //!
 //! 退出码契约:exit 2 = 阻塞(stderr trim 为 reason,空 stderr 无
 //! reason,此时 stdout 无效);exit 0 = 仅当 trim 后 stdout 以 `{` 开头
@@ -9,10 +9,10 @@
 
 use serde_json::Value;
 
-/// 阻塞退出码(源 BLOCKING_EXIT_CODE):stderr → reason
+/// 阻塞退出码:stderr → reason
 pub const BLOCKING_EXIT_CODE: i32 = 2;
 
-/// 统一决策枚举(源 HookOutput.decision):block/deny 禁止,
+/// 统一决策枚举:block/deny 禁止,
 /// approve/allow 放行,ask 请求确认。allow/deny/ask 只能来自
 /// permissionDecision,顶层 decision 只认 approve/block。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +41,7 @@ impl Decision {
         match s {
             "approve" => Some(Self::Approve),
             "block" => Some(Self::Block),
-            // allow/deny/ask 在顶层无效(两参考 schema 保留给
+            // allow/deny/ask 在顶层无效(两方言 schema 保留给
             // permissionDecision)——越界值忽略,不得成为真阻塞决策
             _ => None,
         }
@@ -68,7 +68,7 @@ impl Decision {
     }
 }
 
-/// 方言中立解码结果(源 HookOutput;全部字段可选 = 钩子可行使任意
+/// 方言中立解码结果(全部字段可选 = 钩子可行使任意
 /// 子集,桥按 hook 点决定哪些字段有意义)
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HookOutput {
@@ -79,7 +79,7 @@ pub struct HookOutput {
     /// trim 后 stdout 原文(CC 渲染为 output;Codex SessionStart/
     /// UserPromptSubmit 无结构上下文时当 additionalContext)
     pub stdout: String,
-    /// false ⇒ 钩子请求停止(continue:false;仅记录,run-level halt 照源不做)
+    /// false ⇒ 钩子请求停止(continue:false;仅记录,run-level halt 不做)
     pub continue_: Option<bool>,
     /// continue:false 的人类可读原因
     pub stop_reason: Option<String>,
@@ -91,7 +91,7 @@ pub struct HookOutput {
     pub hook_event_name: Option<String>,
     /// 注入下一请求的额外上下文
     pub additional_context: Option<String>,
-    /// 给用户的告警(照源仅记录不上浮)
+    /// 给用户的告警(仅记录不上浮)
     pub system_message: Option<String>,
     /// 工具入参改写请求(解析但不执行,warn)
     pub updated_input: Option<Value>,
@@ -106,10 +106,10 @@ fn bool_field(v: &Value, key: &str) -> Option<bool> {
     v.get(key)?.as_bool()
 }
 
-/// 解码进程输出(源 parseHookOutput;全函数:坏 JSON = 无结构输出,
+/// 解码进程输出(全函数:坏 JSON = 无结构输出,
 /// 绝不抛)。`expected_event_name` 给定时,`hookSpecificOutput` 的
 /// `hookEventName` 缺失或不符 ⇒ 该块事件级字段丢弃(顶层与已声称的
-/// 判别名保留);None = 不设防(照源 opt-out)。
+/// 判别名保留);None = 不设防(调用方 opt-out)。
 pub fn parse_hook_output(
     exit_code: Option<i32>,
     stdout: &str,
@@ -134,7 +134,7 @@ pub fn parse_hook_output(
     }
 
     // 结构化 stdout 仅对干净退出有意义,且必须以 `{` 开头(其余
-    // stdout 是纯文本,不是错误——照参考引擎宽容)
+    // stdout 是纯文本,不是错误——宽容处理)
     if exit_code == Some(0)
         && trimmed_out.starts_with('{')
         && let Ok(parsed) = serde_json::from_str::<Value>(trimmed_out)
@@ -146,7 +146,7 @@ pub fn parse_hook_output(
     output
 }
 
-/// 折叠结构化 stdout 对象(源 applyStructured)
+/// 折叠结构化 stdout 对象
 fn apply_structured(output: &mut HookOutput, parsed: &Value, expected_event_name: Option<&str>) {
     if let Some(cont) = bool_field(parsed, "continue") {
         output.continue_ = Some(cont);
@@ -182,7 +182,7 @@ fn apply_structured(output: &mut HookOutput, parsed: &Value, expected_event_name
     if let Some(expected) = expected_event_name {
         match &event_name {
             Some(name) if name == expected => {}
-            // 缺失或 mism ⇒ 丢弃(missing 与 mismatch 同罪,照源)
+            // 缺失或 mism ⇒ 丢弃(missing 与 mismatch 同罪)
             _ => return,
         }
     }

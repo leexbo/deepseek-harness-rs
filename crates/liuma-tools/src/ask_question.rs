@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use liuma_agent_loop::{ToolCallRequest, ToolOutput, ToolPort};
 
-/// 一个问题选项(源 AskUserQuestionOption)
+/// 一个问题选项
 #[derive(Debug, Clone)]
 pub struct QuestionOption {
     /// 选项 label(用户可见;推荐项约定 label 后追加 "(Recommended)")
@@ -22,7 +22,7 @@ pub struct QuestionOption {
     pub description: Option<String>,
 }
 
-/// 一个问题项(源 AskUserQuestionItem)
+/// 一个问题项
 #[derive(Debug, Clone)]
 pub struct QuestionItem {
     /// 稳定 id(应答时原样回显)

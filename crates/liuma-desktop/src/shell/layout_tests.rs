@@ -195,7 +195,7 @@ fn user_bubble_width_adapts_to_content(cx: &mut TestAppContext) {
             .clone()
             .expect("启动后有当前会话");
         let mut chat = ChatState::default();
-        // 短消息:单 @ 引用胶囊(源「📄 justfile」同构)→ 应贴合内容
+        // 短消息:单 @ 引用胶囊 → 应贴合内容
         chat.nodes.push(ChatNode::User {
             key: "user:short".into(),
             text: "@file:justfile".into(),
@@ -278,10 +278,9 @@ fn user_bubble_width_adapts_to_content(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 工具卡(Read)展开后:收起按钮**恒显示**(源 ReadBlock.hidden>0 无条件
+/// 工具卡(Read)展开后:收起按钮**恒显示**(hidden>0 无条件
 /// 渲染,不随展开消失)+ 展开体底部有 Inspect 药丸;点 Inspect 开右栏
-/// 轨迹面板标签并打开该 tool 调用的记录检查器(源 ToolRow.inspect →
-/// inspectCall)。
+/// 轨迹面板标签并打开该 tool 调用的记录检查器。
 #[gpui_kit::test]
 fn tool_read_expanded_keeps_collapse_and_inspect_jumps(cx: &mut TestAppContext) {
     use crate::features::chat::projection::{ChatNode, ToolState};
@@ -1859,7 +1858,7 @@ fn file_attachments_intake_and_cards_render(cx: &mut TestAppContext) {
     assert_eq!(files.len(), 1, "文档应入草稿文件轨(而非拒收)");
     assert_eq!(files[0].name, "功能清单.md");
 
-    // 插入序锁:单一列表中文件在前图片在后(照源单一有序列表)
+    // 插入序锁:单一列表中文件在前图片在后(单一有序列表)
     let order_ok = cx.update(|app| {
         let drafts = &store.read(app).attachments.drafts;
         let file_pos = drafts
@@ -1919,7 +1918,7 @@ fn file_attachments_intake_and_cards_render(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 草稿轨端箭头照源 AttachmentRail:溢出 → 右箭头浮现;点击翻页到
+/// 草稿轨端箭头:溢出 → 右箭头浮现;点击翻页到
 /// 轨尾 → 左现右隐;再点左回到轨头 → 左隐右现;轨头新增附件 → 弹簧
 /// 滚尾露出(左现右隐)。轨高恒 76(10+64+2,无预留条带)。可见性
 /// 断言双通道:debug_bounds 验「画过」,store 的 rail_edges Cell 验
@@ -2051,7 +2050,7 @@ fn draft_rail_edge_arrows_page_overflow(cx: &mut TestAppContext) {
     let back_home = cx.update(|app| store.read(app).attachments.scroll_handle.offset().x);
     assert_eq!(back_home, gpui_kit::px(0.), "应精确回到轨头");
 
-    // 轨头新增附件 → 照源滚到轨尾露出:右箭头随位置到尾而隐
+    // 轨头新增附件 → 自动滚到轨尾露出:右箭头随位置到尾而隐
     let p9 = dir.join("文档8.pdf");
     std::fs::write(&p9, b"pdf").expect("write pdf");
     cx.update(|app| {
@@ -2624,7 +2623,7 @@ fn trajectory_ledger_rows_inspector_and_tabs(cx: &mut TestAppContext) {
     }
     assert!(
         wcx.debug_bounds("inspector-tab-summary").is_none(),
-        "SYSTEM 行照源不应有 Summary 页"
+        "SYSTEM 行不应有 Summary 页"
     );
     // initial 记录无前序快照 → 无 Diff 页
     assert!(
@@ -2644,7 +2643,7 @@ fn trajectory_ledger_rows_inspector_and_tabs(cx: &mut TestAppContext) {
         "请求应含 Usage 页"
     );
 
-    // CONTEXT 行(源 isMarkdownRecord):Summary / Preview / Raw / Source
+    // CONTEXT 行:Summary / Preview / Raw / Source
     // 四页;Summary 含 Source ›(跳 Source)与 Preview 小节
     cx.update(|app| {
         store.update(app, |st, cx| st.select_trajectory_record(5, cx));
@@ -2676,7 +2675,7 @@ fn trajectory_ledger_rows_inspector_and_tabs(cx: &mut TestAppContext) {
         "Preview 页应渲染注入文本"
     );
 
-    // MESSAGE 行(源 isMarkdownRecord):Summary / Preview / Raw 三页;
+    // MESSAGE 行:Summary / Preview / Raw 三页;
     // Summary 的 Source ›(Request #1)+ Status + Preview 小节
     cx.update(|app| {
         store.update(app, |st, cx| {
@@ -4170,7 +4169,7 @@ fn preview_renderer_menu_wrap_and_unsupported(cx: &mut TestAppContext) {
         });
     };
     // markdown:菜单在(markdown/code/text 三候选)、wrap 无(markdown
-    // 不消费换行,照源)
+    // 不消费换行)
     open(cx, "readme.md");
     wait_bounds(cx, &mut wcx, "preview-markdown-body");
     assert!(
@@ -4415,7 +4414,7 @@ fn ask_user_question_card_pops_via_pump(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 问答卡标题语义(照源 QuestionComposer):header = 可选眉标,question =
+/// 问答卡标题语义:header = 可选眉标,question =
 /// 恒唯一的标题,二者从不互相回退。回归锚:header 缺席时曾
 /// `unwrap_or_else(|| question.clone())` 把问题文本当标题,而问题文本
 /// 本身又完整渲染一遍 → 同一句出现两次。
@@ -4563,7 +4562,7 @@ fn ask_custom_input_not_rewritten_each_frame(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 问答卡多页门控(照源 QuestionComposer):主按钮情境化——非末页
+/// 问答卡多页门控:主按钮情境化——非末页
 /// 「下一题」(当前题未答 → 卡内报错不翻页),末页才是「提交」;提交
 /// 要求每题完成(作答或显式跳过),有缺口 → 跳回缺口题报错,绝不静默
 /// 代答。回归锁:旧实现任意页恒显可点的「提交」,未作答的后续题被
@@ -4617,7 +4616,7 @@ fn ask_card_multi_page_gating(cx: &mut TestAppContext) {
         .expect("ask_state 应在场")
     };
 
-    // 第 1 页:主按钮在当前题未答时为禁用态(照源 disabled)——点击
+    // 第 1 页:主按钮在当前题未答时为禁用态——点击
     // 惰性,不得提交(回归锁:旧「提交」任意页恒可点)
     click_sel(&mut wcx, "ask-primary");
     redraw(cx, &mut wcx);
@@ -5423,7 +5422,7 @@ fn statusbar_badges_render(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 状态栏统计 pill(照源 StatsPills):数据在场渲染两 pill,点击各弹
+/// 状态栏统计 pill:数据在场渲染两 pill,点击各弹
 /// 详情卡且互斥(开一关另一);turns==0 整组不渲染
 #[gpui_kit::test]
 fn statusbar_stats_pills_open_detail_cards(cx: &mut TestAppContext) {
@@ -5566,7 +5565,7 @@ fn deliverable_chip_opens_preview_panel(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 轮尾统计 pill(照源 TurnTailNodeView):用量/用时 pill + 两张详情卡,
+/// 轮尾统计 pill:用量/用时 pill + 两张详情卡,
 /// 桶按轮号喂入(冷读 turnList 与直播 lastTurn 同形)
 #[gpui_kit::test]
 fn turn_tail_pills_open_detail_cards(cx: &mut TestAppContext) {
@@ -5629,7 +5628,7 @@ fn turn_tail_pills_open_detail_cards(cx: &mut TestAppContext) {
         wcx.debug_bounds("turn-tail-turn-end:9-time").is_some(),
         "轮尾用时 pill 未渲染"
     );
-    // 照源 MessageIconActions:复制/赞/踩/分支与 pill 同行在场
+    // 复制/赞/踩/分支与 pill 同行在场
     for sel in [
         "tail-copy-a:1:1",
         "fb-like-m-1",
@@ -6098,7 +6097,7 @@ fn settings_page_route_end_to_end(cx: &mut TestAppContext) {
         "内容区设置页在场"
     );
     // 侧栏已切换为设置菜单;内容区首运行 setup 姿态(fake 桥无凭据:
-    // 默认 provider 直接渲染为打开的设置卡,源 needsSetup 语义)
+    // 默认 provider 直接渲染为打开的设置卡)
     assert!(
         wcx.debug_bounds("settings-menu").is_some(),
         "侧栏设置菜单在场"
@@ -7220,7 +7219,7 @@ fn collapsed_turn_has_no_gap_before_notice(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 压缩状态行三态(照源 quiet 行,替红色告警):进行中 = compact-running
+/// 压缩状态行三态(quiet 行,替红色告警):进行中 = compact-running
 /// 行(底部槽位,非 turn-notice 红);空反馈(kind=empty 落档) =
 /// compact-row 中性行照显宿主原文;完成标记 = quiet 行(compact-done),
 /// 点击展开置 open_compactions(摘要随展开渲染)。
@@ -7864,7 +7863,7 @@ fn composer_menu_floats_above_trigger(cx: &mut TestAppContext) {
     let input = wcx.debug_bounds("composer-card").expect("输入卡应渲染");
     assert!(
         card.bottom() > input.origin.y,
-        "菜单体应盖过输入卡顶缘(源式锚定),menu.bottom={:?} input.top={:?}",
+        "菜单体应盖过输入卡顶缘,menu.bottom={:?} input.top={:?}",
         card.bottom(),
         input.origin.y
     );
@@ -7911,7 +7910,7 @@ fn onboarding_modal_save_flow(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 「稍后配置」= 完成引导(源 complete 语义):模态关闭且不再弹
+/// 「稍后配置」= 完成引导:模态关闭且不再弹
 #[gpui_kit::test]
 fn onboarding_modal_later_completes(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness_onboarding(cx, "onboard-later");

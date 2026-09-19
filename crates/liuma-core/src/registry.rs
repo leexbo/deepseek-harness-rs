@@ -187,9 +187,9 @@ enum PromptMode {
     Steer,
 }
 
-/// 队列条目变更动作(源 QueueAction 语义:edit / remove / steer)
+/// 队列条目变更动作(edit / remove / steer)
 enum QueueAction {
-    /// 替换待运行条目文本(仅 text;源 QUEUE_EDIT_NON_TEXT 限制)
+    /// 替换待运行条目文本(仅 text)
     Edit(String),
     /// 移除待运行条目
     Remove,
@@ -447,7 +447,7 @@ impl MessageFeedbackStore {
     }
 
     /// put:新增/更新一条反馈。`if_version` = 期望当前值(Some=必须匹配旧值才
-    /// 写;None=必须不存在才写,即新增——源 CAS)。返回写入后的条目;
+    /// 写;None=必须不存在才写,即新增——compare-and-swap 语义)。返回写入后的条目;
     /// 冲突返回 Err("version-conflict")。
     pub fn put(
         &self,
@@ -1161,8 +1161,8 @@ fn title_request_header(model: &str) -> RequestHeader {
     }
 }
 
-/// 4b:帧定携带用户消息的 JSON 数组为一条 user 消息(源
-/// `frameMessages`:`Generate the session title from this JSON array of human messages:\n...`)。
+/// 4b:帧定携带用户消息的 JSON 数组为一条 user 消息,前缀
+/// `Generate the session title from this JSON array of human messages:\n...`。
 fn frame_title_messages(first_text: &str) -> Value {
     let array = serde_json::to_string(&json!([{ "text": first_text }])).unwrap_or_default();
     let framed =
@@ -1170,8 +1170,8 @@ fn frame_title_messages(first_text: &str) -> Value {
     json!([{ "role": "user", "content": [{ "type": "text", "text": framed }] }])
 }
 
-/// 4b:从流式事件累积标题文本 → normalize(源 `generateSessionTitleWithLlm`
-/// 的 BlockAssembler 文本面;maxTitleBytes=80,base 默认)。
+/// 4b:从流式事件累积标题文本 → normalize(拼接增量文本块;
+/// maxTitleBytes=80,base 默认)。
 fn title_from_events(events: &[LlmEvent]) -> String {
     let mut text = String::new();
     for ev in events {
@@ -1854,7 +1854,7 @@ impl AppHost {
         Ok(())
     }
 
-    /// 工作区排序(源 insertBefore 语义:移到 `before` 之前;
+    /// 工作区排序(移到 `before` 之前;
     /// before 缺席/未知 = 移到末尾)
     pub fn reorder_workspace(&self, name: &str, before: Option<&str>) -> Result<(), RpcError> {
         let ws = self
@@ -2387,7 +2387,7 @@ impl AppHost {
             "language": file.language,
             "appearance": file.appearance,
             "sessionsRoot": self.sessions_root.display().to_string(),
-            // 通用区偏好行数据(源 AgentPresetRow / PermissionRow 对应物)
+            // 通用区偏好行数据(preset / permission 选项与缺省)
             "presetOptions": self.presets(),
             "permissionOptions": self.permissions(),
             "defaultPreset": self.default_preset(),
@@ -2636,7 +2636,7 @@ impl AppHost {
             }),
         ));
         if asked.is_none() {
-            // 落账失败绝不返回决定(照源审计原子性)
+            // 落账失败绝不返回决定(审计原子性)
             return ToolApprovalOutcome::Unavailable;
         }
         // approval=never:入口即拒(不可绕过),仍落 decided 收口
@@ -2722,7 +2722,7 @@ impl AppHost {
     }
 
     /// 构建 hooks 运行时(attach 装配;M4.2):enabled 桥逐个读配置,
-    /// 读不到/解析不了 ⇒ warn + 该桥不注册(照源);全部失败/无配置 =
+    /// 读不到/解析不了 ⇒ warn + 该桥不注册;全部失败/无配置 =
     /// None(引擎直通)。config_path 相对路径按进程启动 cwd 解析。
     fn build_hook_service(&self) -> Option<std::sync::Arc<liuma_hooks::HookService>> {
         let entries: Vec<crate::settings::HookBridgeEntry> = self
@@ -2860,7 +2860,7 @@ impl AppHost {
     }
 
     /// 新增/更新 hooks 桥(id 唯一;dialect 只认 claude-code|codex;
-    /// config_path 必填)。变更 = 下次 attach 生效(配置进程级,照源)。
+    /// config_path 必填)。变更 = 下次 attach 生效(配置进程级)。
     pub fn upsert_hook_bridge(
         self: &Arc<Self>,
         entry: crate::settings::HookBridgeEntry,
@@ -2903,7 +2903,7 @@ impl AppHost {
         Ok(())
     }
 
-    /// 设置文件监视(外部编辑实时感知;照源 watch 语义)。轮询 mtime
+    /// 设置文件监视(外部编辑实时感知)。轮询 mtime
     /// (单文件 1s 间隔,零依赖);变更时吸收进内存并同步 MCP 端口池
     /// (mcp/status 帧自动广播;provider/模型等其余项各消费点读取即最新)。
     /// Weak 引用:宿主全体释放即自停,不阻进程退出
@@ -2996,7 +2996,7 @@ impl AppHost {
                         max_attempts,
                         delay_ms,
                     } => (
-                        // RS 原生:重连进度进状态面(源只写日志)
+                        // RS 原生:重连进度进状态面
                         "reconnecting",
                         format!("第 {attempt}/{max_attempts} 次,{delay_ms}ms 后重试"),
                     ),
@@ -3151,7 +3151,7 @@ impl AppHost {
         self.titles.read_recover().get(id).cloned()
     }
 
-    /// 4b:LLM 语义标题生成(源 `session-title-first-prompt-llm`)。
+    /// 4b:LLM 语义标题生成。
     ///
     /// 非会话面一次性调用(与 summary 同构,不经 invariant gate 的
     /// derive-and-compare):以首条 user/message 文本构造零工具请求 →
@@ -3159,8 +3159,8 @@ impl AppHost {
     /// rename 随时覆盖)。成功后以 `session/projection` 帧广播 title。
     ///
     /// 触发点:driver_loop 首 turn 的 user/message 落档后。in-flight 集合
-    /// 去重(并发 turn 不重复生成;源 session-title 的 revision/supersede
-    /// 以「只在首条消息且尚无标题时生成」等效简化)。
+    /// 去重(并发 turn 不重复生成;以「只在首条消息且尚无标题时生成」
+    /// 等效实现取代显式 revision/supersede)。
     ///
     /// registry 无独立 tokio runtime;调用方(driver_loop)在 spawn 的
     /// tokio 任务里 await。fake 模式用注入的 [`self.fake_title`](测试演示),
@@ -3185,7 +3185,7 @@ impl AppHost {
         let id_owned = id.to_string();
         let first_text = first_text.to_string();
         let result = async move {
-            // 已有人工/手动标题则不覆盖(源:rename 钉住后不再自动生成)
+            // 已有人工/手动标题则不覆盖(rename 钉住后不再自动生成)
             if host.session_title(&id_owned).is_some() {
                 return Ok(());
             }
@@ -3584,7 +3584,7 @@ impl AppHost {
             std::fs::create_dir_all(parent)
                 .map_err(|e| RpcError::internal(format!("分叉目录创建失败:{e}")))?;
         }
-        // 截断复制(照源 sessions.fork atSeq 契约):边界 = 首个
+        // 截断复制(锚点 at_seq 契约):边界 = 首个
         // seq ≥ at_seq 的 turn/end(含该整轮——轮尾按钮传收口 seq 即
         // 「从这一轮分叉」);锚点越过日志末尾或缺省 → 回落最后一个
         // 完成轮;锚点在档但其轮未收口 → fork-unavailable(不向前裁剪)
@@ -3816,8 +3816,8 @@ impl AppHost {
         let cancel = CancelToken::new();
         let provider_info = self.provider_info();
         // 会话血缘(slot.path = session.jsonl 文件;header 在其所在目录):
-        // 子代理不挂 skill 工具、不注入目录/手势(照源 child preset 只挂
-        // registry 无 tool-skill;subagent 会话技能菜单为空)
+        // 子代理不挂 skill 工具、不注入目录/手势(child 装配不含
+        // tool-skill;subagent 会话技能菜单为空)
         let slot_dir = slot.path.parent().unwrap_or(&slot.path).to_path_buf();
         let subagent_session = read_session_header(&slot_dir).1.as_deref() == Some("subagent");
 
@@ -3893,7 +3893,7 @@ impl AppHost {
             let gate = InvariantGate::new(transport, log);
             let l = gate.log();
             // 动态权限源:工具每次执行 fold 共享日志取最后 sandbox/mode——
-            // set_permission 落档即对下一次执行生效,无需重装配(源语义)
+            // set_permission 落档即对下一次执行生效,无需重装配
             let mode_log = Arc::clone(&l);
             let mode_source: liuma_tools::ModeSource = Arc::new(move || {
                 crate::permission::sandbox_mode_of_name(crate::permission::sandbox_mode_of(
@@ -4183,7 +4183,7 @@ impl AppHost {
         Ok(())
     }
 
-    /// goal 只读面(源 goal.active/revision 投影对应物)
+    /// goal 只读面(goal/state 的 active/revision 投影)
     pub fn goal_state(&self, id: &str) -> Result<Value, RpcError> {
         if !self.slot_path(id).exists() {
             return Err(RpcError::session_not_found(id));
@@ -4538,8 +4538,7 @@ impl AppHost {
     }
 
     /// session.skills:当前会话可见技能(仅 user-invocable;桌面 `/` 菜单
-    /// 「技能」节数据源)。子代理会话返回空(照源 ui-skill 对 subagent
-    /// 会话回空)。描述为 frontmatter 原文——截断/归一是目录渲染帧的事,
+    /// 「技能」节数据源)。子代理会话返回空。描述为 frontmatter 原文——截断/归一是目录渲染帧的事,
     /// 菜单侧交给 UI truncate。
     pub fn session_skills(&self, session_id: &str) -> Result<Vec<Value>, RpcError> {
         let path = self.slot_path(session_id);
@@ -4660,7 +4659,7 @@ impl AppHost {
     /// 落 plan/submitted + seq 定向回声 → 广播 question/requested →
     /// 等待应答(与取消令牌竞速,对齐 ask 通道)→ 落终局事件 → 返回决定。
     ///
-    /// 终局语义(照源):
+    /// 终局语义:
     /// - 批准:`plan/approved` + `session/mode{standard}`(chip 随回声熄灭;
     ///   每 step header 重建使下一步立即失去 plan 段,实现即刻开始)
     /// - 拒绝:`plan/declined`(带可选 feedback),**留在 plan 模式**——
@@ -4683,7 +4682,7 @@ impl AppHost {
             Arc::clone(&inner.log)
         };
         // plan/submitted 先落档(评审打开期间聊天流即有计划卡);
-        // 落档失败不放评审(照源审计原子性)
+        // 落档失败不放评审(审计原子性)
         let submitted_seq = splice_event(
             &log,
             liuma_plan::plan_envelope("plan/submitted", plan, None, now_ms() as i64),
@@ -4799,8 +4798,8 @@ impl AppHost {
 
     /// 沙箱升级审批(闸门宿主面):审计对 splice 直写(asked → 问询 →
     /// decided,时序先于其所批准的执行);approval=never 入口即拒
-    /// (不问任何应答方,照源不可绕过);闲时调用拒绝不落档(照源:
-    /// 审批必须被 open turn 包住)。
+    /// (不问任何应答方,不可绕过);闲时调用拒绝不落档(审批必须被
+    /// open turn 包住)。
     pub async fn request_escalation(
         self: &Arc<Self>,
         session_id: &str,
@@ -4844,7 +4843,7 @@ impl AppHost {
         ));
         eprintln!("P3b: asked={:?}", asked);
         if asked.is_none() {
-            // 落账失败绝不返回决定(照源审计原子性)
+            // 落账失败绝不返回决定(审计原子性)
             return ApprovalOutcome::Unavailable;
         }
 
@@ -5051,8 +5050,8 @@ impl AppHost {
         }
     }
 
-    /// session.attachment:读一张本会话日志引用的图片(授权 = 日志引用,
-    /// 源 attachment RPC 语义)。返回 {attachment: ref, data: base64}。
+    /// session.attachment:读一张本会话日志引用的图片(授权 = 日志引用)。
+    /// 返回 {attachment: ref, data: base64}。
     pub fn read_attachment(
         self: &Arc<Self>,
         session_id: &str,
@@ -5169,7 +5168,7 @@ impl AppHost {
         for part in content {
             match part["type"].as_str() {
                 Some("text") => text.push_str(part["text"].as_str().unwrap_or_default()),
-                // 图片准入(源 durablePromptContent 序):canonical base64 解码
+                // 图片准入(按 content 块出现序处理):canonical base64 解码
                 // → 白名单/数量/大小/解码校验 → 内容寻址落盘 → 持久引用入队
                 Some("image") => {
                     use base64::Engine as _;
@@ -5200,7 +5199,7 @@ impl AppHost {
                         name: part["name"].as_str().map(String::from),
                     });
                 }
-                // 文件准入(源 saveFile 语义):无 MIME/大小限制,直传源路径
+                // 文件准入:无 MIME/大小限制,直传源路径
                 // 流式落盘;引用带净化显示名
                 Some("file") => {
                     let Some(name) = part["name"].as_str().filter(|n| !n.is_empty()) else {
@@ -5805,7 +5804,7 @@ async fn plan_question(
             (PlanReviewOutcome::Approved, "approved")
         }
         Ok(QuestionAnswer::Decline { feedback }) => {
-            // 拒绝留在 plan 模式(照源):反馈经引导轮直送模型修订重提,
+            // 拒绝留在 plan 模式:反馈经引导轮直送模型修订重提,
             // 不切 standard(空白反馈不入档——与 plan_envelope 语义一致)
             let mut data = json!({ "plan": plan });
             if let Some(fb) = feedback.as_deref().filter(|t| !t.trim().is_empty()) {
@@ -6913,10 +6912,10 @@ async fn handle_driver_cmd(
         }
         DriverCmd::Compact => {
             // 手动压缩:摘要调用可达分钟级,await 阻塞的是驱动循环本身
-            // (turn 间隙),新输入在队列排队、压完即处理(照源维护任务
-            // 独占、插话排队语义)。成功广播 summary(桌面标记行);
+            // (turn 间隙),新输入在队列排队、压完即处理(维护任务独占、
+            // 插话排队语义)。成功广播 summary(桌面标记行);
             // 失败/空落 compaction/error(kind 区分:empty=无历史可压,
-            // 桌面渲染中性别照源显示英文原文;error=真实失败,红色告警)
+            // 桌面渲染用中性文案而非英文原文;error=真实失败,红色告警)
             match session.compact_now().await {
                 Ok(Some((seq, _, _))) => {
                     broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
@@ -6974,7 +6973,7 @@ async fn driver_loop(
                 inject_plan_guide_turn(&session_id, inner, &host0, PLAN_CANCEL_GUIDE);
             }
             PlanReviewOutcome::Declined { feedback } => {
-                // 拒绝留在 plan 模式(照源):反馈(或无反馈的修订指令)
+                // 拒绝留在 plan 模式:反馈(或无反馈的修订指令)
                 // 经引导轮直送模型修订重提
                 let guide = match feedback.filter(|t| !t.trim().is_empty()) {
                     Some(fb) => plan_decline_guide(&fb),
@@ -7016,8 +7015,8 @@ async fn driver_loop(
         }));
     }
 
-    // runtime-context 快照注入改由引擎内 RuntimeContextProjection 每步判断生成
-    // (镜像源 preStep → project):宿主只注入渲染回调(读日志 fold 权限策略 +
+    // runtime-context 快照注入改由引擎内 RuntimeContextProjection 每步判断生成:
+    // 宿主只注入渲染回调(读日志 fold 权限策略 +
     // workspace_root),投影在引擎侧跨步去重、折叠遮蔽时失效。冷附着重开会话恢复 retained。
     {
         let log = Arc::clone(&inner.log);
@@ -7042,7 +7041,7 @@ async fn driver_loop(
         session.restore_projection();
     }
 
-    // skill 目录 + `/name` 手势注入(照源:目录只在 skill 工具在场时发布;
+    // skill 目录 + `/name` 手势注入(目录只在 skill 工具在场时发布;
     // 子代理不挂工具即同跳)。digest 幂等在宿主 SkillCatalogState,attach
     // 时从日志倒序恢复,重开不重发。
     if read_session_header(slot.path.parent().unwrap_or(&slot.path))
@@ -7083,7 +7082,7 @@ async fn driver_loop(
 
     // hooks 桥(M4.2):enabled 桥读配置挂 HookPort(引擎四调用点);
     // SessionStart detached 由宿主在装配后立即跑(上下文染色落档,
-    // 不落 hook 对——turn 外,照源)。无配置/全部解析失败 = 不挂。
+    // 不落 hook 对——turn 外)。无配置/全部解析失败 = 不挂。
     {
         let ws_root = host0.resolve_session(&session_id).0;
         if let Some(service) = host0.build_hook_service() {
@@ -7127,13 +7126,13 @@ async fn driver_loop(
                 )),
             });
             session.set_hook_port(port);
-            // SessionStart detached(照源 emit 语义;上下文可能错过首请求)
+            // SessionStart detached(上下文可能错过首请求)
             let ss_service = Arc::clone(&service);
             let ss_session_id = session_id.clone();
             let ss_ws = ws_root.clone();
             let ss_log = Arc::clone(&inner.log);
             let ss_backend = inner.backend.clone();
-            // SessionStart 链不 join(照源 detached);任务句柄显式 drop
+            // SessionStart 链不 join(detached);任务句柄显式 drop
             drop(tokio::spawn(async move {
                 let source = "startup";
                 let merged = ss_service
@@ -7391,9 +7390,9 @@ async fn driver_loop(
             eprintln!("[liuma-core] turn 失败 {session_id}: {e}");
         }
 
-        // 4b:LLM 语义标题生成(源 session-title-first-prompt-llm)。
+        // 4b:LLM 语义标题生成。
         // 仅对顶层会话(无 parent)且尚无标题时,在首 turn 的 user/message
-        // 落档后触发一次;离线异步,不阻塞 turn(源 fire-and-forget +
+        // 落档后触发一次;离线异步,不阻塞 turn(fire-and-forget +
         // 60s 超时)。重复 turn 不再生成(in-flight + titles 已存双保险),
         // 手动 rename 后 session_title() 已 Some → 跳过。
         {
@@ -7411,12 +7410,12 @@ async fn driver_loop(
                         .find(|e| e.r#type == "user/message")
                         .and_then(|e| e.data["content"].as_str().map(str::to_owned))
                 });
-                // 只对「首条 user 消息内容」触发生成(源 automatic=first-prompt;
-                // 且消息文本非空)
+                // 只对「首条 user 消息内容」触发生成(automatic 模式:首条
+                // prompt 触发;且消息文本非空)
                 if let Some(first_text) = first_text.filter(|t| !t.trim().is_empty()) {
                     let host_task = host0.clone();
                     let sid = session_id.clone();
-                    // 源对该调用的生成在后台跑,不阻塞 turn;此处 spawn 到
+                    // 生成在后台跑,不阻塞 turn;此处 spawn 到
                     // registry 所在 tokio 任务池(attach 时已 spawn 的任务即在此全局池)
                     tokio::spawn(async move {
                         let _ = host_task.generate_llm_title(&sid, &first_text).await;
@@ -8297,7 +8296,7 @@ mod tests {
         let text = std::fs::read_to_string(host.session_log_path(&id)).unwrap();
         assert!(
             text.contains("liuma/system-prompt"),
-            "快照 source.plugin 对齐源插件名"
+            "快照 source.plugin 对齐插件名"
         );
 
         // 二轮:策略未变 → 去重,不新增
@@ -9015,7 +9014,7 @@ mod tests {
     /// updateQueue 错误码:未附着/未决条目不存在 → queue-item-not-found;
     /// 空闲会话 steer → steer-unavailable;未知 kind → bad_request
     #[tokio::test]
-    async fn update_queue_errors_match_source() {
+    async fn update_queue_errors_match_contract() {
         let host = temp_host("queue-err");
         host.set_fake_script(script(&["a"]));
         let id = host.create_session(None, None, None);
@@ -9095,7 +9094,7 @@ mod tests {
         assert!(qs.lock().unwrap().pending.is_empty());
     }
 
-    /// updateQueue edit 拒绝非 text 内容块(源 QUEUE_EDIT_NON_TEXT)
+    /// updateQueue edit 拒绝非 text 内容块
     #[tokio::test]
     async fn update_queue_rejects_non_text_edit() {
         let host = temp_host("queue-edit");
@@ -9188,7 +9187,7 @@ mod tests {
         assert!(text.contains("\"standard\""));
     }
 
-    /// 拒绝路径(冷恢复 re-ask):留在 plan 模式(照源),落 plan/declined,
+    /// 拒绝路径(冷恢复 re-ask):留在 plan 模式,落 plan/declined,
     /// 不产生 plan/approved 也不切 standard
     #[tokio::test]
     async fn plan_question_decline_flow() {
@@ -9228,7 +9227,7 @@ mod tests {
         .unwrap();
         assert!(!text.contains("plan/approved"));
         // 拒绝留在 plan 模式:不切 standard、落 plan/declined(回归锁:
-        // 旧实现拒绝即切回 standard,与源「keep planning」语义相反)
+        // 旧实现拒绝即切回 standard,违背「keep planning」语义)
         assert!(!text.contains("\"standard\""), "拒绝不得切回 standard");
         assert!(text.contains("plan/declined"));
     }
@@ -9347,7 +9346,7 @@ mod tests {
         .await
         .expect("turn 结束");
 
-        // 落档断言:工具结果 = 批准指令(照源逐字);事件序 submitted →
+        // 落档断言:工具结果 = 批准指令(逐字);事件序 submitted →
         // tool/result → approved → standard
         let text = std::fs::read_to_string(host.session_log_path(&id)).unwrap();
         assert!(
@@ -9389,7 +9388,7 @@ mod tests {
     }
 
     /// turn 内评审·拒绝:留在 plan 模式(回归锁:旧实现拒绝切回 standard,
-    /// 与源「keep planning」相反),反馈经工具错误结果回传,落 plan/declined
+    /// 违背「keep planning」),反馈经工具错误结果回传,落 plan/declined
     #[tokio::test]
     async fn plan_review_in_turn_decline_stays_in_plan_mode() {
         let host = temp_host("plan-dec");
@@ -9956,7 +9955,7 @@ mod tests {
     }
 
     /// approval=never:入口即拒(不问任何应答方,无问询帧),审计对仍落
-    /// (asked + decided rejected)——照源不可绕过语义;子代理钉 never 后
+    /// (asked + decided rejected)——不可绕过;子代理钉 never 后
     /// 升级确定性被拒
     #[tokio::test]
     async fn escalation_gate_never_rejects_without_asking() {
@@ -10369,7 +10368,7 @@ mod tests {
         assert!(events.iter().any(|ev| ev.r#type == "session/forked"));
     }
 
-    /// fork 截断语义(照源 sessions.fork atSeq):锚点轮整轮包含
+    /// fork 截断语义(锚点 at_seq):锚点轮整轮包含
     /// (边界 = 首个 ≥ at_seq 的 turn/end);锚点越过日志末尾 → 回落
     /// 最后一个完成轮;锚点所在轮未收口 → fork-unavailable。轮尾
     /// 「分支」传收口 seq =「从这一轮分叉」的回归锁。
@@ -11659,8 +11658,8 @@ mod tests {
         assert_eq!(g.data["source"]["form"], "instructions");
         let content = g.data["content"].as_str().unwrap();
         assert!(content.contains("<skill_content name=\"review\">"));
-        assert!(!content.contains("ARGS-ONLY-HERE"), "args 不进注入体(照源)");
-        // 手势排在目录之后(源序:材料最后)
+        assert!(!content.contains("ARGS-ONLY-HERE"), "args 不进注入体");
+        // 手势排在目录之后(注入材料序:目录在前、手势最后)
         let cat_seq = log
             .iter()
             .find(|e| e.data["source"]["kind"].as_str() == Some("skill-catalog"))
@@ -11796,7 +11795,7 @@ for line in sys.stdin:
         write_skill(&ws, "alpha.md", "alpha", "");
         let parent = host.create_session(None, None, None);
         let child = host.create_subagent_session(&parent);
-        // 子会话:RPC 面返回空(照源 subagent 菜单为空)
+        // 子会话:RPC 面返回空(subagent 菜单为空)
         assert!(host.session_skills(&child).unwrap().is_empty());
         // 父会话正常列出
         assert_eq!(host.session_skills(&parent).unwrap().len(), 1);
@@ -11894,7 +11893,7 @@ for line in sys.stdin:
                 "hook/result".to_string(),
                 "turn/end".to_string(),
             ],
-            "UserPromptSubmit 阻塞事件序照源:{tail:?}"
+            "UserPromptSubmit 阻塞事件序:{tail:?}"
         );
     }
 
@@ -11991,7 +11990,7 @@ for line in sys.stdin:
         let l = inner.log.lock().expect("log 锁中毒");
         // 染色行:UserPromptSubmit 钩子的额外上下文由引擎 contexts 外的
         // HookPort 落档(首批:PostToolUse inject / SessionStart;prompt
-        // submit 上下文在源折进 enter,RS 面暂经染色行落档)
+        // submit 上下文不折进 enter,暂经染色行落档)
         let found = l
             .iter()
             .any(|e| e.r#type == "user/message" && e.data["source"]["kind"] == "plugin");
@@ -12011,7 +12010,7 @@ for line in sys.stdin:
         let hook_json = host
             .workspace
             .join(format!("hooks-stop-{}.json", Uuid::new_v4().simple()));
-        // 钩子自限(照源:loop guard 缺位时钩子自行收敛)——状态文件
+        // 钩子自限(loop guard 缺位时钩子自行收敛)——状态文件
         // 第一次 exit 2(强制续跑),之后 exit 0(放行收尾)
         let guard_file = host
             .workspace

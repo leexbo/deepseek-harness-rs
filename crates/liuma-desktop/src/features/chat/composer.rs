@@ -1,4 +1,4 @@
-//! 输入卡(web `Composer.tsx`):统一列宽(由调用方列容器给定),
+//! 输入卡:统一列宽(由调用方列容器给定),
 //! 圆角 22,bg-card。多行输入(Enter 发送/Shift+Enter 换行);running
 //! 时发送钮变停止。底排:+ 命令菜单 / 图片附件钮 / Plan chip(计划
 //! 模式激活时)/ 权限下拉 / 模型·思考等级下拉。
@@ -262,7 +262,7 @@ fn composer_h(chat: &crate::features::chat::ChatStore) -> f32 {
 }
 
 /// 底排(左:+ 指令菜单 / Plan chip / 权限;右:模型·等级 / 上下文
-/// 圆环 / 发送——对齐 web Composer 布局)
+/// 圆环 / 发送)
 fn bottom_row(
     store: &Entity<AppStore>,
     running: bool,
@@ -660,7 +660,7 @@ fn commands_card(
     menu_card(rows, (composer_w > 0.).then_some(composer_w - 10.))
 }
 
-/// 指令行(源 CommandMenu 行:命令名黑 semibold + 描述灰同行;
+/// 指令行(命令名黑 semibold + 描述灰同行;
 /// 大行高、hover 灰底圆角,非勾选语义)
 fn command_row(
     cmd: &'static str,

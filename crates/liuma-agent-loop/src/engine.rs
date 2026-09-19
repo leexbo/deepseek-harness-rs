@@ -154,7 +154,7 @@ pub struct LoopEngine {
     /// prompt-submit / pre-tool / post-tool / stop(M4.2 拍板 1)。
     hook_port: Option<std::sync::Arc<dyn crate::hooks::HookPortObj>>,
     /// 每 step 重建 header 的回调(宿主注入;None = 沿用 turn 开始时的
-    /// header)。照源 per-request 组装:turn 中途落档的状态事件(如计划
+    /// header)。per-request 组装:turn 中途落档的状态事件(如计划
     /// 批准切回 standard)立即反映到下一步的提示词段——批准结果
     /// 「carry out from your next step」与 plan 段不再打架。工具声明
     /// 不来自日志,重建后由引擎重注。
@@ -184,9 +184,9 @@ pub type ContextProvider = Box<dyn Fn() -> Option<(String, Vec<ContextSection>)>
 /// 引擎只管按序落档;None = 无变化不重发)。
 pub type SkillCatalogProvider = Box<dyn Fn() -> Option<serde_json::Value> + Send + Sync>;
 
-/// 本步用户面消息文本 → `/name` 手势注入载荷(源 skill-invocation;
-/// 引擎在全部注入之后追加落档——源序:「背景在前,模型要执行的材料
-/// 在后,最贴近它的回答」)。仅扫真实用户消息(外部文本不可伪造手势)。
+/// 本步用户面消息文本 → `/name` 手势注入载荷(引擎在全部注入之后
+/// 追加落档——序:「背景在前,模型要执行的材料在后,最贴近它的
+/// 回答」)。仅扫真实用户消息(外部文本不可伪造手势)。
 pub type SkillGestureProvider = Box<dyn Fn(&[String]) -> Vec<serde_json::Value> + Send + Sync>;
 
 /// 默认抖动随机源:uuid v7 的随机位(62 bit)折算 [0,1)。
@@ -270,7 +270,7 @@ impl LoopEngine {
     }
 
     /// 装配 skill 目录每步回调(宿主注入;liuma-skill SkillCatalogState)。
-    /// 未设置 = 本会话无 skill 目录注入(skill 工具不在场时宿主不装,照源:
+    /// 未设置 = 本会话无 skill 目录注入(skill 工具不在场时宿主不装:
     /// 目录只在工具视图解析到本注册的 skill 工具时发布)。
     pub fn set_skill_catalog_provider(&mut self, provider: SkillCatalogProvider) {
         self.skill_catalog_provider = Some(provider);
@@ -395,14 +395,14 @@ impl LoopEngine {
         Ok(claims)
     }
 
-    /// 调整自动折叠阈值/保留尾 token(测试用;默认照源窗口占比)
+    /// 调整自动折叠阈值/保留尾 token(测试用;默认按窗口占比)
     pub fn set_fold_thresholds(&mut self, threshold: u64, retain: u64) {
         self.fold_threshold_tokens = threshold;
         self.fold_retain_tokens = retain;
     }
 
     /// 装配当前模型的上下文窗口(宿主在会话装配/换模型时注入):
-    /// 压力阈值与保留尾按窗口占比重算(照源 0.8/0.16)。
+    /// 压力阈值与保留尾按窗口占比重算(默认 0.8/0.16)。
     pub fn set_context_window(&mut self, window: u64) {
         self.fold_threshold_tokens = liuma_compaction::threshold_tokens(window);
         self.fold_retain_tokens = liuma_compaction::retain_tokens(window);
@@ -737,9 +737,9 @@ impl LoopEngine {
             sink,
         )?;
 
-        // UserPromptSubmit 钩子(源 agent/pre-step):turn/start 落档后、
-        // step/start 前;拒绝 ⇒ turn 以 blocked 收尾、无 step(事件序
-        // 照源:turn/start → hook对 → turn/end)。hook 对由实现方落档。
+        // UserPromptSubmit 钩子:turn/start 落档后、
+        // step/start 前;拒绝 ⇒ turn 以 blocked 收尾、无 step(事件序:
+        // turn/start → hook对 → turn/end)。hook 对由实现方落档。
         // turn 序号与 Translator 计数同源:日志内历史 turn/start 数
         // (本 turn 的 turn/start 已落档,计数即本 turn 序号)
         let hook_turn_no: u64 = {
@@ -788,7 +788,7 @@ impl LoopEngine {
                 sink,
             )?;
 
-            // 每 step 重建 header(照源 per-request 组装):turn 中途落档的
+            // 每 step 重建 header(per-request 组装):turn 中途落档的
             // 状态事件(计划批准切 standard)立即生效于下一步提示词段。
             // 工具声明不来自日志——重建后由引擎重注。锁失败 = 沿用旧 header。
             let rebuilt = match (self.header_rebuilder.as_ref(), self.log.lock().ok()) {
@@ -849,8 +849,8 @@ impl LoopEngine {
                     turn_anchor = user_seq;
                 }
             }
-            // 注入上下文(每步判断;源 RuntimeContextProjection:文本变才生成)。
-            // step 级投影在移植后每步调用;此处为当前 turn 级 contexts 透传。
+            // 注入上下文(每步判断;文本变才生成)。
+            // step 级投影每步调用;此处为当前 turn 级 contexts 透传。
             for ctx in contexts {
                 let mut payload = ctx.clone();
                 if payload.get("id").and_then(|v| v.as_str()).is_none() {
@@ -883,7 +883,7 @@ impl LoopEngine {
                 }
             }
 
-            // 投影快照注入(每步;源 RuntimeContextProjection:文本变才生成)。
+            // 投影快照注入(每步;文本变才生成)。
             // runtime 快照(sandbox/approval 策略)经宿主渲染回调交投影去重;
             // 用户主动注入的 contexts 走上面的循环,两者独立。
             if let Some(provider) = &self.context_provider
@@ -913,7 +913,7 @@ impl LoopEngine {
             }
 
             // skill 目录注入(每步;宿主 digest 幂等,变化才 Some)。排
-            // runtime 快照之后、手势之前——源序:背景(workspace 规则、
+            // runtime 快照之后、手势之前——序:背景(workspace 规则、
             // runtime 策略、目录)在前。仅首个 pre-step 发布 + 变化整条
             // 替换;「模型只见一份」由 liuma-session 派生层保留最新一条达成。
             if let Some(provider) = &self.skill_catalog_provider
@@ -930,7 +930,7 @@ impl LoopEngine {
             }
 
             // skill 手势注入(仅本步有真实用户消息时;载荷排在全部注入
-            // 最后——源序:模型要执行的材料最贴近它的回答)。
+            // 最后——模型要执行的材料最贴近它的回答)。
             if let Some(provider) = &self.skill_gesture_provider
                 && !step_user_texts.is_empty()
             {
@@ -978,7 +978,7 @@ impl LoopEngine {
             // 清空残段(日志只追加,重发前以丢弃标记达成同一可见语义)。
             let mut acc = StreamAcc::default();
             let mut attempt: u32 = 0;
-            // 上下文超长强制压缩后重试(每步一次;照源 maxOverflowRetries=1)
+            // 上下文超长强制压缩后重试(每步一次)
             let mut overflow_retried = false;
             loop {
                 attempt += 1;
@@ -1092,7 +1092,7 @@ impl LoopEngine {
                     sink,
                 )?;
                 // 上下文超长:先强制压缩(无压力门槛;失败的自动路径降级
-                // 跳过)再重试同一请求一次(照源 maxOverflowRetries=1)。
+                // 跳过)再重试同一请求一次。
                 // 压不出内容 → 落到下面的常规决策(该分类不盲重试 → 放行
                 // 原错误)。记录顺序:compaction 审计+summary 先落,再落
                 // 重试行(llm/retry + retry-started,delayMs=0 即时)。
@@ -1240,9 +1240,9 @@ impl LoopEngine {
                 if !self.claim_steered(clock, sink)?.is_empty() {
                     continue;
                 }
-                // Stop 钩子(源 agent/turn-stopping):turn 收尾前;
+                // Stop 钩子:turn 收尾前;
                 // continue ⇒ reason 压入引擎 steer 通道并续跑下一步
-                // (下一轮 claim_steered 认领;loop guard 照源不做——
+                // (下一轮 claim_steered 认领;不做 loop guard——
                 // stop_hook_active 恒 false,钩子自限)。
                 if let Some(hooks) = &self.hook_port
                     && let crate::hooks::StopVerdict::Continue { reason } =
@@ -1295,9 +1295,9 @@ impl LoopEngine {
                 if self.cancel.is_cancelled() {
                     return Self::stop_cancelled(&self.log, clock, sink);
                 }
-                // PreToolUse 钩子(源 tools/pre-execute):tool/call 落档后、
+                // PreToolUse 钩子:tool/call 落档后、
                 // 执行前;deny ⇒ 工具不执行,isError 结果回灌(hook 对已由
-                // 实现方落档,先于本结果——事件序照源)。
+                // 实现方落档,先于本结果)。
                 let hook_output_override: Option<crate::tools::ToolOutput> =
                     if let Some(hooks) = &self.hook_port {
                         match hooks.pre_tool(&request, hook_turn_no).await {
@@ -1313,7 +1313,7 @@ impl LoopEngine {
                     } else {
                         None
                     };
-                // 源语义:deny 短路整个工具管线——被拒调用不再触发
+                // deny 短路整个工具管线——被拒调用不再触发
                 // PostToolUse 监听。
                 let hook_pre_denied = hook_output_override.is_some();
                 let tool_t0 = clock();
@@ -1322,10 +1322,10 @@ impl LoopEngine {
                     None => tools.execute(&request).await,
                 };
                 let tool_duration_ms = clock() - tool_t0;
-                // PostToolUse 钩子(源 tools/post-execute):结果产出后、
+                // PostToolUse 钩子:结果产出后、
                 // tool/result 落档前;block ⇒ 结果改写(feedback,isError);
-                // inject ⇒ 结果照落,其后追加染色上下文行(mislabel guard
-                // 与源同:kind=plugin)。
+                // inject ⇒ 结果照落,其后追加染色上下文行(mislabel
+                // guard:kind=plugin)。
                 let mut hook_inject: Option<serde_json::Value> = None;
                 if let Some(hooks) = &self.hook_port
                     && !hook_pre_denied
@@ -1418,8 +1418,8 @@ impl LoopEngine {
                     ),
                     sink,
                 )?;
-                // PostToolUse 上下文注入(源 context-only 委托折叠的
-                // RS 形态):染色 user/message 落在 tool/result 之后、
+                // PostToolUse 上下文注入(context-only 委托折叠):
+                // 染色 user/message 落在 tool/result 之后、
                 // 模型下一请求前(derive 可见面按 seq 序)
                 if let Some(mut payload) = hook_inject.take() {
                     if payload.get("id").and_then(|v| v.as_str()).is_none() {
@@ -1476,7 +1476,7 @@ impl LoopEngine {
 
     /// 折叠判定与执行:上下文量测越过压力阈值时,把保留尾之前的前缀
     /// 摘要为一条 `compaction/summary` 事件。量测优先真实 usage、选段
-    /// 切点 tool 配对平衡、保留尾预算照源——见 [`liuma_compaction`]。
+    /// 切点 tool 配对平衡、保留尾预算——见 [`liuma_compaction`]。
     #[allow(clippy::too_many_arguments)]
     async fn maybe_fold<T>(
         log: &Arc<Mutex<EventLog>>,
@@ -1509,7 +1509,7 @@ impl LoopEngine {
         }
     }
 
-    /// 手动压缩(/compact;照源 runMaintenance:非 turn 维护任务,由驱动
+    /// 手动压缩(/compact;非 turn 维护任务,由驱动
     /// 在 turn 间隙调用)。显式要求即压(无压力阈值门槛),其余与自动
     /// 折叠同路径(量测/选段/摘要/落档);失败上抛。`Skipped` = 无可压缩。
     pub async fn compact_now<T>(
@@ -2503,8 +2503,8 @@ mod streaming_tests {
         }
     }
 
-    /// 回归锁:上下文超长 → 强制压缩一次 → 重试同一请求(照源
-    /// maxOverflowRetries=1)。断言:compaction/summary 落档、重试行带
+    /// 回归锁:上下文超长 → 强制压缩一次 → 重试同一请求(重试仅
+    /// 一次)。断言:compaction/summary 落档、重试行带
     /// CONTEXT_OVERFLOW/reason=context-overflow/delayMs=0、第二请求面已
     /// 折叠(第一请求面未折叠)、总尝试 2 次(不盲目多次重发)。
     #[tokio::test]

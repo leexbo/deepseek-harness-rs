@@ -1,4 +1,4 @@
-//! 上下文占用圆环(web `ContextMeter` 同位数据源:session_stats 的
+//! 上下文占用圆环(数据源:session_stats 的
 //! contextUsed/contextWindow,最新请求 prompt 侧采样)。canvas +
 //! PathBuilder 多段折线近似圆弧(gpui 0.2.2 无 svg 动态资产/弧原语)。
 //! 点击详情面板在 composer(context_card:构成三段条 + 图例)。
@@ -9,9 +9,9 @@ use super::store::ContextOccupancy;
 use crate::kits::theme;
 
 /// 圆环:track 整圈 + 进度弧(顶端起顺时针;0% 只剩 track)。
-/// `size` 建议与容器一致(web 14px)
+/// `size` 建议与容器一致(14px)
 pub fn ring(percent: f64, size: f32) -> impl IntoElement {
-    // web 比例:14px 盒 / 2px 描边
+    // 圆环比例:14px 盒 / 2px 描边
     let stroke = (size / 7.).max(1.5);
     div().flex().flex_shrink_0().size(px(size)).child(
         canvas(

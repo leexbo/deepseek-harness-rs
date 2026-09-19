@@ -317,14 +317,13 @@ pub struct SettingsFile {
     /// 仅显示层——工作区身份恒为 basename,与路径绑定)
     #[serde(default)]
     pub workspace_titles: HashMap<String, String>,
-    /// 运行中 Enter 行为(queue = 排队下一轮 / steer = 转向当前轮;
-    /// 源 ui-conversation EnterBehaviorRow 对应物)
+    /// 运行中 Enter 行为(queue = 排队下一轮 / steer = 转向当前轮)
     #[serde(default = "default_busy_enter")]
     pub busy_enter: String,
-    /// 界面语言偏好(源 locale LanguageRow 对应物;RS 现仅 zh)
+    /// 界面语言偏好(RS 现仅 zh)
     #[serde(default = "default_language")]
     pub language: String,
-    /// 外观偏好(light / dark / system;源 ui-theme AppearanceRow 对应物)
+    /// 外观偏好(light / dark / system)
     #[serde(default = "default_appearance")]
     pub appearance: String,
     /// MCP server 注册表(enabled 才会在 attach 时桥接;缺失 = 空)
@@ -335,7 +334,7 @@ pub struct SettingsFile {
     pub hook_bridges: Vec<HookBridgeEntry>,
 }
 
-/// hooks 桥注册表条目(源两桥插件 config 的 RS 注册表面)。
+/// hooks 桥注册表条目(claude-code / codex 两桥 config 的 RS 注册表面)。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct HookBridgeEntry {
@@ -343,7 +342,7 @@ pub struct HookBridgeEntry {
     pub id: String,
     /// 方言:claude-code | codex
     pub dialect: String,
-    /// hooks.json 路径(相对路径按进程启动 cwd 解析,照源)
+    /// hooks.json 路径(相对路径按进程启动 cwd 解析)
     pub config_path: String,
     /// 是否随会话挂载
     pub enabled: bool,
@@ -353,10 +352,10 @@ pub struct HookBridgeEntry {
     /// CC:替换 ${CLAUDE_PROJECT_DIR} 并注入 env(缺省 = 会话工作区)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_dir: Option<String>,
-    /// per-hook 缺省超时 ms(缺省 600000 照源)
+    /// per-hook 缺省超时 ms(缺省 600000)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_timeout_ms: Option<u64>,
-    /// hook/result stderr 摘要上限(缺省 500 照源)
+    /// hook/result stderr 摘要上限(缺省 500)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stderr_summary_max_chars: Option<usize>,
 }
@@ -395,7 +394,7 @@ pub struct McpServerEntry {
     /// 工作目录(缺省 = 继承)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    /// 单次调用超时 ms(缺省 60000,照源 toolCallTimeoutMs)
+    /// 单次调用超时 ms(缺省 60000)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_timeout_ms: Option<u64>,
     /// streamable-http endpoint(在 = http 条目,旧文件缺席 = stdio)
@@ -407,7 +406,7 @@ pub struct McpServerEntry {
 }
 
 impl McpServerEntry {
-    /// 传输形态:有 url 即 streamable-http(源为显式判别字段;RS 以
+    /// 传输形态:有 url 即 streamable-http(RS 以
     /// 「url 在场」为判别,JSON 导入侧认 transport/type 键)
     pub fn is_http(&self) -> bool {
         self.url.is_some()

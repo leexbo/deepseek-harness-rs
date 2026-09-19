@@ -14,8 +14,8 @@ pub enum PlanReviewDecision {
     },
 }
 
-/// 评审被关闭/中断时 port 返回的错误文案(回传模型;照源 ASK_CANCELLED
-/// 语义——用户拿回轮次,模型停在原地等消息)。
+/// 评审被关闭/中断时 port 返回的错误文案(回传模型——
+/// 用户拿回轮次,模型停在原地等消息)。
 pub const DISMISSED_REVIEW_ERROR: &str = "The user dismissed the plan review to speak instead; stay in plan mode, stop here, and wait for their message.";
 
 /// 计划评审端口(宿主注入;实现方:liuma-core AppHost 桌面/嵌入、Gateway、CLI)。

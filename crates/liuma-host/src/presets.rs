@@ -54,7 +54,7 @@ pub struct PresetManifest {
 pub struct PresetMetadata {
     /// preset 寻址名(必须与文件名 stem 一致)
     pub name: String,
-    /// 展示名(源 preset.yml 的 name 角色;缺省回落 [`name`])
+    /// 展示名(缺省回落 [`name`])
     #[serde(rename = "displayName", default)]
     pub display_name: Option<String>,
     /// 人读描述(桌面清单/设置下拉展示)

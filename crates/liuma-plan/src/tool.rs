@@ -1,11 +1,11 @@
 //! exit_plan_mode 工具:模型提交计划,**turn 内阻塞**等待用户评审。
 //!
 //! 仅 plan 模式可调用(读共享日志最近一条 session/mode 判定);计划须为
-//! 以 `#` 标题开头的非空 markdown(照源 `^#\\s+\\S`);评审经
+//! 以 `#` 标题开头的非空 markdown(`^#\\s+\\S`);评审经
 //! [`PlanReviewPort`](crate::PlanReviewPort) 阻塞等待,批准/拒绝/关闭的
 //! 结果作为同一 tool-call 的 tool/result 回传模型(拒绝留在 plan 模式,
 //! 反馈随错误文本回传,模型修订重提)。port 缺席 = 无评审通道,失败并
-//! 请模型让用户手动切模式(照源)。工具目录跨模式不变(request-cache
+//! 请模型让用户手动切模式。工具目录跨模式不变(request-cache
 //! 稳定),plan 态的「禁止变更」由提示词段约束承担。
 
 use std::sync::{Arc, Mutex};
@@ -17,14 +17,14 @@ use serde_json::{Value, json};
 use crate::review::{PlanReviewDecision, PlanReviewPort};
 use crate::state::current_mode;
 
-/// 批准结果文本(照源逐字):批准即开工指令,实现自下一步开始。
+/// 批准结果文本(逐字固定):批准即开工指令,实现自下一步开始。
 pub const APPROVED_RESULT: &str =
     "Plan approved — plan mode exited; carry out the plan starting with your next step.";
 
-/// 拒绝(有反馈)结果文本模板(照源逐字)。
+/// 拒绝(有反馈)结果文本模板(逐字固定)。
 pub const DECLINED_WITH_FEEDBACK: &str = "The user chose to keep planning; their feedback: ";
 
-/// 拒绝(无反馈)结果文本(照源逐字)。
+/// 拒绝(无反馈)结果文本(逐字固定)。
 pub const DECLINED_NO_FEEDBACK: &str =
     "The user chose to keep planning; revise the plan and present again.";
 
@@ -61,7 +61,7 @@ impl PlanTool {
     }
 }
 
-/// 计划须以 `#` 标题开头(照源 `^#\\s+\\S`:# + 至少一空白 + 非空白字符)。
+/// 计划须以 `#` 标题开头(`^#\\s+\\S`:# + 至少一空白 + 非空白字符)。
 fn has_heading(plan: &str) -> bool {
     let mut chars = plan.chars();
     if chars.next() != Some('#') {
@@ -223,8 +223,8 @@ mod tests {
         assert!(!has_heading("#"));
         assert!(!has_heading("# "));
         assert!(!has_heading(""));
-        assert!(!has_heading("## sub-only 不是一级?照源 regex 允许 # 级"));
-        // 注:`^#\s+\S` 只认单个 #;## 开头不匹配(源语义)
+        assert!(!has_heading("## sub-only 不是一级标题"));
+        // 注:`^#\s+\S` 只认单个 #;## 开头不匹配
         assert!(has_heading("# x"));
     }
 

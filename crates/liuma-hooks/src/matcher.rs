@@ -1,13 +1,13 @@
-//! matcher:hook 点选择(源 hook-protocol/matcher.ts 逐字对齐)。
+//! matcher:hook 点选择。
 //!
 //! 两模式(方言唯一差异轴):claude-code 下纯 `[A-Za-z0-9_|]+` 是
 //! 字面量 alternation(`|` 分隔逐项精确等值,非子串),其余是无锚定
 //! regex;codex 一律无锚定 regex。缺省/`''`/`'*'` = match-all 哨兵。
-//! 无效正则运行时恒 false(绝不抛),解析期诊断串逐字照源。
+//! 无效正则运行时恒 false(绝不抛),解析期诊断串逐字固定。
 
 use regex::Regex;
 
-/// matcher 模式(源 MatcherMode):桥按方言选择。
+/// matcher 模式:桥按方言选择。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatcherMode {
     /// Claude Code:word+pipe 字面量 alternation,其余 regex
@@ -26,7 +26,7 @@ impl MatcherMode {
     }
 }
 
-/// Claude 字面量判别:纯 word 字符 + `|`(源 CLAUDE_LITERAL)
+/// Claude 字面量判别:纯 word 字符 + `|`
 fn is_claude_literal(pattern: &str) -> bool {
     !pattern.is_empty()
         && pattern
@@ -34,7 +34,7 @@ fn is_claude_literal(pattern: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '|')
 }
 
-/// match-all 哨兵:缺省 / `''` / `'*'`(源 isMatchAll)
+/// match-all 哨兵:缺省 / `''` / `'*'`
 fn is_match_all(matcher: Option<&str>) -> bool {
     match matcher {
         None => true,
@@ -42,12 +42,12 @@ fn is_match_all(matcher: Option<&str>) -> bool {
     }
 }
 
-/// 编译无锚定 regex;非法 pattern 返回 None(源 compileRegex)
+/// 编译无锚定 regex;非法 pattern 返回 None
 fn compile_regex(pattern: &str) -> Option<Regex> {
     Regex::new(pattern).ok()
 }
 
-/// 解析期校验:合法返回 None,否则稳定诊断串(逐字照源
+/// 解析期校验:合法返回 None,否则稳定诊断串(逐字
 /// `invalid {mode} regex matcher {pattern:?}`;match-all 哨兵恒有效)。
 pub fn matcher_diagnostic(matcher: Option<&str>, mode: MatcherMode) -> Option<String> {
     if is_match_all(matcher) {
@@ -68,7 +68,7 @@ pub fn matcher_diagnostic(matcher: Option<&str>, mode: MatcherMode) -> Option<St
     }
 }
 
-/// 运行时匹配(源 matchesMatcher):claude 字面量 = `|` 分隔逐项精确
+/// 运行时匹配:claude 字面量 = `|` 分隔逐项精确
 /// 等值;其余 = 无锚定 regex。无效 regex 返回 false 而非抛。
 pub fn matches_matcher(matcher: Option<&str>, query: &str, mode: MatcherMode) -> bool {
     if is_match_all(matcher) {
@@ -150,7 +150,7 @@ mod tests {
             "BashOutput",
             MatcherMode::Codex
         ));
-        // regex 大小写敏感(照参考引擎):"Ed" 命中 "Editor"
+        // regex 大小写敏感:"Ed" 命中 "Editor"
         assert!(matches_matcher(Some("Ed"), "Editor", MatcherMode::Codex));
         assert!(!matches_matcher(Some("ed"), "Editor", MatcherMode::Codex));
         // alternation 与锚有效
@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_strings_match_source_verbatim() {
+    fn diagnostic_strings_match_expected_verbatim() {
         assert_eq!(
             matcher_diagnostic(Some("("), MatcherMode::ClaudeCode).unwrap(),
             "invalid claude-code regex matcher \"(\""

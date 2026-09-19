@@ -1,5 +1,4 @@
-//! ServerRequest 帧 → 状态变更(纯函数;语义对齐 web `useAppStore`
-//! 双 WS 订阅分支)。副作用以 [`Effect`] 返回,由 store 执行——
+//! ServerRequest 帧 → 状态变更(纯函数)。副作用以 [`Effect`] 返回,由 store 执行——
 //! 单测只喂帧断言状态与效果,不碰 GPUI。
 
 use std::collections::HashMap;
@@ -57,7 +56,7 @@ pub enum Effect {
     StatsUpsert(String, serde_json::Value),
 }
 
-/// 多会话状态(useAppStore 的可纯化子集)
+/// 多会话状态(可由帧纯函数推导的子集)
 pub struct StoreState {
     /// 会话清单(list_sessions 全量)
     pub sessions: Vec<SessionSummary>,
@@ -139,7 +138,7 @@ pub fn apply_frame(state: &mut StoreState, frame: ServerRequest) -> Vec<Effect> 
         }
         "host/workspace-changed" => vec![Effect::HostInfo, Effect::Sessions],
         // 队列/插队权威快照(整体替换;host 每次变更广播)。条目仅含文本
-        // 块时可编辑(与源 QueuedMessage.text 一致)
+        // 块时可编辑
         "session/queue" => {
             let Some(id) = frame.payload["sessionId"].as_str() else {
                 return vec![];

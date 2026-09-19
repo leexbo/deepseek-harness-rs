@@ -30,7 +30,7 @@ pub struct DraftImage {
     pub name: Option<String>,
 }
 
-/// 一条待发送草稿文件(源 ComposerFileAttachment 对应物;直传源路径,
+/// 一条待发送草稿文件(直传源路径,
 /// 发送时宿主流式落盘,不读字节进内存)
 #[derive(Clone)]
 pub struct DraftFile {
@@ -55,15 +55,15 @@ fn new_draft_id() -> String {
     )
 }
 
-/// 附件拒收 toast(源 image-labels 文案)
+/// 附件拒收 toast
 #[derive(Clone)]
 pub struct AttachmentToast {
     /// 正文
     pub text: String,
 }
 
-/// 图片拒收文案(单源 reason → zh;额度数值经 limits 展开,与源
-/// image.sendFailed 模板对齐;映射不全回退通用失败文案)
+/// 图片拒收文案(按 reason 字段唯一映射 zh;额度数值经 limits 展开;
+/// 映射不全回退通用失败文案)
 pub(crate) fn image_reject_text(reason: &str, limits: &ImageAttachmentLimits) -> String {
     match reason {
         "TOO_MANY_IMAGES" => format!("一条消息最多添加 {} 张图片", limits.max_images_per_message),
@@ -91,7 +91,7 @@ pub(crate) fn image_reject_text(reason: &str, limits: &ImageAttachmentLimits) ->
     }
 }
 
-/// 附件大小文本(源 imageSizeText:字节 → 10MB / 2.5MB)
+/// 附件大小文本(字节 → 10MB / 2.5MB)
 pub(crate) fn image_size_text(bytes: u64) -> String {
     const MB: u64 = 1024 * 1024;
     const KB: u64 = 1024;
@@ -135,7 +135,7 @@ fn encode_jpeg_quality(img: &image::DynamicImage, quality: u8) -> image::ImageRe
     Ok(buf.into_inner())
 }
 
-/// 一条待发送草稿附件(单一有序列表,照源 ComposerAttachments:渲染序
+/// 一条待发送草稿附件(单一有序列表:渲染序
 /// 与发送序 = 插入序;图片/文件不分校)
 #[derive(Clone)]
 pub(crate) enum DraftAttachment {
@@ -161,11 +161,11 @@ pub(crate) struct AttachmentsStore {
     pub scroll_handle: gpui_kit::ScrollHandle,
     /// 轨道视口宽(px;canvas paint 期捕获,点击翻页步长的分子)
     pub rail_viewport_w: std::cell::Cell<f32>,
-    /// 两端箭头当前可见性。canvas paint 期由最新滚动几何推导(照源
-    /// AttachmentRail updateEdges:1px 容差),变化才 notify;构造期读
+    /// 两端箭头当前可见性。canvas paint 期由最新滚动几何推导(1px
+    /// 容差),变化才 notify;构造期读
     /// 此值有至多一帧滞后,由该 notify 驱动收敛帧
     pub rail_edges: std::cell::Cell<(bool, bool)>,
-    /// 上帧草稿张数;None = 轨道未挂载(照源 countRef:首挂载不跳尾,
+    /// 上帧草稿张数;None = 轨道未挂载(首挂载不跳尾,
     /// 只有「已有轨上新增」才滚到末尾露出)
     pub rail_mount_count: std::cell::Cell<Option<usize>>,
     /// 滚动偏移的弹簧目标(offset 空间:0=轨头,负=已右滚)。弹簧元素
@@ -173,7 +173,7 @@ pub(crate) struct AttachmentsStore {
     /// 滚轮/新增露尾都只改这里
     pub rail_scroll_target: std::cell::Cell<f32>,
     /// 弹簧元素换代序号:新增露尾时 +1,弹簧元素 id 随之更换 ⇒ 状态
-    /// 重建、新弹簧**从目标起步**(源版露尾即瞬时赋值;若复用旧弹簧
+    /// 重建、新弹簧**从目标起步**(若复用旧弹簧
     /// 则需依赖后续动画帧,而泵没有任何保证——绘制期状态变更不触发
     /// 下一帧,滚动条时代的老坑)
     pub rail_seq: std::cell::Cell<usize>,
@@ -232,7 +232,7 @@ impl AppStore {
             .sum()
     }
 
-    /// 图片字节批量准入(源 intakeImages 序:格式 → 数量 → 单张压缩 →
+    /// 图片字节批量准入(准入序:格式 → 数量 → 单张压缩 →
     /// 总量;任一失败整批拒,返回 toast 文案)。合格产物按原序返回,
     /// **不落草稿**——由调用方按各自插入序组装。
     fn admit_image_bytes(
@@ -314,8 +314,8 @@ impl AppStore {
     }
 
     /// 路径 intake(文件对话框 / 拖拽共用):按文件头嗅探分流,组装保持
-    /// 路径序(照源单一有序列表)。图片子集整批准入——任一超限整批
-    /// 不入轨(文件也不入,源 intakeFiles 同语义);文件直传源路径,
+    /// 路径序(单一有序列表)。图片子集整批准入——任一超限整批
+    /// 不入轨(文件也不入);文件直传源路径,
     /// 不读字节进内存,尺寸取元数据。
     pub fn intake_dropped_paths(&mut self, paths: &[std::path::PathBuf]) {
         enum Plan {

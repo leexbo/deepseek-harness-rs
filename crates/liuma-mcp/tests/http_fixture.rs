@@ -130,7 +130,7 @@ async fn http_connect_discover_call_and_headers_passthrough() {
     assert_eq!(
         mcp_port.specs()[0]["function"]["name"],
         "mcp__httpsrv__echo_auth",
-        "公共名照源 mcp__<server>__<raw>"
+        "公共名 mcp__<server>__<raw>"
     );
     let out = ToolPort::execute(
         &mut mcp_port,
@@ -141,7 +141,7 @@ async fn http_connect_discover_call_and_headers_passthrough() {
     )
     .await;
     assert!(out.success, "{}", out.output);
-    // 配置 headers 原样到达 server(照源:headers dict 不 scrub 不改写)
+    // 配置 headers 原样到达 server(headers dict 不 scrub 不改写)
     assert_eq!(
         out.output, "auth=Bearer e2e-test-token",
         "Authorization 原样透传"

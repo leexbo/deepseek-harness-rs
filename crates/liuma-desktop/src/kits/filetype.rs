@@ -2,10 +2,10 @@
 //!
 //! 两个职责:
 //! - **类型视觉**:文件名 → 单色图标 + 家族染色。gpui 的 SVG 渲染是
-//!   alpha-mask 单色(`paint_svg` → `MonochromeSprite`),源项目的彩色
-//!   渐变图标无法照搬;分类表(精确名/前缀/扩展名)照源移植,彩色以
+//!   alpha-mask 单色(`paint_svg` → `MonochromeSprite`),无法呈现彩色
+//!   渐变图标;分类表(精确名/前缀/扩展名)依次命中,彩色以
 //!   家族染色近似。色值见 [`crate::kits::theme::FILE_TYPE_TINT`]。
-//! - **预览渲染器注册表**:文件名 → 候选渲染器序列(照源注册表:
+//! - **预览渲染器注册表**:文件名 → 候选渲染器序列(注册表:
 //!   text→markdown→image→pdf→code 注册序,最长后缀优先,平长按注册
 //!   序)。HTML 视觉渲染待 webview 拍板,`.html/.htm` 由 code 覆盖。
 
@@ -75,7 +75,7 @@ fn file_name_of(name: &str) -> String {
     base.to_lowercase()
 }
 
-/// 精确文件名 → 家族(源 NAME_TYPES:readme/changelog/contributing;
+/// 精确文件名 → 家族(readme/changelog/contributing;
 /// git 元数据;makefile)
 fn class_by_exact_name(name: &str) -> Option<FileClass> {
     let stem = name.strip_suffix(".txt").unwrap_or(name);
@@ -90,7 +90,7 @@ fn class_by_exact_name(name: &str) -> Option<FileClass> {
     }
 }
 
-/// 前缀规则(源 FILE_NAME_PREFIX_TYPES:`.env.` / `dockerfile.`)
+/// 前缀规则(`.env.` / `dockerfile.`)
 fn class_by_prefix(name: &str) -> Option<FileClass> {
     if name.starts_with(".env.") {
         Some(FileClass::Env)
@@ -130,7 +130,7 @@ fn class_by_extension(name: &str) -> FileClass {
         "ppt" | "pptx" | "odp" => FileClass::Ppt,
         "ttf" | "otf" | "woff" | "woff2" | "eot" => FileClass::Font,
         "txt" | "log" => FileClass::Text,
-        // 源 code 表其余语言 → 通用代码家族
+        // code 表其余语言 → 通用代码家族
         "go" | "java" | "c" | "h" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" | "cs" | "kt"
         | "kts" | "swift" | "php" | "rb" | "rake" | "gemspec" | "sql" | "lua" | "xml" | "xsd"
         | "xsl" | "xslt" => FileClass::Code,
@@ -138,7 +138,7 @@ fn class_by_extension(name: &str) -> FileClass {
     }
 }
 
-/// 文件名 → 家族(精确名 → 前缀 → 扩展名,照源分类链)
+/// 文件名 → 家族(精确名 → 前缀 → 扩展名 三级分类链)
 pub fn file_class(name: &str) -> FileClass {
     let lower = file_name_of(name);
     class_by_exact_name(&lower)
@@ -168,9 +168,9 @@ pub fn class_icon(class: FileClass, size: f32) -> Icon {
     }
 }
 
-// ── 预览渲染器注册表(照源)──────────────────────────────────
+// ── 预览渲染器注册表 ─────────────────────────────────────────
 
-/// 文档预览渲染器(照源内建集;HTML 视觉渲染未实装)
+/// 文档预览渲染器(内建集;HTML 视觉渲染未实装)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DocRenderer {
     /// 纯文本(无扩展名声明,永不自动命中,仅菜单兜底)
@@ -181,11 +181,11 @@ pub enum DocRenderer {
     Image,
     /// PDF(bytes-complete)
     Pdf,
-    /// 代码(源 languages 全表)
+    /// 代码(全语言扩展名表)
     Code,
 }
 
-/// 渲染器内容装载方式(照源 DocumentLoadMode)
+/// 渲染器内容装载方式
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LoadMode {
     /// 行页分页读(5000 行/页)
@@ -194,7 +194,7 @@ pub enum LoadMode {
     BytesComplete,
 }
 
-/// 注册序(平长后缀的决胜序,照源 apply 顺序:text→markdown→image→pdf→code)
+/// 注册序(平长后缀的决胜序,注册顺序:text→markdown→image→pdf→code)
 const REGISTRY: [DocRenderer; 5] = [
     DocRenderer::Text,
     DocRenderer::Markdown,
@@ -215,7 +215,7 @@ impl DocRenderer {
         }
     }
 
-    /// 菜单名(照源 zh locale 逐字)
+    /// 菜单名
     pub fn title(self) -> &'static str {
         match self {
             DocRenderer::Text => "纯文本",
@@ -234,7 +234,7 @@ impl DocRenderer {
         }
     }
 
-    /// 是否消费换行开关(照源 wrap 声明)
+    /// 是否消费换行开关
     pub fn wrap(self) -> bool {
         matches!(self, DocRenderer::Text | DocRenderer::Code)
     }
@@ -246,7 +246,7 @@ impl DocRenderer {
             DocRenderer::Markdown => &["md", "markdown"],
             DocRenderer::Image => &["png", "jpg", "jpeg", "gif", "webp"],
             DocRenderer::Pdf => &["pdf"],
-            // 源 languages.ts 全表(照抄;svg 追加——gpui 解码面无 svg,
+            // 全表(svg 追加——gpui 解码面无 svg,
             // 按源码文本可读降级)
             DocRenderer::Code => &[
                 "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "sh", "bash", "zsh", "json",
@@ -260,7 +260,7 @@ impl DocRenderer {
     }
 }
 
-/// 源 UNVIEWABLE_BINARY_EXTENSIONS(浏览器/解码面不可呈现的二进制;
+/// 不可预览二进制扩展名表(浏览器/解码面不可呈现的二进制;
 /// 空候选且命中此表 = 整体 unsupported 空态,不读取)
 const UNVIEWABLE_EXTENSIONS: &[&str] = &[
     // 视频
@@ -277,14 +277,14 @@ const UNVIEWABLE_EXTENSIONS: &[&str] = &[
 ];
 
 /// 文件名是否以 `.{ext}` 结尾;命中返回后缀长度(`a.markdown` 对
-/// markdown = 9,含点;compound 后缀只取单段,与源 matchedSuffixLength 一致)
+/// markdown = 9,含点;compound 后缀只取单段)
 fn suffix_len(name: &str, ext: &str) -> Option<usize> {
     let suffix = format!(".{ext}");
     name.ends_with(&suffix).then_some(suffix.len())
 }
 
-/// 该后缀是否被任一渲染器声明为二进制(照源 binaryExtensions:
-/// image 除 svg 外全部 + pdf)。命中则候选不再追加纯文本兜底
+/// 该后缀是否被任一渲染器声明为二进制(image 除 svg 外全部
+/// + pdf)。命中则候选不再追加纯文本兜底
 fn binary_document(name: &str) -> bool {
     const BINARY: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "pdf"];
     BINARY.iter().any(|ext| suffix_len(name, ext).is_some())
@@ -301,7 +301,7 @@ fn unviewable(name: &str) -> bool {
 /// (unsupported 空态:不读取、无菜单)。
 ///
 /// 序 = 默认渲染器在前,末位可含纯文本兜底;菜单在候选数 > 1 时显示。
-/// 规则照源:扩展命中按「最长后缀优先,平长按注册序」排序。
+/// 排序规则:扩展命中按「最长后缀优先,平长按注册序」。
 pub fn doc_candidates(name: &str) -> Vec<DocRenderer> {
     let lower = file_name_of(name);
     let mut matched: Vec<(usize, DocRenderer)> = REGISTRY
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn doc_candidates_longest_suffix_and_tie_order() {
-        // code 表也含 markdown(源 languages 全表)→ `.markdown` 平长 9,
+        // code 表也含 markdown → `.markdown` 平长 9,
         // 注册序 markdown 在 code 前
         assert_eq!(
             doc_candidates("a.markdown"),
@@ -464,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn renderer_metadata_matches_source() {
+    fn renderer_metadata_matches_contract() {
         assert_eq!(DocRenderer::Text.id(), "text");
         assert_eq!(DocRenderer::Code.title(), "代码");
         assert_eq!(DocRenderer::Image.load_mode(), LoadMode::BytesComplete);

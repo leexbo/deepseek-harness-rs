@@ -349,7 +349,7 @@ impl AppStore {
             });
             // Enter 发送(shift=true = Shift+Enter 换行,交给默认行为);
             // 多行模式 Enter 已默认插入换行 → 取值后剥尾随换行,置位延迟清空。
-            // @ 补全打开时:Enter 选中高亮项而非发送(源菜单 arbitrate)。
+            // @ 补全打开时:Enter 选中高亮项而非发送。
             cx.subscribe(&composer, |this, input, event: &InputEvent, cx| {
                 match event {
                     InputEvent::PressEnter { shift: false, .. } => {
@@ -1085,7 +1085,7 @@ impl AppStore {
     }
 
     /// 关闭面板标签:关的是激活页则激活余下最后一张;无余 = 空态
-    /// (panel_open 不动,面板保持开)。预览标签关闭即焚桶(照源内存态)
+    /// (panel_open 不动,面板保持开)。预览标签关闭即焚桶(纯内存态)
     pub fn close_panel_tab(&mut self, tab: PanelTab, cx: &mut Context<Self>) {
         if let PanelTab::Preview(p) = &tab {
             self.preview_forget(&p.path);

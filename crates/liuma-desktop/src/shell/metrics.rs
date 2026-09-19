@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn sidebar_clamp_range() {
-        // 源 clampWidth(SIDEBAR_MIN..SIDEBAR_MAX):默认 280 在范围内不截断
+        // clamp_sidebar(SIDEBAR_MIN..SIDEBAR_MAX):默认 280 在范围内不截断
         assert_eq!(clamp_sidebar(280.), 280.);
         // 下界
         assert_eq!(clamp_sidebar(100.), SIDEBAR_MIN);

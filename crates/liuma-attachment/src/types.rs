@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 光栅图媒体类型(白名单即全集;源 ImageMediaType)。
+/// 光栅图媒体类型(白名单即全集)。
 /// wire 形状 = MIME 串(`image/png` 等),非变体名。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ImageMediaType {
@@ -68,7 +68,7 @@ impl ImageMediaType {
     }
 }
 
-/// 一张已持久化图片的不可变引用(源 ImageAttachmentRef;camelCase wire)
+/// 一张已持久化图片的不可变引用(camelCase wire)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageAttachmentRef {
@@ -113,8 +113,8 @@ impl ImageAttachmentRef {
     }
 }
 
-/// 一个已持久化文件的不可变引用(源 FileAttachmentRef;camelCase wire)。
-/// 文件无 MIME 白名单、无大小上限(源 "Files carry no admission limits");
+/// 一个已持久化文件的不可变引用(camelCase wire)。
+/// 文件无 MIME 白名单、无大小上限;
 /// 模型面从不原生上送原件——发送时由 liuma-llm 投影为路径句柄文本,
 /// 引导模型用文件工具按落盘副本路径读取。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -151,7 +151,7 @@ impl FileAttachmentRef {
     }
 }
 
-/// 文件展示分类(源 FileTypeIcon 词汇;只影响 UI 徽章与 meta 行)
+/// 文件展示分类(只影响 UI 徽章与 meta 行)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileKind {
     /// Word 文档(doc/docx/rtf/odt/pages)
@@ -170,13 +170,13 @@ pub enum FileKind {
     Video,
     /// 网页(html/htm)
     Html,
-    /// 代码与配置(源 CODE_FILE_TYPES + EXTENSION_TYPES code 类)
+    /// 代码与配置
     Code,
     /// 其他(兜底)
     Other,
 }
 
-/// 扩展名 → 分类(源 EXTENSION_TYPES 收编;大小写不敏感)
+/// 扩展名 → 分类(大小写不敏感)
 fn kind_by_extension(ext: &str) -> Option<FileKind> {
     const CODE_EXTS: &[&str] = &[
         "scss", "sass", "less", "vue", "svelte", "astro", "bat", "cmd", "csv", "tsv", "c", "h",
@@ -201,7 +201,7 @@ fn kind_by_extension(ext: &str) -> Option<FileKind> {
 
 /// 按文件名(或路径)分类展示类别。大小写不敏感;先按名
 /// (readme/changelog/contributing → Markdown、makefile/dockerfile 与
-/// 点开头配置 → Code),再按扩展名,兜底 Other(源 classifyFileType 序)
+/// 点开头配置 → Code),再按扩展名,兜底 Other
 pub fn classify_file_name(name: &str) -> FileKind {
     let base = name
         .rsplit(['/', '\\'])
@@ -219,14 +219,13 @@ pub fn classify_file_name(name: &str) -> FileKind {
 }
 
 /// meta 行扩展名徽标:末级扩展名大写、截到 8 字符
-/// (源 `fileExtension(name).toUpperCase().slice(0, 8)`)
 pub fn file_extension_label(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
     let ext = base.rsplit_once('.').map(|(_, e)| e).unwrap_or_default();
     ext.to_ascii_uppercase().chars().take(8).collect()
 }
 
-/// 图片准入限制(源 ImageAttachmentLimits;attachment-local 默认值)
+/// 图片准入限制(默认值见下方 [`Default`] 实现)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageAttachmentLimits {
     /// 单张字节上限(20MiB)
@@ -253,7 +252,7 @@ impl Default for ImageAttachmentLimits {
     }
 }
 
-/// 图片准入错误码(wire `details.reason`;源 ImageAdmissionErrorCode 全集)
+/// 图片准入错误码(wire `details.reason` 的全集)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageAdmissionError {
     /// 超单条消息张数
@@ -335,8 +334,8 @@ pub fn content_text(content: &Value) -> String {
 }
 
 /// 组装 user/message 内容:无附件 = 纯字符串(既有事实面);
-/// 有附件 = 块数组,附件在前文本在后,空文本省略 text 块(源序;
-/// 图先于文件,与发送端 serializeImages 序一致)
+/// 有附件 = 块数组,附件在前文本在后,空文本省略 text 块;
+/// 图先于文件,与发送端图片序列化序一致
 pub fn message_content(
     text: &str,
     images: &[ImageAttachmentRef],
@@ -473,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_follows_source_vocabulary() {
+    fn classify_follows_file_vocabulary() {
         assert_eq!(classify_file_name("报告.docx"), FileKind::Word);
         assert_eq!(classify_file_name("a.PDF"), FileKind::Pdf);
         assert_eq!(classify_file_name("docs/功能清单.md"), FileKind::Markdown);

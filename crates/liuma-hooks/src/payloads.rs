@@ -1,6 +1,5 @@
-//! payloads:两方言 stdin 载荷构造(源 hooks-claude-code/index.ts
-//! payload builders + hooks-codex/index.ts payload builders 逐字对齐)。
-#![allow(clippy::too_many_arguments)] // 载荷形状 = wire 契约,参数面照源
+//! payloads:两方言 stdin 载荷构造。
+#![allow(clippy::too_many_arguments)] // 载荷形状 = wire 契约,参数面即契约
 //!
 //! CC:基座 session_id/transcript_path('')/cwd/hook_event_name,带尾换行;
 //! PreToolUse 的 tool_input = 原始 arguments。Codex:snake_case + model +
@@ -11,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::events::HookDialect;
 
-/// CC 基座(源 base;cwd 缺省由调用方传会话工作区或进程 cwd)
+/// CC 基座(cwd 缺省由调用方传会话工作区或进程 cwd)
 fn cc_base(session_id: &str, cwd: &str, event: &str) -> Value {
     json!({
         "session_id": session_id,
@@ -21,7 +20,7 @@ fn cc_base(session_id: &str, cwd: &str, event: &str) -> Value {
     })
 }
 
-/// Codex 基座(源 base:session_id/transcript_path:null/cwd/
+/// Codex 基座(session_id/transcript_path:null/cwd/
 /// hook_event_name/model/permission_mode)
 fn codex_base(session_id: &str, cwd: &str, event: &str, model: &str) -> Value {
     json!({
@@ -48,7 +47,7 @@ fn command_of(arguments: &Value) -> Value {
     }
 }
 
-/// stdin 序列化(源 runHook:JSON + 尾换行按方言)
+/// stdin 序列化(JSON + 尾换行按方言)
 pub fn serialize_stdin(dialect: HookDialect, payload: &Value) -> Vec<u8> {
     let mut s = serde_json::to_string(payload).expect("payload 序列化必成功");
     if dialect == HookDialect::ClaudeCode {

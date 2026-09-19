@@ -59,7 +59,7 @@ pub enum TransportError {
         body: String,
     },
     /// 上下文超长(provider 明确报 context length 超限)。**不盲重试**:
-    /// engine 据此强制压缩一次后重试(照源 maxOverflowRetries=1),
+    /// engine 据此强制压缩一次后重试(重试仅此一次),
     /// 无可压缩内容才放行错误。归类见 liuma-llm `classify_status` /
     /// `classify_stream_failure`。
     #[error("上下文超长: {body}")]

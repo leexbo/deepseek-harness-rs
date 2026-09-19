@@ -181,7 +181,7 @@ pub(crate) struct SettingsStore {
     pub billing_auto_running: bool,
     /// 额度自动刷新上次尝试时刻(turn/end 防抖基线;失败也记,防抖不追打)
     pub billing_auto_last: Option<std::time::Instant>,
-    /// 保存通告(源 savedNotice:应用成功后一行 success 文案)
+    /// 保存通告(应用成功后一行 success 文案)
     pub saved_provider_notice: Option<String>,
     /// 待确认删除的 provider
     pub delete_provider_target: Option<String>,
@@ -200,7 +200,7 @@ pub(crate) struct SettingsStore {
     pub language_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
     /// 繁忙时 Enter 键行为下拉
     pub busy_enter_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
-    /// 权限选 full-access 的风险确认(源 RiskConfirmation 对应物)。
+    /// 权限选 full-access 的风险确认。
     /// Some 记录确认来源:设置页默认预设 / composer 会话权限——确认后
     /// 各自落不同的目标(默认预设落盘 / 会话 set_permission)
     pub full_access_confirm: Option<FullAccessAsk>,
@@ -567,8 +567,8 @@ impl AppStore {
         cx.notify();
     }
 
-    /// onboarding 重估:任一 provider 凭据可用 = 引导完成(源
-    /// provider-ready 语义;全部缺席才弹「添加一个 API Key」模态)
+    /// onboarding 重估:任一 provider 凭据可用 = 引导完成
+    /// (全部缺席才弹「添加一个 API Key」模态)
     pub fn recalc_onboarding(&mut self) {
         let onboarded = self.settings.settings_snapshot["onboarded"]
             .as_bool()
@@ -587,7 +587,7 @@ impl AppStore {
     }
 
     /// onboarding 模态「保存并继续」:key 写入默认 provider(deepseek)
-    /// 并完成引导;空 key = 内联错误(源 keyRequired)
+    /// 并完成引导;空 key = 内联错误
     pub fn onboarding_save(&mut self, cx: &mut Context<Self>) {
         let key = self
             .settings
@@ -619,7 +619,7 @@ impl AppStore {
         cx.notify();
     }
 
-    /// onboarding 模态「稍后配置」:完成引导(源 complete 语义,不再弹)
+    /// onboarding 模态「稍后配置」:完成引导,不再弹
     pub fn onboarding_later(&mut self, cx: &mut Context<Self>) {
         self.settings.onboarding_key_error = None;
         let _ = self.bridge.host().set_onboarded();
@@ -741,14 +741,14 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 切换设置页导航区(源两栏壳:左 nav + 单区内容)
+    /// 切换设置页导航区(两栏壳:左 nav + 单区内容)
     pub fn set_settings_nav(&mut self, nav: SettingsNav, cx: &mut Context<Self>) {
         self.settings.settings_nav = nav;
         cx.notify();
     }
 
     /// 该 provider 是否处于首运行 setup 姿态:尚无可服务 provider 且
-    /// 默认 provider 未配置凭据(源 needsSetup:setup 卡即其在页面上
+    /// 默认 provider 未配置凭据(setup 卡即其在页面上
     /// 的存在形式,直到用户关闭)
     fn provider_needs_setup(&self, id: &str) -> bool {
         let rows = self.settings.settings_snapshot["providers"]
@@ -773,7 +773,7 @@ impl AppStore {
         self.provider_needs_setup(id) && !self.settings.dismissed_setup.contains(id)
     }
 
-    /// 打开行内编辑卡(源:编辑卡在行卡内展开;预填自定义字段,key 清空)
+    /// 打开行内编辑卡(编辑卡在行卡内展开;预填自定义字段,key 清空)
     pub fn open_provider_editor(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.fill_provider_form(Some(id), window, cx);
         self.ensure_key_input("sk-…(留空 = 保持既有凭据)", window, cx);
@@ -921,7 +921,7 @@ impl AppStore {
             self.push_local_notice("provider id 不可为空", cx);
             return;
         }
-        // 新增时查重(源 customRouteTaken):ID 是路由键,遮蔽既有条目
+        // 新增时查重:ID 是路由键,遮蔽既有条目
         // 只会静默覆盖其配置。内置卡例外:对已存在厂商保存 = 编辑语义
         if self.settings.editing_provider.is_none() && !self.settings.builtin_mode {
             let taken = self.settings.settings_snapshot["providers"]
@@ -1524,7 +1524,7 @@ impl AppStore {
         .detach();
     }
 
-    /// 打开 provider 删除确认(源:移除先经确认模态)
+    /// 打开 provider 删除确认(移除先经确认模态)
     pub fn ask_delete_provider(&mut self, id: &str, cx: &mut Context<Self>) {
         self.settings.saved_provider_notice = None;
         self.settings.delete_provider_target = Some(id.to_string());

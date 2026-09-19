@@ -307,7 +307,7 @@ async fn gateway_cancel_interrupts_running_turn() {
 async fn gateway_mode_and_approve_roundtrip() {
     // mode 切换入日志(单边界,engine 追加);非法 mode 值 -32602;
     // approve/decline 经评审通道直答在审评审(turn 内阻塞评审的宿主面),
-    // 无通道/无在审均 -32602;终局事件序 = 源语义(批准切 standard、
+    // 无通道/无在审均 -32602;终局事件序(批准切 standard、
     // 拒绝留 plan 模式)
     use liuma_host::rpc::PlanReviewChannel;
     let dir = std::env::temp_dir().join(format!("liuma-rpc-mode-{}", std::process::id()));

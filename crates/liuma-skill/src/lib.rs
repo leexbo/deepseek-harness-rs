@@ -1,7 +1,7 @@
 //! skill 子系统:发现 → registry(遮蔽/缓存)→ `skill` 工具 +
 //! 持久 user 消息目录 + `/name` 用户手势。
 //!
-//! 语义蓝本为源项目 packages/skill(其本身对齐 `.agents/skills` 标准):
+//! 对齐 `.agents/skills` 标准:
 //! - 渐进披露:目录消息只有 name + description(≤500 字符);正文只在
 //!   两条路径进入——`skill` 工具结果、或 `/name` 手势注入——且共用同一
 //!   `<skill_content>` 渲染,模型在两条路径看到同一形态。
@@ -30,7 +30,7 @@ use liuma_agent_loop::tools::{ToolCallRequest, ToolOutput, ToolPort};
 use crate::discovery::{Candidate, SkillRoot, discover_root, skill_roots};
 use crate::frontmatter::{ParsedSkill, parse_skill_source};
 
-/// 目录 description 的归一化截断上限(源 catalogDescriptionMaxLength 默认)
+/// 目录 description 的归一化截断上限(默认 500)
 pub const CATALOG_DESCRIPTION_MAX_LENGTH: usize = 500;
 
 /// 一个可用技能的摘要(无正文;目录与 RPC 面形态)
@@ -202,7 +202,7 @@ impl SkillService {
     }
 }
 
-// ── 渲染(逐字照源;模型可见文案,禁改写)────────────────────────
+// ── 渲染(模型可见文案,逐字固定,禁改写)────────────────────────
 
 /// 目录 description 归一化:空白折叠 + trim + 500 字符截断(`...` 后缀)
 pub fn catalog_description(value: &str, max_length: usize) -> String {
@@ -229,7 +229,7 @@ pub fn catalog_description(value: &str, max_length: usize) -> String {
     }
 }
 
-/// escapeText(& < >;源同名函数逐字)
+/// 文本转义(& < > → 对应 HTML 实体)
 pub fn escape_text(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -237,7 +237,7 @@ pub fn escape_text(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// escapeAttr(& " <;源同名函数逐字)
+/// 属性值转义(& " < → 对应 HTML 实体)
 pub fn escape_attr(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -262,7 +262,7 @@ pub fn catalog_entries(skills: &[SkillSummary]) -> Vec<CatalogEntry> {
         .collect()
 }
 
-/// 首次发布的目录消息(源 renderCatalogMessage 逐字)
+/// 首次发布的目录消息(模型可见文案,逐字固定)
 pub fn render_catalog_message(entries: &[CatalogEntry]) -> String {
     let mut lines: Vec<String> = vec![
         "<system-reminder>".into(),
@@ -281,7 +281,7 @@ pub fn render_catalog_message(entries: &[CatalogEntry]) -> String {
     lines.join("\n")
 }
 
-/// 目录变化后的整条替换消息(源 renderCatalogUpdate 逐字;entries 可为空 = 墓碑)
+/// 目录变化后的整条替换消息(模型可见文案,逐字固定;entries 可为空 = 墓碑)
 pub fn render_catalog_update(entries: &[CatalogEntry]) -> String {
     let availability: [&str; 2] = if entries.is_empty() {
         [
@@ -318,7 +318,7 @@ fn render_catalog_entry_lines(entries: &[CatalogEntry]) -> Vec<String> {
         .collect()
 }
 
-/// 加载后技能正文(`<skill_content>`;源 renderSkillContent 逐字。
+/// 加载后技能正文(`<skill_content>`,逐字固定。
 /// 工具结果与 `/name` 手势注入共用此形态)。`base_dir` 展示用绝对路径。
 pub fn render_skill_content(name: &str, base_dir: &Path, body: &str) -> String {
     [
@@ -342,7 +342,7 @@ pub fn render_skill_content(name: &str, base_dir: &Path, body: &str) -> String {
 // ── 模型面 `skill` 工具 ──────────────────────────────────────
 
 /// `skill` 工具:按名加载完整指令(结果 = `<skill_content>` 文本)。
-/// 每会话一个(cwd = 会话工作区根);错误文案逐字照源。
+/// 每会话一个(cwd = 会话工作区根);错误文案逐字固定。
 pub struct SkillTool {
     service: std::sync::Arc<SkillService>,
     cwd: PathBuf,
@@ -439,7 +439,7 @@ mod tests {
         assert!(text.starts_with("<system-reminder>"));
         assert!(text.contains("- `code-review`: Reviews &lt;code&gt;"));
         assert!(text.ends_with("</system-reminder>"));
-        // 转义只进渲染帧,不进 entries(源:published fact 不存转义)
+        // 转义只进渲染帧,不进 entries(published fact 不存转义)
         assert_eq!(entries[0].description, "Reviews <code>");
     }
 

@@ -352,7 +352,7 @@ async fn deepseek_responses_http_endpoint_and_events() {
     );
 }
 
-/// 首 token 判定锁(照源 assistantStreamFirstTokenTime:首个非空 delta
+/// 首 token 判定锁:首个非空 delta
 /// 含推理)。纯工具调用步(仅 reasoning 流、零正文 chunk)也必须合成
 /// ttftMs 尾帧——此前只认正文 Chunk,88 步的工具重会话 86 步无 TTFT,
 /// 首 token 均值与解码口径 TPS 随之失真。

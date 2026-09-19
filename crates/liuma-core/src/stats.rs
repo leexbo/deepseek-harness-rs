@@ -6,7 +6,7 @@
 //! 全量解析(RPC 冷读)与直播增量(driver_loop on_event)fold 同一
 //! 函数,两路恒等不漂移。
 //!
-//! 口径(照源 token-meter/session-stats):
+//! 口径:
 //! - TPS = Σ输出 tokens / Σ解码秒;解码 = 请求耗时 − 首 token 延迟
 //!   (只计同时有计时与 tokens 的请求;无解码样本回落 总输出/总请求时长)
 //! - 首 token 均值 = Σ首 token 延迟 / 有记录的请求数
@@ -28,7 +28,7 @@ pub struct TurnStats {
     end_ms: i64,
     llm_ms: i64,
     tool_ms: i64,
-    /// 轮内最早首 token 延迟(照源:取最早步的 TTFT)
+    /// 轮内最早首 token 延迟(取最早步的 TTFT)
     ttft_min: Option<i64>,
     decode_ms: i64,
     input_tokens: u64,

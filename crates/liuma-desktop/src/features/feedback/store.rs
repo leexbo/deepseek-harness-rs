@@ -2,7 +2,7 @@
 //!
 //! 承载 [`FeedbackStore`](AppStore 的 `feedback` 字段)与该域的
 //! `impl AppStore` 扩展块。反馈是 host sidecar(per-session JSON),
-//! 不进模型上下文;语义源 toggle:点当前评分 = 删除,点另一评分 =
+//! 不进模型上下文;toggle 语义:点当前评分 = 删除,点另一评分 =
 //! put 带原备注前移。
 
 use std::collections::HashMap;
@@ -48,7 +48,7 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 赞/踩 + 备注:语义(源 toggle)——点当前评分 = 删除(清反馈);
+    /// 赞/踩 + 备注:点当前评分 = 删除(清反馈);
     /// 点另一评分 = put 新评分、带原备注前移;note 为空清备注留评分。
     pub fn rate_message(
         &mut self,
@@ -62,7 +62,7 @@ impl AppStore {
         };
         let host = self.bridge.host().clone();
         let existing = self.feedback.feedback_by_message.get(message_id).cloned();
-        // 源 toggle:点当前评分(无 note 变更)= 删
+        // 点当前评分(无 note 变更)= 删
         if let Some(it) = &existing
             && it.rating == rating
             && note.is_none()

@@ -819,7 +819,7 @@ impl Render for WorkspaceView {
             .when(self.store.read(cx).settings.model_fetch.is_some(), |el| {
                 el.child(settings::provider_models_fetch_modal(&self.store, cx))
             })
-            // 首运行 onboarding(无任何可用凭据;源 DeepSeekOnboardingDialog)
+            // 首运行 onboarding(无任何可用凭据)
             .when(self.store.read(cx).settings.needs_onboarding, |el| {
                 el.child(settings::onboarding_modal(&self.store, cx))
             })

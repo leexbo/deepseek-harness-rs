@@ -1,4 +1,4 @@
-//! plan 模式协作状态(照源 packages/plan/plan-mode 包边界收拢)。
+//! plan 模式协作状态。
 //!
 //! plan 模式是逐 agent 的布尔协作状态:激活期间每个模型请求都携带一段
 //! 部署方指引(plan:policy),`exit_plan_mode` 把完成的计划提交用户评审

@@ -1,10 +1,10 @@
 //! service:HookService(配置加载 + 逐点运行 + 最严格合并)与
 //! HookPortImpl(liuma-agent-loop HookPort 实现)。
 //!
-//! 桥定位照源:**兼容适配器**。配置读不到/解析不了 ⇒ 不注册任何钩子
+//! 桥定位:**兼容适配器**。配置读不到/解析不了 ⇒ 不注册任何钩子
 //! (warn 由宿主记);UserPromptSubmit/Stop 忽略 matcher;PreToolUse
 //! matcher 主语 = 工具名;SessionStart matcher 主语 = 会话 source。
-//! hook 对经宿主 sink 落档(turn 外不落,照源)。
+//! hook 对经宿主 sink 落档(turn 外不落)。
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -63,13 +63,13 @@ impl Bridge {
 /// hooks 运行时:多桥共享(进程级配置,所有会话共用解析结果)。
 pub struct HookService {
     bridges: Vec<Bridge>,
-    /// 每桥 handler 计数(handlerId 单调;跨会话单调与源一致)
+    /// 每桥 handler 计数(handlerId 单调;跨会话单调)
     counters: Vec<AtomicU64>,
     cancel: CancelToken,
 }
 
 impl HookService {
-    /// 单桥构造(宿主装配辅助;超时/摘要缺省照源)
+    /// 单桥构造(宿主装配辅助;超时/摘要有内置缺省)
     pub fn bridge(
         dialect: crate::config::BridgeDialect,
         config: HookConfig,
@@ -100,7 +100,7 @@ impl HookService {
         self.bridges.is_empty()
     }
 
-    /// SessionStart(detached emit 点;照源:不落 hook 对——turn 外
+    /// SessionStart(detached emit 点;不落 hook 对——turn 外
     /// 运行,noop sink)。plain-stdout-as-context 为 Codex 专属
     /// (SessionStart/UserPromptSubmit;exit 0 非 `{` 开头 stdout)。
     pub async fn run_session_start(
@@ -275,7 +275,7 @@ impl HookService {
                         now_ms,
                     )
                     .await;
-                    // updatedInput / systemMessage:照源 warn + 忽略
+                    // updatedInput / systemMessage:warn + 忽略
                     if out.output.updated_input.is_some() {
                         eprintln!(
                             "hooks: {} {} hook requested updatedInput, which is not yet honored (ignored)",
@@ -288,7 +288,7 @@ impl HookService {
                             bridge.plugin, point
                         );
                     }
-                    // Codex plain-stdout-as-context(源 plainStdoutAsContext;
+                    // Codex plain-stdout-as-context(
                     // SessionStart/UserPromptSubmit 专属,由调用方经
                     // run_point_plain_stdout 开启)
                     let mut output = out.output;
@@ -333,14 +333,13 @@ pub type ToolApprovalFn = Arc<
         + Sync,
 >;
 
-/// HookPort 实现:引擎四调用点 → HookService 逐点运行 + 决策映射
-/// (源两桥 index.ts 的 per-event wiring)。
+/// HookPort 实现:引擎四调用点 → HookService 逐点运行 + 决策映射。
 pub struct HookPortImpl {
     pub service: Arc<HookService>,
     pub session_id: String,
     pub workspace: PathBuf,
     pub sink: HookSink,
-    /// Codex 载荷 model 字段(照源桥配置,缺省 '')
+    /// Codex 载荷 model 字段(缺省 '')
     pub model: String,
     /// 工具级审批面(拍板 3;None = ask fail-closed deny)
     pub approval: Option<ToolApprovalFn>,
@@ -380,8 +379,8 @@ impl HookPort for HookPortImpl {
             .await;
         match merged.decision {
             MergedDecision::Deny => PreStepVerdict::Reject,
-            // ask 在此点无意义(照源不映射);上下文折叠由引擎 contexts
-            // 之外处理——源把 additionalContext 并入 enter 的 messages。
+            // ask 在此点无意义(不映射);上下文折叠由引擎 contexts
+            // 之外处理——additionalContext 不并入 enter 的 messages。
             // RS 形态:服务返回后由宿主 prompt_with_contexts 承载;此处
             // 引擎拦截点只消费裁决,上下文由 service 落档为染色行。
             _ => PreStepVerdict::Proceed,
@@ -421,8 +420,8 @@ impl HookPort for HookPortImpl {
                     .unwrap_or_else(|| "blocked by PreToolUse hook".to_string()),
             },
             // ask ⇒ 真实权限路径(拍板 3):allowed-once 放行;拒绝/取消/
-            // 无通道各自 fail-closed deny(照源 reason 可分辨)。无审批面
-            // = fail-closed:reason 含 "needs approval"(源测试锁定文案)。
+            // 无通道各自 fail-closed deny(reason 可分辨)。无审批面
+            // = fail-closed:reason 含 "needs approval"(测试锁定文案)。
             MergedDecision::Ask => {
                 let reason = merged.reason.clone().unwrap_or_default();
                 match &self.approval {

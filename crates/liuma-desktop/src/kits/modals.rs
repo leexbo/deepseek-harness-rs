@@ -13,7 +13,7 @@ use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
-/// 附件拒收 toast(源 image 错误 toast;底部居中 + 关闭钮)。
+/// 附件拒收 toast(底部居中 + 关闭钮)。
 /// 点击任一位置关闭;3s 自动消失由 store 定时清理兜底。
 pub(crate) fn attachment_toast_card(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let st = store.read(cx);

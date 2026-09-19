@@ -2,17 +2,17 @@
 //!
 //! 内部消息方言携带 `{type:"image"/"file", attachment:<ref>}` 块(持久
 //! 引用,零字节);出网前经纯变换:①文件投影——文件从不原生上送,
-//! 每个 file 块替换为路径句柄文本(源 projectFilesToText 语义);
+//! 每个 file 块替换为路径句柄文本;
 //! ②请求级图片 offload(超预算的最旧图替换为占位文本)——均为瞬态,
 //! 不改持久消息;③adapter 方言翻译时经 [`AttachmentSource`] 读字节组
-//! data URL / 解析文件路径(serialize.ts 语义)。
+//! data URL / 解析文件路径。
 
 use serde_json::Value;
 
 /// 请求级图片字节预算(base64 估算口径;DEFAULT_MAX_REQUEST_IMAGE_BYTES)
 pub const MAX_REQUEST_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 
-/// offload 占位文本(源 OFFLOADED_IMAGE_TEXT 逐字;模型可据语义重读文件
+/// offload 占位文本(模型可据语义重读文件
 /// 或请用户重附)
 pub const OFFLOADED_IMAGE_TEXT: &str = "[image omitted to keep the request within its image limit; older images are omitted first. If this image is still needed, read its file again when a path is available; otherwise ask the user to attach it again.]";
 
@@ -29,14 +29,14 @@ impl AttachmentSource for NoAttachments {
     }
 }
 
-/// JSON 字符串字面量(源 quoted = JSON.stringify;含引号与转义)
+/// JSON 字符串字面量(含引号与转义)
 fn json_string(value: &str) -> String {
     // 字符串序列化不会失败(&str 恒为合法输入)
     serde_json::to_string(value).expect("serde_json 字符串序列化不会失败")
 }
 
-/// 文件句柄文本(源 fileHandleText 逐字;digest = id 去 `sha256:` 前缀
-/// 的前 8 hex)。路径解析失败走源 no-path 分支:公开承认读不到,
+/// 文件句柄文本(digest = id 去 `sha256:` 前缀
+/// 的前 8 hex)。路径解析失败走 no-path 分支:公开承认读不到,
 /// 禁止模型谎称已读。
 pub fn file_handle_text(attachment: &Value, readonly_path: Option<&str>) -> String {
     let id = attachment["attachmentId"].as_str().unwrap_or_default();
@@ -63,7 +63,7 @@ pub fn file_handle_text(attachment: &Value, readonly_path: Option<&str>) -> Stri
     }
 }
 
-/// 请求级文件投影(源 projectFilesToText 语义):**文件从不原生上送**,
+/// 请求级文件投影:**文件从不原生上送**,
 /// 每条路由收到的都是句柄文本——content 数组中每个 file 块原位替换为
 /// text 块。瞬态变换(调用方在克隆上执行,不回写持久消息)。
 pub fn project_files_to_text(messages: &mut Value, source: &dyn AttachmentSource) {
@@ -91,7 +91,7 @@ pub fn project_files_to_text(messages: &mut Value, source: &dyn AttachmentSource
     }
 }
 
-/// base64 数据 URL(`data:<mediaType>;base64,<…>`;源 imagePart 形状)
+/// base64 数据 URL(`data:<mediaType>;base64,<…>`)
 pub fn image_data_url(block: &Value, source: &dyn AttachmentSource) -> Option<String> {
     let a = &block["attachment"];
     let id = a["attachmentId"].as_str()?;
@@ -105,7 +105,7 @@ pub fn image_data_url(block: &Value, source: &dyn AttachmentSource) -> Option<St
 }
 
 /// 请求级 offload:累计图片的 base64 估算体积(bytes × 4/3)超预算时,
-/// **从最旧的图开始**替换为占位文本块(源 offloadRequestImages)。
+/// **从最旧的图开始**替换为占位文本块。
 /// 瞬态变换——调用方在克隆上执行,不回写持久消息。
 /// 覆盖面:user/assistant 的 content 块数组 + tool 消息的 `images`
 /// 引用数组(MCP 图片桥;哨兵 = 同款占位文本块,翻译侧直通)。
@@ -148,7 +148,7 @@ pub fn offload_request_images(messages: &mut Value, max_request_image_bytes: u64
     }
 }
 
-/// 折叠摘要降级:全部图块 → 占位文本(源 compaction text-only 语义;
+/// 折叠摘要降级:全部图块 → 占位文本(纯文本面;
 /// 摘要请求不该背着 base64 负载)。含 tool 消息的 `images` 引用数组。
 pub fn strip_images_for_summary(messages: &Value) -> Value {
     let mut out = messages.clone();
@@ -178,7 +178,7 @@ fn block_bytes(block: &Value) -> u64 {
     block["attachment"]["bytes"].as_u64().unwrap_or(0)
 }
 
-/// base64 体积估算(源口径:ceil(bytes / 3) × 4)
+/// base64 体积估算(ceil(bytes / 3) × 4)
 fn base64_size(bytes: u64) -> u64 {
     bytes.div_ceil(3) * 4
 }
@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(blocks[2]["text"], "总结一下");
     }
 
-    /// 回归锁:路径解析失败走源 no-path 分支(公开承认读不到,
+    /// 回归锁:路径解析失败走 no-path 分支(公开承认读不到,
     /// 禁止谎称已读)
     #[test]
     fn file_projection_without_path_degrades_to_unavailable_handle() {

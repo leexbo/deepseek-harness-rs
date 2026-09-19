@@ -72,7 +72,7 @@ pub(crate) struct TrajectoryStore {
     /// prepend 锚定(旧 offset.y / 旧 max 高 / 剩余重试帧;新布局
     /// 就绪后按高度增量回偏,「加载更早」不跳视口)
     pub trajectory_anchor: Option<(f32, f32, usize)>,
-    /// Duration 切换(时间线按耗时投影;源持久化项,桌面进程内)
+    /// Duration 切换(时间线按耗时投影;进程内状态,不持久化)
     pub trajectory_duration: bool,
     /// 折叠的 turn(turn 号)
     pub collapsed_turns: HashSet<u64>,
@@ -94,8 +94,8 @@ pub(crate) struct TrajectoryStore {
     pub inspector_resize_anchor: Option<(f32, f32)>,
     /// Raw tab 的 Thinking 折叠
     pub inspector_raw_thinking: bool,
-    /// JSON 树展开的节点路径(源 JsonTree 子级默认折叠;key=`{ix}/{path}`,
-    /// path 沿用源 pathId 编码 `s{len}:{key}` / `n{index}`)
+    /// JSON 树展开的节点路径(子级默认折叠;key=`{ix}/{path}`,
+    /// path 为节点路径编码 `s{len}:{key}` / `n{index}`)
     pub json_expanded: HashSet<String>,
     /// Tools 页展开的工具名(目录卡片折叠态)
     pub expanded_inspector_tools: HashSet<String>,
@@ -267,7 +267,7 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 轨迹台账是否钉在底部(2px 阈值,源 BOTTOM_FOLLOW_THRESHOLD_PX)
+    /// 轨迹台账是否钉在底部(2px 阈值)
     pub fn trajectory_at_bottom(&self) -> bool {
         let h = &self.trajectory.trajectory_scroll;
         -h.offset().y >= h.max_offset().y - gpui_kit::px(2.)
@@ -491,7 +491,7 @@ impl AppStore {
         cx.notify();
     }
 
-    /// Duration 切换(时间线耗时投影;源行为:模式切换清时间线选区)
+    /// Duration 切换(时间线耗时投影;模式切换清时间线选区)
     pub fn toggle_trajectory_duration(&mut self, cx: &mut Context<Self>) {
         self.trajectory.trajectory_duration = !self.trajectory.trajectory_duration;
         self.trajectory.timeline_selection = None;
@@ -600,7 +600,7 @@ impl AppStore {
         cx.notify();
     }
 
-    /// JSON 树节点展开/折叠(源 JsonTree expander;子级默认折叠,
+    /// JSON 树节点展开/折叠(子级默认折叠,
     /// 集合存「已展开」路径)
     pub fn toggle_json_node(&mut self, key: &str, cx: &mut Context<Self>) {
         if !self.trajectory.json_expanded.insert(key.to_string()) {

@@ -1,7 +1,7 @@
 //! MCP 客户端桥:连接外部 MCP server(stdio / streamable-http),把其工具
 //! 桥接进工具面。
 //!
-//! 语义对齐源 packages/mcp/mcp-client:公共名 `mcp__<server>__<raw>`(归一化
+//! 公共名 `mcp__<server>__<raw>`(归一化
 //! 与 64 上限加哈希消歧)、raw name 走 tools/call 线路、整代原子换带、
 //! list_changed 触发重同步、内容投影(text 合并 / 占位 / 图片附件桥降级)。
 //! 生命周期:装配登记、后台连接(不阻塞 attach);断线自动重连——指数退避
@@ -31,9 +31,9 @@ use serde_json::{Value, json};
 
 // ── 命名 ──────────────────────────────────────────────────────────────────
 
-/// 公共名长度上限(与 provider 模型面工具名约束一致,源 MAX_PUBLIC_NAME_LENGTH)
+/// 公共名长度上限(与 provider 模型面工具名约束一致)
 const MAX_PUBLIC_NAME_LENGTH: usize = 64;
-/// 哈希消歧后缀长度(源:sha256 前 12 hex)
+/// 哈希消歧后缀长度(sha256 前 12 hex)
 const HASH_SUFFIX_LEN: usize = 12;
 
 /// 公共工具名:`mcp__<server>__<raw>`。
@@ -72,7 +72,7 @@ fn hex_sha256_12(input: &str) -> String {
 
 // ── env 清洗 ──────────────────────────────────────────────────────────────
 
-/// 敏感键剔除(照源 SENSITIVE_ENV_PATTERN /KEY|PASSWORD|SECRET|TOKEN/i)
+/// 敏感键剔除(键名含 KEY/PASSWORD/SECRET/TOKEN 任意子串,大小写不敏感)
 fn is_sensitive_key(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
     upper.contains("KEY")
@@ -100,7 +100,7 @@ pub fn scrub_env(
 
 // ── 内容投影与图片准入 ────────────────────────────────────────────────────
 
-/// 降级文本模板(源 verbatim)
+/// 降级文本模板
 fn image_unavailable_text(media_type_display: &str, reason: &str) -> String {
     format!(
         "[image unavailable: {media_type_display}; {reason}; raw image data remains available to programmatic callers]"
@@ -108,15 +108,15 @@ fn image_unavailable_text(media_type_display: &str, reason: &str) -> String {
 }
 
 const IMAGE_MT_MISSING: &str = "unknown media type";
-/// mime 白名单拒绝理由(源逐字)
+/// mime 白名单拒绝理由
 const REASON_NOT_WHITELISTED: &str = "the declared media type is not PNG, JPEG, WebP, or GIF";
-/// canonical base64 拒绝理由(源逐字)
+/// canonical base64 拒绝理由
 const REASON_NOT_CANONICAL: &str = "the image data is not canonical base64";
-/// 同批其余图片的连带拒绝理由(源逐字)
+/// 同批其余图片的连带拒绝理由
 const REASON_SIBLING_INVALID: &str = "another image in the same result was invalid";
-/// 无附件存储(源逐字)
+/// 无附件存储
 const REASON_NO_STORE: &str = "no attachment store is mounted";
-/// isError 前置拒绝(源 projectContent 默认 image projector 逐字)
+/// isError 前置拒绝
 const REASON_NOT_ADMITTED: &str = "this result was not admitted to durable model context";
 
 /// 一张 MCP 结果图片的解码段中间形态
@@ -163,7 +163,7 @@ impl ImageCandidate {
     }
 }
 
-/// canonical base64 双查(源 CANONICAL_BASE64 正则 + roundtrip):
+/// canonical base64 双查(字符集白名单判定 + roundtrip 恒等):
 /// 字符集 [A-Za-z0-9+/]、长度 4 的倍数、padding 只在尾部且 ≤2,再
 /// decode→encode 恒等——拒绝空白与 URL-safe 别名,不做宽松归一。
 fn is_canonical_base64(data: &str) -> bool {
@@ -216,12 +216,12 @@ pub struct PreparedContent {
     pub images: Vec<ImageAttachmentRef>,
 }
 
-/// tools/call 结果投影(照源 prepareImageProjection 三段式,每段全有或
+/// tools/call 结果投影(三段式,每段全有或
 /// 全无):isError 先行拒绝(不落存)→ 解码段(mime/canonical,任一无效
 /// 整批降级,其余块理由 `another image in the same result was invalid`)→
 /// 落存段(批量原子)。image 位置不占文本行:引用随 `ToolOutput.images`
-/// 上行,由方言层在 tool 消息里序列化为真图(照源「base64 永不进模型
-/// 上下文」)。
+/// 上行,由方言层在 tool 消息里序列化为真图(base64 永不进模型
+/// 上下文)。
 pub fn prepare_content(
     result: &CallToolResult,
     store: Option<&dyn ImageStorePort>,
@@ -256,7 +256,7 @@ pub fn prepare_content(
     let images: Vec<ImageAttachmentRef> = if candidates.is_empty() {
         Vec::new()
     } else if is_error {
-        // isError 前置拒绝:不做任何图片持久化(照源)
+        // isError 前置拒绝:不做任何图片持久化
         for c in &candidates {
             lines.push(image_unavailable_text(
                 &c.media_type_display,
@@ -320,7 +320,7 @@ pub fn prepare_content(
 
 // ── 服务器配置 ────────────────────────────────────────────────────────────
 
-/// 传输形态(源 config 判别字段:显式 `transport`,非「有 url 即 http」
+/// 传输形态(显式 `transport` 判别字段,非「有 url 即 http」
 /// 启发式)
 #[derive(Debug, Clone, PartialEq)]
 pub enum McpTransport {
@@ -334,7 +334,7 @@ pub enum McpTransport {
     StreamableHttp {
         /// MCP endpoint URL
         url: String,
-        /// 附加请求头,原样透传(源 headers dict 无 scrub/大小写处理;
+        /// 附加请求头,原样透传(无 scrub/大小写处理;
         /// 鉴权约定 = 用户自带 Authorization)
         headers: BTreeMap<String, String>,
     },
@@ -346,7 +346,7 @@ pub struct McpServerConfig {
     /// server 名(公共名成分;同一会话内唯一)
     pub server_name: String,
     pub transport: McpTransport,
-    /// 单次调用超时(默认 60s,照源 toolCallTimeoutMs)
+    /// 单次调用超时(默认 60s)
     pub tool_call_timeout: Duration,
 }
 
@@ -365,18 +365,18 @@ impl Default for McpServerConfig {
     }
 }
 
-// ── 重连策略(源 scheduleReconnect 语义;纯函数便于测试)──────────────
+// ── 重连策略(纯函数便于测试)──────────────────────────────────
 
-/// 初始退避(源 RECONNECT_DEFAULTS.initialDelayMs)
+/// 初始退避
 pub const RECONNECT_INITIAL: Duration = Duration::from_millis(500);
-/// 退避封顶 = 稳定窗口(源 maxDelayMs;连接存活 ≥ 此值视为结束上一轮 outage)
+/// 退避封顶 = 稳定窗口(连接存活 ≥ 此值视为结束上一轮 outage)
 pub const RECONNECT_MAX: Duration = Duration::from_secs(30);
-/// 每 outage 重连尝试预算(源 maxAttempts)
+/// 每 outage 重连尝试预算
 pub const RECONNECT_MAX_ATTEMPTS: u32 = 10;
 
 /// 断线后的重连决策:稳定窗口重置 → 计数 → 预算判 → 退避延迟。
 /// 返回 None = 预算耗尽放弃。稳定判定在**下次断线时**:上一代连接存活
-/// ≥ [`RECONNECT_MAX`] → 预算清零(短暂成功的 crash-loop 不重置,照源)。
+/// ≥ [`RECONNECT_MAX`] → 预算清零(短暂成功的 crash-loop 不重置)。
 fn reconnect_decision(
     failed_attempts: &mut u32,
     connected_at: &mut Option<Instant>,
@@ -448,7 +448,7 @@ impl PortState {
         let _ = self.status_tx.send(status);
     }
 
-    /// 整代原子换带(同名 raw 重复 → 整列表无效,保留上一代,照源)
+    /// 整代原子换带(同名 raw 重复 → 整列表无效,保留上一代)
     fn replace_generation(&self, server: &str, tools: Vec<rmcp::model::Tool>) {
         let mut entries: Vec<ToolEntry> = Vec::with_capacity(tools.len());
         let mut seen = std::collections::HashSet::new();
@@ -491,8 +491,8 @@ pub enum McpStatusEvent {
     Connecting,
     /// 连接 + 工具清单就绪
     Ready,
-    /// 断线重连中(attempt = 本 outage 内第几次尝试;RS 原生:源只写日志,
-    /// RS 有 mcp/status 通道与设置页,重连进度可见)
+    /// 断线重连中(attempt = 本 outage 内第几次尝试;重连进度经
+    /// mcp/status 通道与设置页可见)
     Reconnecting {
         attempt: u32,
         max_attempts: u32,
@@ -656,7 +656,7 @@ impl ClientHandler for ServerHandler {
 
 /// streamable-http 传输:headers 原样透传走 reqwest default_headers
 /// (rmcp config 的 custom_headers 拒 `authorization` 等保留头,reqwest
-/// 层无此限制,照源「用户自带鉴权头」);连接池/重定向对齐 rmcp 默认形态。
+/// 层无此限制,支持用户自带鉴权头);连接池/重定向对齐 rmcp 默认形态。
 fn http_transport(
     url: &str,
     headers: &BTreeMap<String, String>,
@@ -808,7 +808,7 @@ async fn connect_loop(
                 connected_at = Some(Instant::now());
                 notify(McpStatusEvent::Ready);
 
-                // 服务期:list_changed 重同步(经 peer;失败保留上一代,照源)
+                // 服务期:list_changed 重同步(经 peer;失败保留上一代)
                 // / 断线观测(waiting 返回 = transport close 已发生)/ cancel。
                 // waiting 消费 RunningService;cancel 路径靠 Drop 清理。
                 let mut death = Box::pin(running.waiting());
@@ -835,12 +835,12 @@ async fn connect_loop(
                 }
             }
         }
-        // ── 重连决策(断线/失败共用;源 scheduleReconnect 语义)──
+        // ── 重连决策(断线/失败共用)──
         let Some(delay) =
             reconnect_decision(&mut failed_attempts, &mut connected_at, Instant::now())
         else {
-            // 预算耗尽:注销该 server 全部工具(照源),恢复 = 设置页
-            // 改配置/启停(开关即重启,优于源的 reload)
+            // 预算耗尽:注销该 server 全部工具,恢复 = 设置页
+            // 改配置/启停(开关即重启)
             state.replace_generation(&config.server_name, Vec::new());
             let msg = format!(
                 "MCP server 连续 {RECONNECT_MAX_ATTEMPTS} 次重连失败,已放弃(工具已注销);可在设置中修改配置或重启该 server"
@@ -878,7 +878,7 @@ impl ToolPort for McpServerPort {
 
     async fn execute(&mut self, call: &ToolCallRequest) -> ToolOutput {
         // 等待就绪(Connecting/Reconnecting → Ready/Failed;超时 = 调用超时
-        // 上限——重连期间调用挂起到超时或就绪,工具不摘除,照源)
+        // 上限——重连期间调用挂起到超时或就绪,工具不摘除)
         let deadline = tokio::time::Instant::now() + self.tool_call_timeout;
         let mut status_rx = self.state.status_rx.clone();
         loop {
@@ -922,13 +922,13 @@ impl ToolPort for McpServerPort {
         } else {
             call.arguments.clone()
         };
-        // 非对象兜底 `{}`:让 server 报具体参数错误(照源)
+        // 非对象兜底 `{}`:让 server 报具体参数错误
         let arguments = if arguments.is_object() {
             arguments
         } else {
             json!({})
         };
-        // 公共名 → raw name:查当前工具代(照源「公共名永不反解」——
+        // 公共名 → raw name:查当前工具代(公共名永不反解——
         // 身份在注册时确定,字符串拆分对 raw 含 `__` 的工具会错)
         let raw_name = {
             let tools = self.state.tools.read().unwrap_or_else(|p| p.into_inner());
@@ -979,7 +979,7 @@ impl ToolPort for McpServerPort {
             }
         };
 
-        // isError → 工具失败(内容仍投影供诊断;图片不落存,照源前置拒绝)
+        // isError → 工具失败(内容仍投影供诊断;图片不落存,前置拒绝)
         let prepared = prepare_content(&result, self.image_store.as_deref());
         let success = result.is_error != Some(true);
         ToolOutput {

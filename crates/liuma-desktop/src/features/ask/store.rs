@@ -18,14 +18,14 @@ pub(crate) struct AskUiState {
     pub selected: Vec<Vec<String>>,
     /// 每题自定义文本(并行下标)
     pub custom: Vec<String>,
-    /// 每题显式跳过标记(源 skip:提交形状 = 空 selected;完成 = 作答或跳过)
+    /// 每题显式跳过标记(提交形状 = 空 selected;完成 = 作答或跳过)
     pub skipped: Vec<bool>,
-    /// 卡内错误行(源 error.unanswered/incomplete;任意作答交互清空)
+    /// 卡内错误行(未答/作答不完整;任意作答交互清空)
     pub error: Option<&'static str>,
 }
 
 impl AskUiState {
-    /// 源 answered:选中非空或自定义文本非空白(自定义单独算作答)
+    /// 已答判定:选中非空或自定义文本非空白(自定义单独算作答)
     fn answered(&self, i: usize) -> bool {
         self.selected.get(i).is_some_and(|s| !s.is_empty())
             || self.custom.get(i).is_some_and(|c| !c.trim().is_empty())
@@ -78,7 +78,7 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 去聊天里说(源 PlanReviewPanel 第三动作):取消请求 → 工具收到
+    /// 去聊天里说(计划卡第三动作):取消请求 → 工具收到
     /// 取消结果,模型回到对话;composer 恢复,用户直接说修改意见
     pub fn dismiss_plan(&mut self, cx: &mut Context<Self>) {
         let Some(plan) = self.state.pending_plan.take() else {
@@ -270,14 +270,14 @@ impl AppStore {
                 cell.push(label.to_string());
             }
         } else {
-            // 单选:替换 + 清「其他」(选项与自定义互斥,源 choose 语义)
+            // 单选:替换 + 清「其他」(选项与自定义互斥)
             cell.clear();
             cell.push(label.to_string());
             if let Some(c) = state.custom.get_mut(i) {
                 c.clear();
             }
         }
-        // 作答交互:清跳过标记与错误行(源 choose 置 skipped=false)
+        // 作答交互:清跳过标记与错误行
         if let Some(flag) = state.skipped.get_mut(i) {
             *flag = false;
         }
@@ -285,8 +285,8 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 设置当前题自定义文本(「其他」输入 Change 接线)。语义循源
-    /// draftCustom:单选取清选中(自定义覆盖选项),多选保留已勾标签。
+    /// 设置当前题自定义文本(「其他」输入 Change 接线)。
+    /// 单选取清选中(自定义覆盖选项),多选保留已勾标签。
     pub fn set_ask_custom(&mut self, text: &str, cx: &mut Context<Self>) {
         self.ensure_ask_state();
         let multi = self
@@ -307,7 +307,7 @@ impl AppStore {
             if let Some(c) = state.custom.get_mut(state.index) {
                 *c = text.to_string();
             }
-            // 源 draftCustom:任何输入交互清跳过标记
+            // 任何输入交互清跳过标记
             if let Some(flag) = state.skipped.get_mut(state.index) {
                 *flag = false;
             }
@@ -379,8 +379,8 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 跳过本题(源 skipQuestion:清空该题草稿、标记跳过、前进;
-    /// 最后一题跳过 = 立即整批提交)
+    /// 跳过本题:清空该题草稿、标记跳过、前进;
+    /// 最后一题跳过 = 立即整批提交
     pub fn skip_ask(&mut self, cx: &mut Context<Self>) {
         self.ensure_ask_state();
         let total = self
@@ -411,7 +411,7 @@ impl AppStore {
         }
     }
 
-    /// 主按钮非末页(源 continueFlow):当前题未答 → 卡内报错不翻页;
+    /// 主按钮非末页:当前题未答 → 卡内报错不翻页;
     /// 已答 → 前进下一题
     pub fn advance_ask(&mut self, cx: &mut Context<Self>) {
         self.ensure_ask_state();
@@ -428,9 +428,9 @@ impl AppStore {
         self.set_ask_index(idx, cx);
     }
 
-    /// 提交整组(源 submitDrafts 门控:每题完成——作答或显式跳过——才
+    /// 提交整组(门控:每题完成——作答或显式跳过——才
     /// 提交;有缺口 → 跳到第一道缺口题报错,绝不静默代答。跳过题提交
-    /// 形状 = 空 selected,与源一致)
+    /// 形状 = 空 selected)
     pub fn submit_ask(&mut self, cx: &mut Context<Self>) {
         self.ensure_ask_state();
         {
@@ -471,7 +471,7 @@ impl AppStore {
                 .map(|(i, q)| {
                     let mut item = serde_json::Map::new();
                     item.insert("id".into(), serde_json::json!(q.id));
-                    // 跳过题强制空 selected(源:wire 无 skipped 标记)
+                    // 跳过题强制空 selected(wire 无 skipped 标记)
                     let selected = if state.skipped.get(i).copied().unwrap_or(false) {
                         Vec::new()
                     } else {

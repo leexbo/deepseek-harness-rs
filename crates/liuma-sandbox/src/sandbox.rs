@@ -301,15 +301,14 @@ fn bwrap_args(policy: &SandboxPolicy) -> Vec<String> {
 
 /// Seatbelt SBPL profile(与功能探测共用同一构造)
 ///
-/// 语义对齐源(deepseek-harness `sandbox-local/profiles.ts`):**文件写是
-/// 唯一拒绝面**——`(allow default)` 打底、`(deny file-write*)` 反转,
+/// **文件写是唯一拒绝面**——`(allow default)` 打底、`(deny file-write*)` 反转,
 /// workspace 可写根以显式 `file-write*` 放行压过拒绝;`/dev/null` 字面量
-/// 放行供强制 sink。mach-lookup / network / IPC 不进拒绝面(源同款):
+/// 放行供强制 sink。mach-lookup / network / IPC 不进拒绝面:
 /// 拒绝它们会连坐 Directory Services(getpwuid 失败 → ssh/git 拒工作)、
 /// DNS(mDNSResponder)与一切联网工具,而沙箱的安全承诺只覆盖文件边界。
 /// 此前实现用 `(deny default)` 白名单制但漏放 mach/network,属实现缺陷
 /// (真机症状:沙箱内 `ssh` 报「No user exists for uid」拒推、cargo 无法
-/// 联网),已修正并对齐源。
+/// 联网),已修正。
 fn seatbelt_args(policy: &SandboxPolicy) -> Vec<String> {
     let writable = policy.writable_roots();
     // SBPL 规则序:deny file-write* 在前,roots/dev/null 的显式 allow
@@ -580,7 +579,7 @@ mod tests {
             .expect("bwrap/seatbelt rung 应包装成功");
         assert!(confined.enforcement == SandboxEnforcement::Full);
         assert!(confined.program.contains("sandbox-exec") || confined.program.contains("bwrap"));
-        // 拒绝面 = 仅文件写(源语义):allow default 打底 + deny file-write*
+        // 拒绝面 = 仅文件写:allow default 打底 + deny file-write*
         // 反转。回归锚:旧实现 (deny default) 白名单制漏放 mach-lookup/network
         // → 沙箱内 getpwuid 失败(ssh 报「No user exists for uid」拒推)、
         // DNS/联网全断。

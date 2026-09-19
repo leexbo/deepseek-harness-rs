@@ -30,20 +30,20 @@ const RAIL_CARD_IMAGE_W: f32 = 64.;
 const RAIL_CARD_FILE_W: f32 = 240.;
 const RAIL_GAP: f32 = 10.;
 
-/// 草稿附件条(源 AttachmentRail):无滚动条,溢出由两端悬浮圆形箭头
+/// 草稿附件条:无滚动条,溢出由两端悬浮圆形箭头
 /// 翻页;单一有序列表,图片 64px 缩略 + 文件卡 240×64 / gap10 / 圆角 16 /
-/// 移除钮;渲染序 = 插入序(照源)。翻页/滚轮走弹簧动画(源 smooth 滚动
-/// 的 GPUI 对应物;速度跨目标保留,连续点击自然接管)。
+/// 移除钮;渲染序 = 插入序。翻页/滚轮走弹簧动画
+/// (速度跨目标保留,连续点击自然接管)。
 pub fn draft_rail(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let st = store.read(cx);
     if st.attachments.drafts.is_empty() {
-        // 照源 countRef:清空即忘挂载基数,下次首挂载不跳尾;弹簧目标
+        // 清空即忘挂载基数,下次首挂载不跳尾;弹簧目标
         // 一并归零(重挂载弹簧从目标起步,陈旧目标会把轨拽去旧位置)
         st.attachments.rail_mount_count.set(None);
         st.attachments.rail_scroll_target.set(0.);
         return div().into_any_element();
     }
-    // 照源:新增附件落在轨尾 → 滚到末尾露出;首挂载不动。此刻
+    // 新增附件落在轨尾 → 滚到末尾露出;首挂载不动。此刻
     // max_offset 还是上一帧的,只挂标记,由 canvas 观察哨在 paint 期
     // 用当帧新鲜 max 落目标
     let grew = st
@@ -55,7 +55,7 @@ pub fn draft_rail(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .rail_mount_count
         .set(Some(st.attachments.drafts.len()));
     if grew {
-        // 照源 el.scrollLeft = scrollWidth - clientWidth(瞬时露尾)。
+        // 滚动目标直达末尾(瞬时露尾)。
         // 目标必须在 construct 期一次落定并**换代弹簧**:若只改目标复
         // 用旧弹簧,动画帧没有任何泵保证(绘制期状态变更不触发下一帧
         // ——滚动条时代同款坑),弹簧永远看不到新目标。卡宽全固定 ⇒
@@ -99,7 +99,7 @@ pub fn draft_rail(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         .overflow_x_scroll()
                         .track_scroll(&st.attachments.scroll_handle)
                         .on_scroll_wheel(move |event, window, cx| {
-                            // 照源 wheel 语义:轨道上滚轮独占消费(背后的
+                            // 轨道上滚轮独占消费(背后的
                             // 会话列表不得跟滚),纵向滚轮横移。gpui 的
                             // 内部滚动监听注册在前、本回调在后,Bubble 相
                             // 逆序派发 ⇒ 先于内部处理,stop_propagation
@@ -141,7 +141,7 @@ pub fn draft_rail(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         },
                     )
                 })
-                // 两端翻页箭头(照源 .arrow):可见性读 rail_edges
+                // 两端翻页箭头:可见性读 rail_edges
                 // (canvas 推导;至多一帧滞后,notify 收敛)
                 .when(left_on, |el| {
                     el.child(rail_arrow(
@@ -213,10 +213,10 @@ fn rail_content_w(drafts: &[DraftAttachment]) -> f32 {
     }
 }
 
-/// 轨道端箭头(照源 .arrow:圆钮、距缘 4px、垂直居中于卡行;按钮底 +
-/// 细边 + 投影分层,一级标签色 chevron;hover 增亮。真机反馈源版
+/// 轨道端箭头(圆钮、距缘 4px、垂直居中于卡行;按钮底 +
+/// 细边 + 投影分层,一级标签色 chevron;hover 增亮。真机反馈
 /// 24px 次级色不够显眼 → 28px + DOCK 底 + LABEL 字)。`dir` = 翻页
-/// 方向(-1 左 / 1 右,照源 page())。
+/// 方向(-1 左 / 1 右)。
 fn rail_arrow(
     store: &Entity<AppStore>,
     dir: f32,
@@ -248,7 +248,7 @@ fn rail_arrow(
         .justify_center()
         .child(fixed(icon, 16.))
         .on_click(move |_, _, cx| {
-            // 照源 page():一步 = 视口宽 - 一张缩略宽(留住一张可见卡
+            // 一步 = 视口宽 - 一张缩略宽(留住一张可见卡
             // 作位置参照),下限 200 保窄轨可用;走弹簧目标,不直写句柄
             page_store.update(cx, |st, cx| {
                 let viewport = st.attachments.rail_viewport_w.get();
@@ -294,7 +294,7 @@ fn draft_card(
                 .right(px(4.))
                 .size(px(18.))
                 .rounded_full()
-                // 底 0.72 黑(源 contrast-fill);hover 增亮 + 手型光标
+                // 底 0.72 黑;hover 增亮 + 手型光标
                 // = 可点反馈(常显钮的交互语言)
                 .bg(rgba(0x000000B8))
                 .cursor_pointer()
@@ -310,7 +310,7 @@ fn draft_card(
         )
 }
 
-/// 文件类型徽章(源 FileTypeIcon 对应物):28×28 彩色方块 +
+/// 文件类型徽章:28×28 彩色方块 +
 /// 白字分类 mark(W / X / PPT / PDF / MD / IMG / </> / ▶ / FILE)
 fn file_kind_badge(name: &str) -> impl IntoElement {
     let kind = liuma_attachment::classify_file_name(name);
@@ -340,7 +340,7 @@ fn file_kind_badge(name: &str) -> impl IntoElement {
         .child(mark.to_string())
 }
 
-/// 草稿文件卡(源 FileCard:240×64,gap10,padding 0 12,圆角 16,
+/// 草稿文件卡(240×64,gap10,padding 0 12,圆角 16,
 /// 发丝线边框;28px 类型徽章 + 名称省略 + 「扩展名 大小」meta;
 /// 右上移除钮)
 fn draft_file_card(
@@ -367,7 +367,7 @@ fn draft_file_card(
                 .right(px(4.))
                 .size(px(18.))
                 .rounded_full()
-                // 底 0.72 黑(源 contrast-fill);hover 增亮 + 手型光标
+                // 底 0.72 黑;hover 增亮 + 手型光标
                 // = 可点反馈(常显钮的交互语言)
                 .bg(rgba(0x000000B8))
                 .cursor_pointer()
@@ -383,9 +383,9 @@ fn draft_file_card(
         )
 }
 
-/// 历史消息文件渲染(源 MessageItem 文件卡同族):240×64 卡,
-/// 类型徽章 + 名称省略 + 「扩展名 大小」meta;无预览(源侧点击仅
-/// title 提示,侧栏预览是独立能力)。
+/// 历史消息文件渲染:240×64 卡,
+/// 类型徽章 + 名称省略 + 「扩展名 大小」meta;无预览
+/// (侧栏预览是独立能力)。
 pub fn message_files(files: &[serde_json::Value]) -> impl IntoElement {
     let cards: Vec<gpui_kit::AnyElement> = files
         .iter()
@@ -451,7 +451,7 @@ fn file_card_body(name: &str, size: u64) -> impl IntoElement {
         )
 }
 
-/// 历史消息图渲染(源 MessageImage/ImageGallery):
+/// 历史消息图渲染:
 /// 1 张 → single(长边 240,cover);≥2 张 → 全部 tile 64px。
 pub fn message_images(
     store: &Entity<AppStore>,
@@ -478,8 +478,8 @@ pub fn message_images(
         let (id, imgd) = items.remove(0);
         let sel = id.clone();
         let open_store = store.clone();
-        // 单图尺寸:内在宽高在长边 240 内等比、不放大(源 MessageImage
-        // 规则)。必须显式定高——img 无约束时高度塌 0(实测 240×0 隐形)
+        // 单图尺寸:内在宽高在长边 240 内等比、不放大。必须显式定高
+        // ——img 无约束时高度塌 0(实测 240×0 隐形)
         let (rw, rh) = intrinsic_dims(&blocks[0]);
         let scale = (240.0 / (rw.max(rh)).max(1) as f32).min(1.0);
         let w = rw as f32 * scale;
@@ -530,8 +530,8 @@ fn intrinsic_dims(block: &serde_json::Value) -> (u32, u32) {
     (w, h)
 }
 
-/// Lightbox(源 ImageLightbox):全屏原图预览 + 关闭钮。放在根层
-/// (元素树末尾后绘制 → 叠于内容上;源为 body portal 同构)。
+/// Lightbox:全屏原图预览 + 关闭钮。放在根层
+/// (元素树末尾后绘制 → 叠于内容上)。
 pub fn lightbox(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let st = store.read(cx);
     let Some((_key, image)) = st.attachments.lightbox.clone() else {
@@ -582,7 +582,7 @@ pub fn lightbox(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .into_any_element()
 }
 
-/// 拖拽邀请蒙层(源 DropOverlay 对应物):外部文件拖入窗口期间
+/// 拖拽邀请蒙层:外部文件拖入窗口期间
 /// 全屏遮罩 + 居中邀请卡;蒙层自身即落点(Submit 时按路径 intake,
 /// 图片/文件通道由文件头分流)。shell 根层在 `has_active_drag()` 时
 /// 渲染——gpui-pre 把 OS 文件拖放翻译为内部 active_drag(Entered 携带

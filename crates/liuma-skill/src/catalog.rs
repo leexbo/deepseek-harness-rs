@@ -1,17 +1,17 @@
 //! 会话目录与手势:digest 幂等的持久目录消息 + `/name` 手势注入载荷。
 //!
-//! 事件形态(源 tool-skill 同构):全部为 `user/message`,靠 `source.kind`
+//! 事件形态:全部为 `user/message`,靠 `source.kind`
 //! 区分——`skill-catalog`(form=catalog,首注/替换共载荷形,替换带
 //! `update: true`,entries = [{name, description}])/ `skill-invocation`
 //! (form=instructions,含 name)。`id` 由引擎补(缺省 v7),与 contexts
 //! 注入同规。
 //!
-//! 目录幂等:digest 只对 entries 计算(JSON 逐条加界 + sha256,照源
-//! digestCatalogEntries)——外框 `<system-reminder>` 文案不参与判定;
+//! 目录幂等:digest 只对 entries 计算(JSON 逐条加界 + sha256)
+//! ——外框 `<system-reminder>` 文案不参与判定;
 //! 无变化不重发;从未发布且目录为空不发;曾发布后删净发空墓碑。
 //! 「模型只见一份目录」由 liuma-session derive_visible_messages 的
-//! 「skill-catalog 保留最新一条」派生规则达成(源在 pre-step 决策里
-//! 物理移除旧目录;日志只追加,这里以纯派生规则同一语义)。
+//! 「skill-catalog 保留最新一条」派生规则达成(日志只追加,
+//! 不物理移除旧目录,以纯派生规则同一语义)。
 
 use std::path::Path;
 
@@ -24,8 +24,8 @@ use crate::{
     render_catalog_update, render_skill_content,
 };
 
-/// `/name` 手势正则的等价扫描:空白界定的 `/kebab` 词元(源
-/// SKILL_GESTURE `/(^|\s)\/([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/g`)。
+/// `/name` 手势正则的等价扫描:空白界定的 `/kebab` 词元
+/// (`/(^|\s)\/([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/g`)。
 /// 第二个 `/` 或任何非界字符断匹配——文件路径(`/usr/bin`)与分数
 /// (`5/8`)不误伤;首见序去重由调用方跨消息合并。
 pub fn scan_skill_gestures(text: &str) -> Vec<String> {
@@ -57,8 +57,8 @@ pub fn scan_skill_gestures(text: &str) -> Vec<String> {
     names
 }
 
-/// 本步用户面消息文本 → 手势注入载荷(排全部注入最后;源 pre-step
-/// 手势监听器同构)。未知名与 user-invocable: false 保持普通散文
+/// 本步用户面消息文本 → 手势注入载荷(排全部注入最后)。
+/// 未知名与 user-invocable: false 保持普通散文
 /// (查的是**加载后的定义**——真正产生注入的那次读取);去重按
 /// 首见序跨全部文本。
 pub fn gesture_payloads(service: &SkillService, cwd: &Path, texts: &[String]) -> Vec<Value> {
@@ -89,8 +89,8 @@ pub fn gesture_payloads(service: &SkillService, cwd: &Path, texts: &[String]) ->
         .collect()
 }
 
-/// 目录身份:entries 逐条 JSON 加界拼接后 sha256(照源
-/// digestCatalogEntries——分隔符本身是合法 description 字符,只有
+/// 目录身份:entries 逐条 JSON 加界拼接后 sha256
+/// (分隔符本身是合法 description 字符,只有
 /// 引号加界才是精确边界)
 pub fn digest_entries(entries: &[CatalogEntry]) -> String {
     let canonical: Vec<String> = entries
@@ -183,7 +183,7 @@ impl SkillCatalogState {
 }
 
 /// 读一条目录 source 的 entries(非数组/字段缺失 = None,视作非本系统
-/// 目录,冷恢复跳过——照源 readCatalogEntries 的防御姿态)
+/// 目录,冷恢复跳过——防御姿态)
 fn read_entries(value: &Value) -> Option<Vec<CatalogEntry>> {
     let arr = value.as_array()?;
     let mut out = Vec::with_capacity(arr.len());
@@ -264,7 +264,7 @@ mod tests {
         );
         // 路径/分数不误伤
         assert!(scan_skill_gestures("see /usr/bin and 5/8").is_empty());
-        // kebab;句尾标点非边界字符 → 断匹配(照源正则 (?=\s|$))
+        // kebab;句尾标点非边界字符 → 断匹配(词元后须为空白或结尾)
         assert_eq!(scan_skill_gestures("run /my-skill"), vec!["my-skill"]);
         assert!(scan_skill_gestures("run /my-skill.").is_empty());
         // 非法词元不产出

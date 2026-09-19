@@ -565,7 +565,7 @@ pub fn prune_output(output: &str) -> String {
     format!("{head}\n…[pruned {omitted} chars]…\n{tail}")
 }
 
-/// 折叠摘要的包装(照源 frameSummary:使替换消息成为「既定背景」)。
+/// 折叠摘要的包装(使替换消息成为「既定背景」)。
 /// 属派生面词汇故居本层;摘要指令常量在 liuma-compaction。
 pub const CHECKPOINT_PREAMBLE: &str = "This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.";
 
@@ -579,8 +579,8 @@ pub fn frame_checkpoint(summary: &str) -> String {
 /// 策略栈:① tool/result 输出裁剪(常量,确定性);② 历史折叠——最近一条
 /// compaction/summary 之前的事件折叠为单条摘要消息,其后照常派生;
 /// ③ skill 目录替换——`source.kind=skill-catalog` 的 user/message 只保留
-/// 最新一条(源在 pre-step 决策里物理移除旧目录,模型恒只见一份;日志
-/// 只追加,这里以纯派生规则达成同一可见语义,重放稳定)。
+/// 最新一条(旧目录物理移除,模型恒只见一份;日志只追加,
+/// 折叠在派生层以纯规则达成同一可见语义,重放稳定)。
 /// engine 的请求构造与闸门的期望比对**共用本函数**(唯一实现);
 /// derive_messages 保留为无策略的裸映射(审计/测试用)。
 pub fn derive_visible_messages<'a>(
@@ -893,7 +893,7 @@ mod tests {
     }
 
     /// skill 目录替换:同 kind 的 user/message 派生时只保留最新一条
-    /// (源在 pre-step 决策里移除旧目录;日志只追加,派生层同一语义)。
+    /// (旧目录在派生层移除;日志只追加,同一可见语义)。
     /// 普通注入消息不受影响;保留的是最新一条而非「非空的」。
     #[test]
     fn derive_keeps_only_latest_skill_catalog() {

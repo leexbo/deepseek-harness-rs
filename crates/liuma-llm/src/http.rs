@@ -197,7 +197,7 @@ impl HttpTransport {
     /// 出网请求体:请求级 offload(超预算最旧图下车)后交方言翻译
     fn wire_request(&self, header: &RequestHeader, messages: &Value) -> Value {
         let mut msgs = messages.clone();
-        // 文件先投影句柄文本(源 adapter 边界序),再图片 offload
+        // 文件先投影句柄文本,再图片 offload
         project_files_to_text(&mut msgs, self.attachments.as_ref());
         offload_request_images(&mut msgs, MAX_REQUEST_IMAGE_BYTES);
         self.adapter
@@ -256,8 +256,7 @@ impl LlmTransport for HttpTransport {
             }
             for event in decoder.feed(&chunk) {
                 if let Some(mapped) = map_event(event) {
-                    // 首 token = 首个任意文本增量(正文或推理;照源
-                    // assistantStreamFirstTokenTime)。只认正文会让纯
+                    // 首 token = 首个任意文本增量(正文或推理)。只认正文会让纯
                     // 工具调用步(仅 reasoning 流)拿不到 TTFT,统计
                     // 卡的首 token 均值/解码口径 TPS 随之失真
                     if first_chunk_at.is_none()
@@ -395,7 +394,7 @@ fn map_event(event: crate::streaming::StreamEvent) -> Option<LlmEvent> {
     }
 }
 
-/// 一次性摘要调用:照源 compaction summarizer 语义——保留会话请求的
+/// 一次性摘要调用:保留会话请求的
 /// system 头与 tools(逐字前缀 = 上次路由请求的前缀,命中 provider
 /// KV cache),仅在消息尾追加含 checkpoint 指令的最终 user 消息
 /// (liuma_compaction::COMPACTION_INSTRUCTION);累积流式文本为摘要。
@@ -417,7 +416,7 @@ impl liuma_agent_loop::Summarizer for HttpTransport {
             };
             // 折叠请求上限 300s(手动 /compact 输入可达数百 KB,30s 不够);
             // 超时按折叠失败处理(自动路径降级跳过/手动路径报错)
-            // 摘要 = 纯文本面(源 compaction text-only:图块降级占位,不背 base64)
+            // 摘要 = 纯文本面(图块降级占位,不背 base64)
             let events = tokio::time::timeout(
                 std::time::Duration::from_secs(300),
                 self.stream(
@@ -551,7 +550,7 @@ mod tests {
 
     /// 回归锁:summarize 的出网请求必须保留会话 header 的 system 与
     /// tools(逐字前缀命中 KV cache),且以含 checkpoint 指令的最终
-    /// user 消息收尾(照源 compaction summarizer 语义)
+    /// user 消息收尾
     #[tokio::test]
     async fn summarize_replays_system_tools_and_appends_instruction() {
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"ckpt\"}}]}\n\n\

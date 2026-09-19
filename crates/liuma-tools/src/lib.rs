@@ -26,12 +26,12 @@ pub mod subagent;
 pub mod todo;
 pub mod workflow;
 
-/// 会话权限模式动态源:工具执行时解析(源语义——日志 fold,权限
-/// 事件落档即对下一次执行生效,无需重装配)。缺省 = 装配期静态策略
+/// 会话权限模式动态源:工具执行时解析——日志 fold,权限
+/// 事件落档即对下一次执行生效,无需重装配。缺省 = 装配期静态策略
 /// (CLI/测试装配)。
 pub type ModeSource = std::sync::Arc<dyn Fn() -> SandboxMode + Send + Sync>;
 
-/// 沙箱升级审批裁决(源 ApprovalOutcome 词汇)
+/// 沙箱升级审批裁决
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalOutcome {
     /// 批准一次(只盖发起该请求的本次调用,不落 sandbox/mode 事件)
@@ -61,7 +61,7 @@ pub struct EscalationRequest {
 
 /// 宿主审批闸门(批准先于执行):实现方负责审计对落档(approval/asked·
 /// decided)与用户问询;approval=never 时实现方在入口直接拒绝
-/// (不问任何应答方,照源不可绕过语义)。
+/// (不问任何应答方,不可绕过)。
 pub trait ApprovalPort: Send + Sync {
     fn request(
         &self,
@@ -159,7 +159,7 @@ impl BashTool {
         }
     }
 
-    /// 升级参数解析:两参成对 + justification 非空(错误文案逐字照源;
+    /// 升级参数解析:两参成对 + justification 非空(错误文案逐字固定;
     /// 档位词汇 = RS 三态去 danger 命名)
     fn parse_escalation(arguments: &Value) -> Result<Option<(SandboxMode, String)>, String> {
         let perms = arguments["sandbox_permissions"].as_str();
@@ -178,7 +178,7 @@ impl BashTool {
                     return Err("invalid justification: expected a non-empty sentence".into());
                 }
                 // 全部三态词汇在此接受;非严格加宽(同级/降级)由加宽表
-                // 检查统一拒绝(照源:unknown 仅指真正未知的字符串)
+                // 检查统一拒绝(unknown 仅指真正未知的字符串)
                 let target = match mode {
                     "read-only" => SandboxMode::ReadOnly,
                     "workspace-write" => SandboxMode::WorkspaceWrite,
@@ -415,7 +415,7 @@ impl ToolPort for BashTool {
                 ..Default::default()
             };
         }
-        // 升级参数解析(sandbox_permissions/justification 成对校验逐字);
+        // 升级参数解析(sandbox_permissions/justification 成对校验);
         // 仅前台——pty/后台带参显式拒绝(拒绝分类与提示链只在前台存在)
         let escalation = match Self::parse_escalation(&arguments) {
             Ok(e) => e,
@@ -446,7 +446,7 @@ impl ToolPort for BashTool {
         }
         let mut policy = self.resolve_policy();
         // 一次性升级闸门:严格加宽检查 → 审批口在场 → 问用户(批准先于
-        // 执行,零执行失败即错误;照源 approveEscalation 次序与逐字文案)
+        // 执行,零执行失败即错误;固定次序与逐字文案)
         if let Some((target, justification)) = escalation {
             let current = policy.mode;
             if !Self::wider_modes(current).contains(&target) {
@@ -885,7 +885,7 @@ mod tests {
         ));
     }
 
-    /// 校验逐字:两参不成对 / justification 空 / 未知档位——错误文案照源,
+    /// 校验逐字:两参不成对 / justification 空 / 未知档位——错误文案固定,
     /// 且零执行、不问审批口
     #[tokio::test]
     async fn bash_escalation_validation_verbatim() {

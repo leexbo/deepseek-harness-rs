@@ -40,8 +40,7 @@ fn message_id() -> String {
 
 /// turn/error 原始错误串可能内嵌 provider JSON(如
 /// `provider 400 Bad Request: {"error":{"message":…}}`)。投影只取
-/// 人类可读 message(源 failure-display 同款语义:原始诊断留会话
-/// 日志,不整串进 UI)
+/// 人类可读 message:原始诊断留会话日志,不整串进 UI
 fn provider_error_message(raw: &str) -> String {
     if let Some(pos) = raw.find('{')
         && let Ok(v) = serde_json::from_str::<Value>(&raw[pos..])
@@ -98,7 +97,7 @@ impl Translator {
                 )
             }
             // turn 异常终止(传输失败/悬挂超时)→ 客方 turn/end 的
-            // error 终止形状(源词汇:web turn-error 节点/重试链据此渲染)
+            // error 终止形状(web turn-error 节点/重试链据此渲染)
             "turn/error" => {
                 let raw = ev.data["error"].as_str().unwrap_or_default();
                 // 稳定错误码(引擎 2026-09 起随 turn/error 落档;旧日志缺省 TRANSPORT)
@@ -611,7 +610,7 @@ mod tests {
     }
 
     /// durable turn/error → 客方 turn/end 的 error 终止形状
-    /// (源词汇:web turn-error 节点/重试链据此渲染)
+    /// (web turn-error 节点/重试链据此渲染)
     #[test]
     fn turn_error_maps_to_client_turn_end_error() {
         let mut tr = Translator::new(info());

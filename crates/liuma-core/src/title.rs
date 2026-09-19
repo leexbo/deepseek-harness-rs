@@ -87,7 +87,7 @@ fn skip_csi(chars: &[char], mut i: usize) -> usize {
     i
 }
 
-/// 该 char 是否应剥离(源 CSS/ESC/控制/方向性正则在码点层面的并集)。
+/// 该 char 是否应剥离(CSS/ESC/控制/方向性字符类的码点层面并集)。
 fn is_control_or_directional(c: char) -> bool {
     match c {
         // C0 控制(保留 \t \n \r 给空白归一)
@@ -96,7 +96,7 @@ fn is_control_or_directional(c: char) -> bool {
         '\u{007F}'..='\u{009F}' => true,
         // BOM
         '\u{FEFF}' => true,
-        // 方向性/隐形控制(CS:S 分离的 \u{200B}..;源 DIRECTIONAL_CONTROL)
+        // 方向性/隐形控制(CS:S 分离的 \u{200B}..)
         '\u{200B}'
         | '\u{200E}'
         | '\u{200F}'
@@ -109,7 +109,7 @@ fn is_control_or_directional(c: char) -> bool {
 
 /// UTF-8 字节预算截断(不劈开码点;超出预算即截)。
 ///
-/// 对应源 `truncateTitleUtf8`:逐码点累计 UTF-8 字节,超过 `max_bytes` 断。
+/// 逐码点累计 UTF-8 字节,超过 `max_bytes` 断。
 pub fn truncate_title_utf8(input: &str, max_bytes: usize) -> String {
     debug_assert!(max_bytes > 0, "max_bytes 必须为正整数");
     let mut used = 0usize;
@@ -126,8 +126,6 @@ pub fn truncate_title_utf8(input: &str, max_bytes: usize) -> String {
 }
 
 /// 规范化一条被接受的标题并强制其 UTF-8 字节预算(末去尾空白)。
-///
-/// 对应源 `normalizeSessionTitle(input, maxBytes)`。
 pub fn normalize_session_title(input: &str, max_bytes: usize) -> String {
     truncate_title_utf8(&clean_title_text(input), max_bytes)
         .trim_end()
@@ -136,8 +134,7 @@ pub fn normalize_session_title(input: &str, max_bytes: usize) -> String {
 
 /// 确定性首条消息回退标题(末去尾空白)。
 ///
-/// 对应源 `fallbackSessionTitle(input, maxWords, maxBytes)`:清洗 → 取
-/// 前 `max_words` 个空白分隔词 → 按字节截断 → 去尾空白。
+/// 清洗 → 取前 `max_words` 个空白分隔词 → 按字节截断 → 去尾空白。
 pub fn fallback_session_title(input: &str, max_words: usize, max_bytes: usize) -> String {
     let cleaned = clean_title_text(input);
     let words: Vec<&str> = cleaned

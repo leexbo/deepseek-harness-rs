@@ -1,4 +1,4 @@
-//! merge:逐点合并为最严格结果(源 hook-protocol/merge.ts 逐字对齐)。
+//! merge:逐点合并为最严格结果。
 //!
 //! rank:deny/block=3 > ask=2 > approve/allow=1 > 无=0;reason 只从
 //! 获胜 rank 收集、`\n\n` 连接;stop 粘滞取第一个 continue:false 的
@@ -7,7 +7,7 @@
 
 use crate::codec::{Decision, HookOutput};
 
-/// 合并后的单点决策(源 MergedDecision;`None` = 无钩子表态)
+/// 合并后的单点决策(`None` = 无钩子表态)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MergedDecision {
     Allow,
@@ -17,7 +17,7 @@ pub enum MergedDecision {
     None,
 }
 
-/// 单点折叠结果(源 MergedHookOutcome)
+/// 单点折叠结果
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MergedHookOutcome {
     pub decision: MergedDecision,
@@ -52,7 +52,7 @@ fn decision_for_rank(max: u8) -> MergedDecision {
     }
 }
 
-/// 折叠一次 hook 点全部命中钩子的输出(源 mergeHookOutputs;顺序无关
+/// 折叠一次 hook 点全部命中钩子的输出(顺序无关
 /// 于决策,上下文保序)。空列表 = 中性结果。
 pub fn merge_hook_outputs(outputs: &[HookOutput]) -> MergedHookOutcome {
     let mut max_rank = 0u8;

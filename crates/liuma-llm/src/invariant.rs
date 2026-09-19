@@ -80,7 +80,7 @@ pub fn verify_payload(derived: &Value, actual: &Value) -> Result<(), InvariantVi
     }
 }
 
-/// 双比对入口:messages + 折叠 header(invariant.ts 对应结构)。
+/// 双比对入口:messages + 折叠 header。
 pub fn verify_request(
     derived_messages: &Value,
     actual_messages: &Value,

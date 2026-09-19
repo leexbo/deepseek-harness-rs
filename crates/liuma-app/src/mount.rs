@@ -58,7 +58,7 @@ pub struct MountContext<'a> {
     /// ask_user_question 宿主 port(缺 = 该组件跳过)
     pub ask_port: Option<Arc<dyn liuma_tools::AskQuestionPort>>,
     /// 计划评审 port(缺 = 工具仍装配——目录跨模式/宿主稳定,执行期报
-    /// 「无评审通道」照源;有 = turn 内阻塞评审)
+    /// 「无评审通道」;有 = turn 内阻塞评审)
     pub plan_review_port: Option<Arc<dyn liuma_plan::PlanReviewPort>>,
     /// 子代理会话工厂(桌面 attach 形态)
     pub session_factory: Option<Arc<dyn liuma_tools::subagent::SessionFactory>>,
@@ -167,41 +167,34 @@ pub fn in_tree_registry() -> &'static HashMap<&'static str, InTreeComponent> {
     })
 }
 
-/// 组件的模型面使用指南(源 tool:<name> section;文本出处见各行)。
-/// todo_write/plan/ask_user_question 源本就无节;subagent 源节承诺后台
-/// 运行(run_in_background/完成通知),仅结算通知 port 在场时挂
+/// 组件的模型面使用指南(逐组件一节)。
+/// todo_write/plan/ask_user_question 无使用指南节;subagent 后台节承诺
+/// 后台运行(run_in_background/完成通知),仅结算通知 port 在场时挂
 /// (见 [`tool_prompt_sections_with`])。
 fn component_prompt(name: &str) -> &'static str {
     match name {
-        // 源 packages/shell/tool-bash/src/index.ts(逐字)
         "bash" => {
             "Check the [exit code: N] marker on every bash result; investigate failures before moving on."
         }
-        // 源 packages/fs/tool-fs/src/{read,edit}.ts 与 tool-fs-search/{glob,grep}.ts;
         // 工具名/参数名按 RS 接口适配(read→file_read、edit→file_edit、
-        // glob+grep→file_search;file_edit 无 replace_all 参数故去该句;
-        // 源 glob 节的 hidden/mtime 行为细节与 file_search 语义相反故不抄)
+        // glob+grep→file_search;file_edit 无 replace_all 参数故无对应句;
+        // file_search 无 hidden/mtime 行为细节)
         "files" => {
             "Use the file_read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files.\n\nUse the file_edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_text with new_text; by default old_text must appear exactly once. If old_text appears multiple times, provide a more specific old_text. Read the file first (the default fs-observation-policy requires it), unless you just created or edited it in this session.\n\nUse the file_search tool — not shell find or grep — to discover files by path pattern or to search file contents. Use file_read on a matched file when you need surrounding context."
         }
-        // 源 packages/jobs/tool-jobs/src/index.ts;RS jobs 为单工具
-        // (list/read/stop)且无完成通知,「notified in-session / do not
-        // busy-poll」承诺不成立 → 按接口适配
+        // RS jobs 为单工具(list/read/stop)且无完成通知,「notified
+        // in-session / do not busy-poll」承诺不成立 → 按接口适配
         "jobs" => {
             "Track every background job id you start; keep working on independent steps and do not duplicate a running job's work. Before giving a final answer, read every still-relevant job with the jobs tool (action read), and stop jobs that stopped mattering."
         }
-        // 源 packages/goal/tool-goal/src/index.ts guidance();RS goal 为单
-        // 工具(add/complete/list),无 goal_id/revision/resume/blocked 语义
-        // → 按接口适配保留骨架
+        // RS goal 为单工具(add/complete/list),无 goal_id/revision/
+        // resume/blocked 语义 → 按接口适配保留骨架
         "goal" => {
             "Use the goal tool for one long-running completion objective in the current session. State it with action add and mark complete only when the objective is actually achieved; do not create a goal for routine single-turn work."
         }
-        // 源 packages/workflow/tool-workflow/src/index.ts(逐字)
         "workflow" => {
             "Use the workflow tool ONLY when the user explicitly asks for a workflow or for large multi-agent orchestration: you write a JavaScript script (the tool description documents the exact format) that fans work out across many subagents with phases and structured results. For one or two delegations, prefer plain subagent calls."
         }
-        // 源 packages/session-query/tool-session-query/src/index.ts(逐字;
-        // 五个工具名两侧一致)
         "session_query" => {
             "Use session_search to find relevant work from prior sessions, or session_event_search to search earlier events in one session. Search results are cursor-free and workspace-scoped. Follow a useful hit with session_trace, session_event_trace, or session_event_read when you need lineage, relationships, or exact data."
         }
@@ -209,7 +202,7 @@ fn component_prompt(name: &str) -> &'static str {
     }
 }
 
-/// subagent 使用指南节(源 tool:subagent section;逐字)。仅在 subagent
+/// subagent 后台使用指南节。仅在 subagent
 /// 装配出后台形态(结算通知 port 在场)时挂——节承诺的 run_in_background /
 /// 结算通知语义此时才真实成立(行为承诺必须与接口一致)。
 pub const SUBAGENT_BACKGROUND_SECTION: &str = "Use subagent in the background by default. Start independent delegations together in one assistant message and continue useful work while they run. Set `run_in_background: false` only when your next action depends on that subagent's result. When a background run settles, the runtime sends you a notice containing its outcome and any final assistant message.";
@@ -221,7 +214,7 @@ pub fn tool_prompt_sections(preset: &PresetManifest) -> Vec<&'static str> {
 }
 
 /// 同 [`tool_prompt_sections`],`subagent_background` = subagent 是否装配为
-/// 后台形态(结算通知 port 在场):真则 manifest 含 subagent 行时追加源节
+/// 后台形态(结算通知 port 在场):真则 manifest 含 subagent 行时追加后台节
 pub fn tool_prompt_sections_with(
     preset: &PresetManifest,
     subagent_background: bool,
@@ -253,7 +246,7 @@ fn persona_schema() -> Value {
     })
 }
 
-// ---- 各组件装配函数(自旧 build_tools 的 if 链逐字迁移;接线显式化)----
+// ---- 各组件装配函数(接线显式化)----
 
 /// persona:prompt 组件(config = identity/append;消费在 `prompt_parts`)
 fn mount_persona(_ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj>>> {
@@ -316,7 +309,7 @@ fn mount_todo_write(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn Tool
 
 /// plan:计划模式工具(共享日志 + 评审 port)。**port 缺席也装配**——
 /// 工具目录跨模式/宿主稳定(request-cache 稳定),无评审通道在执行期
-/// 报错并请模型让用户手动切模式(照源;plan 态约束由提示词段承担)。
+/// 报错并请模型让用户手动切模式(plan 态约束由提示词段承担)。
 fn mount_plan(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj>>> {
     let current = ctx.session_id_for_ports();
     Ok(vec![Box::new(liuma_plan::PlanTool::new(
@@ -665,7 +658,8 @@ mod tests {
     #[test]
     fn tool_prompt_sections_follow_manifest_order() {
         // standard 内置:bash/files/jobs/goal/workflow/session_query 六节
-        // (todo_write/plan/ask_user_question/subagent 源本无节或语义未达)
+        // (todo_write/plan/ask_user_question 无使用指南节;subagent 后台节
+        // 需结算通知 port 才挂)
         let preset =
             liuma_host::PresetManifest::load(std::path::Path::new("/nonexistent"), "standard")
                 .unwrap();
@@ -687,7 +681,7 @@ mod tests {
         // 无结算通知 port = 同步语义 → 不挂后台节(行为承诺与接口一致)
         let resolved = resolved_with("    - source: subagent\n");
         assert!(tool_prompt_sections(&resolved.preset).is_empty());
-        // port 在场 = 后台形态 → 挂源节(逐字,承诺 run_in_background/结算通知)
+        // port 在场 = 后台形态 → 挂后台节(承诺 run_in_background/结算通知)
         let secs = tool_prompt_sections_with(&resolved.preset, true);
         assert_eq!(secs.len(), 1);
         assert!(secs[0].starts_with("Use subagent in the background by default."));

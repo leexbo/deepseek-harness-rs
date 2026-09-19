@@ -1,11 +1,11 @@
 //! 文档预览功能切片状态与行为。
 //!
-//! 桶 = 预览中的文件(rel 路径键,随 tab 关闭即焚——照源内存态)。
+//! 桶 = 预览中的文件(rel 路径键,随 tab 关闭即焚——纯内存态)。
 //! text-pages 模式:页 = [`face::TextPage`](5000 行/页,追加式 pages
 //! 表 + 行缓存);bytes-complete 模式:整档字节 + 图片解码产物。
 //! 变更检测 = 1s stat 轮询(仅存在预览 tab 时),observed ≠ 装载版本
 //! → 提示条,只提示不自动重载。渲染器手选 per-tab 内存;跨 load_mode
-//! 切换清内容重读,同 mode 切换保留内容(照源)。
+//! 切换清内容重读,同 mode 切换保留内容。
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -31,7 +31,7 @@ pub struct PreviewStore {
 pub struct PreviewBucket {
     /// 该格式整体不可预览(空候选:不读取、无菜单)
     pub unsupported: bool,
-    /// 手选渲染器(None = 自动默认;per-tab 内存,照源)
+    /// 手选渲染器(None = 自动默认;per-tab 内存)
     pub renderer: Option<DocRenderer>,
     /// 已装载内容的模式(切换渲染器跨 mode 时据此清内容)
     pub loaded_mode: Option<LoadMode>,
@@ -70,7 +70,7 @@ pub struct PreviewBucket {
     pub version: Option<(u64, u64)>,
     /// 轮询观察到的版本 token
     pub observed: Option<(u64, u64)>,
-    /// stat 失败(文件没了;提示条占位,照源元数据失败面)
+    /// stat 失败(文件没了;提示条占位,元数据失败面)
     pub meta_failed: bool,
     /// 待跳行(行导航;装载覆盖后消费)
     pub nav_line: Option<u32>,
@@ -121,7 +121,7 @@ impl PreviewBucket {
         self.renderer.or_else(|| filetype::default_renderer(name))
     }
 
-    /// 变更提示条判据(照源三方版本对比收敛为:已装载 + 已观察 + 不一致)
+    /// 变更提示条判据(三方对比收敛为:已装载 + 已观察 + 不一致)
     pub fn changed(&self) -> bool {
         match (self.version, self.observed) {
             (Some(current), Some(observed)) => current != observed,
@@ -485,7 +485,7 @@ impl AppStore {
     }
 
     /// PDF:解析各页尺寸(未栅格化),成功后驱动渐进栅格化;失败/
-    /// 密码映射为整面空态文案(照源)
+    /// 密码映射为整面空态文案
     fn preview_start_pdf(&mut self, rel: &PathBuf, cx: &mut Context<Self>) {
         let Some(bytes) = self
             .preview
@@ -792,7 +792,7 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 关 tab 即焚桶(照源内存态)
+    /// 关 tab 即焚桶(纯内存态)
     pub fn preview_forget(&mut self, rel: &std::path::Path) {
         self.preview.buckets.remove(rel);
         if matches!(self.preview.menu, Some((ref target, _)) if target == rel) {

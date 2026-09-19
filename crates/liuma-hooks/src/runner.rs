@@ -1,5 +1,4 @@
-//! runner:command 钩子执行(源 hook-protocol/runner.ts 语义 +
-//! liuma_sandbox 原语)。
+//! runner:command 钩子执行(经 liuma_sandbox 原语)。
 //!
 //! 执行器拥有进程控制:钩子经沙箱链跑(bash -c,与模型命令同一信任面,
 //! 拍板 2),stdin 序列化载荷按方言带/不带尾换行,env 在擦洗之后合并,
@@ -16,7 +15,7 @@ use crate::codec::{HookOutput, parse_hook_output};
 use crate::config::CommandHook;
 use crate::events::{HookDialect, HookInvocation, hook_invoked_payload, hook_result_payload};
 
-/// 参考默认 per-hook 超时(10 分钟;CC/Codex 对未设 timeout 的钩子)
+/// 默认 per-hook 超时(10 分钟;CC/Codex 对未设 timeout 的钩子)
 pub const DEFAULT_HOOK_TIMEOUT_MS: u64 = 600_000;
 
 /// hook/result stderrSummary 默认上限
@@ -26,7 +25,7 @@ pub use crate::events::DEFAULT_STDERR_SUMMARY_MAX_CHARS;
 /// turn 外运行(emit 点)实现方以 noop 收敛。
 pub type HookEventSink = dyn Fn(&str, Value) + Send + Sync;
 
-/// env 擦洗(照源 executor scrub + liuma-mcp scrub_env 同规则):
+/// env 擦洗(与 liuma-mcp scrub_env 同规则):
 /// 键含敏感词(KEY|PASSWORD|SECRET|TOKEN)或 LIUMA_ 前缀的继承环境不进
 /// 钩子进程;显式 env 之后合并(可覆盖)。
 fn scrub_env() -> std::collections::HashMap<String, String> {
@@ -47,13 +46,13 @@ pub struct RunOutcome {
     pub duration_ms: i64,
 }
 
-/// 运行一个 command 钩子并解码输出(源 runHook)。
+/// 运行一个 command 钩子并解码输出。
 ///
-/// * `point`:触发事件名(判别门 expectedEventName,两方言都开启照源)
+/// * `point`:触发事件名(判别门 expectedEventName,两方言都开启)
 /// * `sink`:hook 事件落档回调(invoked 先于运行、result 后于运行;
-///   `sink_turn` = None 表示 turn 外,不落记录,照源)
+///   `sink_turn` = None 表示 turn 外,不落记录)
 /// * `hook_env`:方言 env(CC 的 CLAUDE_PROJECT_DIR;Codex 无)
-/// * `sandbox`:会话当前沙箱策略(照源 base 组合:钩子与模型命令同一
+/// * `sandbox`:会话当前沙箱策略(base 组合:钩子与模型命令同一
 ///   信任面;拍板 2)
 #[allow(clippy::too_many_arguments)]
 pub async fn run_hook(

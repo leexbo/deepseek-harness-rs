@@ -1,15 +1,15 @@
 //! 文件树纯函数层:单层目录列举 + 排序 collator + 越界/错误语义。
-//! 照源 workspace-files list 契约:无忽略规则(点开头混排、.git 照
-//! 列)、单层返回、超 `max_entries` 截断置标志;symlink/非常规条目
-//! 归 Other(不可导航/不可打开)。
+//! 列举契约:无忽略规则(点开头混排、.git 照列)、单层返回、
+//! 超 `max_entries` 截断置标志;symlink/非常规条目归 Other
+//! (不可导航/不可打开)。
 
 use std::cmp::Ordering;
 use std::path::Path;
 
-/// 单层最大条目数(照源 maxEntries;超出截断 + 标志)
+/// 单层最大条目数(超出截断 + 标志)
 pub const MAX_ENTRIES: usize = 2000;
 
-/// 目录条目类型(照源:'file' | 'directory' | 'other')
+/// 目录条目类型('file' | 'directory' | 'other')
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EntryKind {
     /// 普通文件
@@ -17,8 +17,7 @@ pub enum EntryKind {
     /// 目录
     Directory,
     /// symlink/socket/设备等(std `DirEntry::file_type` 不跟随符号链接,
-    /// 链接即 Other——与源 readdir withFileTypes 的 isDirectory/isFile
-    /// 判定一致,防经 symlink 逃逸工作区)
+    /// 链接即 Other,防经 symlink 逃逸工作区)
     Other,
 }
 
@@ -53,9 +52,8 @@ pub enum ListError {
     Unavailable(String),
 }
 
-/// 数字感知、大小写不敏感 collator(源 Intl.Collator numeric,
-/// sensitivity base 近似:数字段按数值比较,其余字符 case-fold;
-/// 全等回落逐字节序保证确定性)
+/// 数字感知、大小写不敏感 collator(数字段按数值比较,其余字符
+/// case-fold;全等回落逐字节序保证确定性)
 pub fn collate(a: &str, b: &str) -> Ordering {
     let mut ai = a.chars().peekable();
     let mut bi = b.chars().peekable();
@@ -99,7 +97,7 @@ fn consume_digits<I: Iterator<Item = char>>(iter: &mut std::iter::Peekable<I>) -
     digits.trim_start_matches('0').to_string()
 }
 
-/// 排序:目录在前,组内 collator(照源 orderEntries)
+/// 排序:目录在前,组内 collator
 pub fn order_entries(entries: &mut [DirEntryRow]) {
     entries.sort_by(|a, b| {
         let dir_first = match (a.kind, b.kind) {
@@ -108,7 +106,7 @@ pub fn order_entries(entries: &mut [DirEntryRow]) {
             | (EntryKind::Other, EntryKind::Other) => Ordering::Equal,
             (EntryKind::Directory, _) => Ordering::Less,
             (_, EntryKind::Directory) => Ordering::Greater,
-            // 文件与 other 同组(源只分「目录 / 其余」两组)
+            // 文件与 other 同组(只分「目录 / 其余」两组)
             _ => Ordering::Equal,
         };
         dir_first.then_with(|| collate(&a.name, &b.name))
@@ -157,7 +155,7 @@ pub fn list_dir(root: &Path, dir: &Path, max_entries: usize) -> Result<Listing, 
     Ok(Listing { entries, truncated })
 }
 
-/// 树行错误文案(照源 zh locale 逐字)
+/// 树行错误文案
 pub fn failure_line(err: &ListError) -> String {
     match err {
         ListError::NotFound => "这个目录不在了。可能已被移动或删除。".to_string(),
@@ -299,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn failure_line_copies_source_copy_verbatim() {
+    fn failure_line_copies_expected_copy_verbatim() {
         assert_eq!(
             failure_line(&ListError::NotFound),
             "这个目录不在了。可能已被移动或删除。"

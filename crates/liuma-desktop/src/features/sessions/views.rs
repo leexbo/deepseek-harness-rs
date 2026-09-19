@@ -1,4 +1,4 @@
-//! 侧栏:会话列表(web `Sidebar.tsx`,280px;收起完全隐藏)。
+//! 侧栏:会话列表(280px;收起完全隐藏)。
 //! 按工作区分组(前缀推导),支持本地搜索过滤、新建、切换。
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -80,8 +80,8 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     body.into_any_element()
 }
 
-/// 右缘竖向拖宽把手(8px 命中区,右缘外沿;源 DragHandle 表意)。折叠态
-/// 不渲染(源「no resize handle while closed」)。on_mouse_down 在 paint 相位
+/// 右缘竖向拖宽把手(8px 命中区,右缘外沿)。折叠态
+/// 不渲染。on_mouse_down 在 paint 相位
 /// 注册(div 惯例),开始拖拽只置锚点;move/up 由 [`drag_overlay`] 接管。
 fn sidebar_resize_handle(store: &Entity<AppStore>) -> impl IntoElement {
     let s = store.clone();

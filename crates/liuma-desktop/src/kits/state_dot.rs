@@ -1,17 +1,16 @@
-//! 会话「进行中」状态点(源 web `StateDot.tsx` 的 ongoing 分支便携版):
-//! 3x3 点阵追逐——8 个外圈格,各自 opacity 依相位错开循环(离散阶梯,
-//! 无 tween,retro 像素感),颜色 = 进行蓝(源 --dsw-static-deepseek-450)。
+//! 会话「进行中」状态点:3x3 点阵追逐——8 个外圈格,各自 opacity 依相位错开循环(离散阶梯,
+//! 无 tween,retro 像素感),颜色 = 进行蓝(theme::ONGOING)。
 //!
 //! 点阵用多个绝对定位 [`div`] 模拟(GPUI 的 `svg()` 只光栅化整张静态图,
 //! 无法逐元素动画),配合 [`AnimationExt::with_animation`] 声明式逐帧驱动
-//! opacity;每格相位错开 1/8 周期(源 animation-delay 负偏移的等效)。
+//! opacity;每格相位错开 1/8 周期。
 
 use gpui_kit::{Animation, AnimationExt as _, IntoElement, ParentElement, Styled, div, px};
 use std::time::Duration;
 
 use crate::kits::theme;
 
-/// 外圈 8 格(2px 像素格,10px 网格,顺时针从左上;源 MATRIX_CELLS)
+/// 外圈 8 格(2px 像素格,10px 网格,顺时针从左上)
 const MATRIX_CELLS: [(f32, f32); 8] = [
     (0., 0.),
     (4., 0.),
@@ -23,7 +22,7 @@ const MATRIX_CELLS: [(f32, f32); 8] = [
     (0., 4.),
 ];
 
-/// 离散阶梯 opacity(源 keyframes liuma-state-dot-chase:0/12.5/25/37.5 四分位)
+/// 离散阶梯 opacity(动画 liuma-state-dot-chase:0/12.5/25/37.5 四分位)
 fn phase_opacity(phase: f32) -> f32 {
     let p = phase.rem_euclid(1.0);
     if p < 0.125 {
@@ -68,7 +67,7 @@ mod tests {
 
     #[test]
     fn phase_opacity_four_quarter_buckets() {
-        // 源 keyframes 四分位离散阶梯(无 tween)
+        // 四分位离散阶梯(无 tween)
         assert_eq!(phase_opacity(0.0), 1.0);
         assert_eq!(phase_opacity(0.10), 1.0);
         assert_eq!(phase_opacity(0.13), 0.6);

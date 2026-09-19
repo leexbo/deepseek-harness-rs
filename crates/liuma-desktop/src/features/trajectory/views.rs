@@ -24,7 +24,7 @@ use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
-// ── kind 色板(源 dark 值派生;浅盘取白底可读变体)────────────
+// ── kind 色板(dark 盘取定义色值;浅盘取白底可读变体)────────────
 /// hex → Rgba(本地色板便捷构造)
 fn rgb(hex: u32) -> Rgba {
     Rgba {
@@ -34,7 +34,7 @@ fn rgb(hex: u32) -> Rgba {
         a: 1.0,
     }
 }
-// ASSISTANT 紫 = 源 brand-new(dark)60% 混 error-secondary 的合成结果
+// ASSISTANT 紫:深盘取合成紫 0x9474BC,浅盘取 0x6E4FA3
 fn ASSISTANT_VIOLET() -> Rgba {
     if theme::is_dark() {
         rgb(0x9474BC)
@@ -46,7 +46,7 @@ fn ASSISTANT_VIOLET() -> Rgba {
 fn TTFT_VIOLET() -> Rgba {
     mix(ASSISTANT_VIOLET(), theme::CARD(), 0.54)
 }
-// TOOL 琥珀 = 源 warn-label(#DD8629)
+// TOOL 琥珀:深盘 #DD8629,浅盘 #B45309
 fn TOOL_AMBER() -> Rgba {
     if theme::is_dark() {
         rgb(0xDD8629)
@@ -70,7 +70,7 @@ fn JSON_NUMBER() -> Rgba {
         rgb(0x098658)
     }
 }
-// JSON 树(源 JsonTree dark theme 变量):键蓝 / 标点白 / 箭头灰
+// JSON 树配色:键蓝 / 标点白 / 箭头灰
 fn JSON_PROPERTY() -> Rgba {
     if theme::is_dark() {
         rgb(0x5DB0D7)
@@ -103,7 +103,7 @@ fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     }
 }
 
-/// kind → 台账标签文本(源 KIND_LABEL)
+/// kind → 台账标签文本
 fn kind_label(kind: &str) -> &'static str {
     match kind {
         "system" => "SYSTEM",
@@ -115,7 +115,7 @@ fn kind_label(kind: &str) -> &'static str {
     }
 }
 
-/// kind → 标签配色(源 kindTag 色板 dark 映射)
+/// kind → 标签配色(前景 + 15% 同色底)
 fn kind_colors(kind: &str) -> (Rgba, Rgba) {
     match kind {
         // USER:business 蓝前景 + 蓝 15% 底
@@ -127,7 +127,7 @@ fn kind_colors(kind: &str) -> (Rgba, Rgba) {
         ),
         // TOOL:琥珀前景 + 琥珀 15% 底
         "tool" => (TOOL_AMBER(), mix(TOOL_AMBER(), theme::BASE(), 0.15)),
-        // CONTEXT:success 绿前景 + 绿 15% 底(源 tagContext:success 主色混合)
+        // CONTEXT:success 主色混灰前景 + 绿 15% 底
         "context" => (
             mix(theme::SUCCESS(), theme::CAPTION(), 0.32),
             mix(theme::SUCCESS(), theme::BASE(), 0.15),
@@ -137,7 +137,7 @@ fn kind_colors(kind: &str) -> (Rgba, Rgba) {
     }
 }
 
-/// kind → 时间线轨道(源 laneFor:Input/Model/Tools)
+/// kind → 时间线轨道(Input/Model/Tools)
 fn lane_of(kind: &str) -> u8 {
     match kind {
         "system" | "user" | "context" => 0,
@@ -170,7 +170,7 @@ fn thousands(n: i64) -> String {
     if neg { format!("-{out}") } else { out }
 }
 
-/// 毫秒时长(源 formatElapsedSeconds 语义:千分位 ms)
+/// 毫秒时长(千分位 ms)
 fn fmt_ms(ms: i64) -> String {
     if ms <= 0 {
         "—".into()
@@ -207,7 +207,7 @@ fn timing_source(available: bool) -> String {
     }
 }
 
-// ── 台账行模型(源 layout.ts:折叠/摘要/边界重建)──────────────
+// ── 台账行模型(折叠/摘要/边界重建)──────────────
 
 /// 一行台账(渲染模型)
 enum LedgerRow<'a> {
@@ -230,7 +230,7 @@ enum LedgerRow<'a> {
     },
 }
 
-/// 搜索命中(空格分词 AND、大小写不敏感;源 search() 语义)
+/// 搜索命中(空格分词 AND、大小写不敏感)
 fn search_hit(rec: &TrajectoryRecord, query: &str) -> bool {
     let tokens: Vec<String> = query.split_whitespace().map(|t| t.to_lowercase()).collect();
     if tokens.is_empty() {
@@ -290,7 +290,7 @@ fn build_rows<'a>(
         }
         let rec = &records[i];
         let turn_start = rec.turn.is_some_and(|t| seen_turns.insert(t));
-        // 轮折叠:保留首条,其余计步数(源 summarizeTurn)
+        // 轮折叠:保留首条,其余计步数
         if let Some(t) = rec.turn
             && turn_start
             && collapse.turn_collapsed(t)
@@ -364,7 +364,7 @@ fn build_rows<'a>(
     rows
 }
 
-// ── 时间线投影(源 timeline.ts:sequence/duration 双模式)──────
+// ── 时间线投影(sequence/duration 双模式)──────
 
 /// 一条投影条形(域归一化 0..1)
 #[derive(Clone)]
@@ -440,7 +440,7 @@ fn assistant_ttft_split(rec: &TrajectoryRecord) -> Option<f64> {
     Some(ttft / total)
 }
 
-/// 条形主色(源 span 配色:USER 蓝/TOOL 琥珀/error 红/ASSISTANT 紫)
+/// 条形主色(USER 蓝/TOOL 琥珀/error 红/ASSISTANT 紫)
 fn span_color(span: &TlSpan) -> Rgba {
     if span.is_error {
         return theme::DANGER();
@@ -656,7 +656,7 @@ fn window_listeners(store: &Entity<AppStore>, spans: Vec<TlSpan>) -> impl IntoEl
     .size_full()
 }
 
-// ── 工具栏(源 TrajectoryToolbar)─────────────────────────────
+// ── 工具栏─────────────────────────────
 
 fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
     let input = store
@@ -733,7 +733,7 @@ fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
         .children(input)
 }
 
-/// 工具栏切换钮(源 .toggle:模式开关,pressed = 高亮;恒显自身图标)
+/// 工具栏切换钮(模式开关,pressed = 高亮;恒显自身图标)
 fn toggle_button(
     id: &'static str,
     label: &'static str,
@@ -768,8 +768,8 @@ fn toggle_button(
         .on_click(move |ev, w, cx| on_click(ev, w, cx))
 }
 
-/// 工具栏动作钮(源 .action:展开/折叠动作,无 pressed 态;图标随状态
-/// 翻转——全折叠显 ⊞(点=展开),展开显 ⊟(点=折叠),等宽字体同源)
+/// 工具栏动作钮(展开/折叠动作,无 pressed 态;图标随状态
+/// 翻转——全折叠显 ⊞(点=展开),展开显 ⊟(点=折叠),等宽字体)
 fn action_button(
     id: &'static str,
     label: &'static str,
@@ -801,7 +801,7 @@ fn action_button(
         .on_click(move |ev, w, cx| on_click(ev, w, cx))
 }
 
-// ── Overview 时间线(源 TrajectoryTimeline)────────────────────
+// ── Overview 时间线────────────────────
 
 fn timeline(store: &Entity<AppStore>, s: &Snap, spans: &[TlSpan]) -> impl IntoElement {
     let labels = ["Input", "Model", "Tools"];
@@ -866,7 +866,7 @@ fn timeline(store: &Entity<AppStore>, s: &Snap, spans: &[TlSpan]) -> impl IntoEl
                 })
         };
         if let Some(split) = sp.ttft_split {
-            // TTFT/解码分色:左段弱紫 + 右段解码紫(源渐变分界的离散近似)
+            // TTFT/解码分色:左段弱紫 + 右段解码紫(渐变分界的离散近似)
             let total = width.max(1e-4) as f32;
             let left_w = (total * split as f32).max(0.002);
             bars.push(
@@ -912,7 +912,7 @@ fn timeline(store: &Entity<AppStore>, s: &Snap, spans: &[TlSpan]) -> impl IntoEl
         }
     }
 
-    // 选区/草稿视觉:填充 + 两侧边线 + 选区外遮罩(源 selection 样式)
+    // 选区/草稿视觉:填充 + 两侧边线 + 选区外遮罩
     let sel = s.draft.or(s.selection);
     let mut overlays: Vec<gpui_kit::AnyElement> = Vec::new();
     if let Some((a, b)) = sel {
@@ -1115,7 +1115,7 @@ fn timeline(store: &Entity<AppStore>, s: &Snap, spans: &[TlSpan]) -> impl IntoEl
         )
 }
 
-// ── 台账表(源 TrajectoryTable)────────────────────────────────
+// ── 台账表────────────────────────────────
 
 fn ledger(
     store: &Entity<AppStore>,
@@ -1228,7 +1228,7 @@ fn ledger(
             s3.update(cx, |st, cx| st.on_trajectory_scroll(cx));
         })
         // 点表空白:关检查器 + 清时间线选区(行内点击已 stop_propagation,
-        // 到达此处的必是背景点击——源 clearAllSelections 语义)
+        // 到达此处的必是背景点击,一并清空选中态)
         .on_click(move |_, _, cx| {
             s2.update(cx, |st, cx| {
                 st.close_inspector(cx);
@@ -1238,7 +1238,7 @@ fn ledger(
         .children(children)
 }
 
-/// Turn 折叠摘要行(20px;源 summarizeTurn)
+/// Turn 折叠摘要行(20px)
 fn turn_summary_row(
     store: &Entity<AppStore>,
     turn: u64,
@@ -1264,7 +1264,7 @@ fn turn_summary_row(
         })
 }
 
-/// Calls 折叠摘要行(20px;源 assistant 折叠)
+/// Calls 折叠摘要行(20px)
 fn call_summary_row(
     store: &Entity<AppStore>,
     message_index: u64,
@@ -1513,7 +1513,7 @@ fn record_row(
         })
 }
 
-// ── 检查器(源 details aside)──────────────────────────────────
+// ── 检查器──────────────────────────────────
 
 /// 检查器标签页集合(按数据在场裁剪;diff_available = 更新记录且
 /// 前一 SYSTEM 快照在场)
@@ -1523,7 +1523,7 @@ fn inspector_tabs_for(rec: Option<&TrajectoryRecord>, diff_available: bool) -> V
     };
     match r.kind.as_str() {
         "tool" => {
-            // 源 tab 集:Summary / Payload?/ Result?/ Schema / Timing
+            // tab 集:Summary / Payload?/ Result?/ Schema / Timing
             // —— Schema、Timing 恒在(数据缺席由页内缺省文案兜底)
             let mut tabs = vec!["summary"];
             if r.payload.is_some() {
@@ -1537,13 +1537,13 @@ fn inspector_tabs_for(rec: Option<&TrajectoryRecord>, diff_available: bool) -> V
             tabs
         }
         "message" => {
-            // 源 isMarkdownRecord(message)→ [Summary, Preview, Raw]
-            // 恒三页(内容缺席由页内缺省文案兜底,同源空态)
+            // message 恒三页:[Summary, Preview, Raw]
+            // (内容缺席由页内缺省文案兜底)
             vec!["summary", "preview", "raw"]
         }
         "context" => {
-            // 源 isMarkdownRecord(context)→ [Summary, Preview, Raw],
-            // source 染色在场 → 尾加 Source(源 messageSource 条件)
+            // context 基础三页 [Summary, Preview, Raw],
+            // source 染色在场 → 尾加 Source
             let mut tabs = vec!["summary", "preview", "raw"];
             if r.source.is_some() {
                 tabs.push("source");
@@ -1552,9 +1552,8 @@ fn inspector_tabs_for(rec: Option<&TrajectoryRecord>, diff_available: bool) -> V
         }
         "user" => vec!["summary", "payload"],
         "system" => {
-            // 源 SYSTEM_PROMPT_TABS / SYSTEM_UPDATE_TABS:无 Summary 页;
-            // Initial = System Prompt + Tools,更新 = Diff 在首。System/Tools
-            // 恒在(老日志无快照由页内缺省文案兜底,同源空态)
+            // 无 Summary 页:Diff 在场时置首,System Prompt + Tools 恒在
+            // (老日志无快照由页内缺省文案兜底)
             let mut tabs = Vec::new();
             if diff_available {
                 tabs.push("diff");
@@ -1615,7 +1614,7 @@ fn inspector(
             if tabs.contains(&s.last_tab) {
                 s.last_tab
             } else {
-                // 源 setActiveTab(recent ?? tabs[0]):记忆页不在集合 → 首页
+                // 记忆页不在 tab 集合 → 回退首页
                 tabs.first().copied().unwrap_or("summary")
             }
         });
@@ -1841,7 +1840,7 @@ fn tab_label(name: &str) -> &'static str {
 
 // ── 检查器主体(tab 内容)──────────────────────────────────────
 
-/// 信息行(源 dl.overview:96px 标签列)
+/// 信息行(96px 标签列)
 fn dl_row(label: &str, value: impl IntoElement) -> Div {
     div()
         .flex()
@@ -1867,10 +1866,10 @@ fn dl_row(label: &str, value: impl IntoElement) -> Div {
         )
 }
 
-/// 小节标题(源 OverviewSection;Stateful 供调用方链 on_click)
+/// 小节标题(Stateful 供调用方链 on_click)
 fn section(id: &'static str, title: &str) -> gpui_kit::Stateful<Div> {
     let sel = id.to_string();
-    // 源 overviewTitle:标题 + `>` 跳转箭头(点击进完整 tab;调用方挂 on_click)
+    // 标题 + `>` 跳转箭头(点击进完整 tab;调用方挂 on_click)
     div()
         .id(id)
         .mt(px(6.))
@@ -1888,7 +1887,7 @@ fn section(id: &'static str, title: &str) -> gpui_kit::Stateful<Div> {
         .debug_selector(move || sel.clone())
 }
 
-/// 层级跳转链接(源 overviewHierarchyNavLink:文字 + 小箭头)
+/// 层级跳转链接(文字 + 小箭头)
 fn nav_link(id: &'static str, text: String) -> gpui_kit::Stateful<Div> {
     let sel = id.to_string();
     div()
@@ -1906,7 +1905,7 @@ fn nav_link(id: &'static str, text: String) -> gpui_kit::Stateful<Div> {
         .debug_selector(move || sel.clone())
 }
 
-/// 等宽文本块(源 pre/code:max_h 内滚动)
+/// 等宽文本块(限高容器内滚动)
 fn mono_block(id: impl Into<gpui_kit::ElementId>, text: &str, color: Rgba) -> impl IntoElement {
     div()
         .id(id)
@@ -2015,12 +2014,12 @@ fn jkind_color(kind: JKind) -> Rgba {
     }
 }
 
-// ── JSON 树(源 JsonTree)────────────────────────────────────────
+// ── JSON 树────────────────────────────────────────
 //
 // 顶层恒展开、子级默认折叠(展开集合在 store);可展开节点 = 箭头 +
 // 键名 + 单行内联预览(object ≤4 项 / array ≤5 项 / 深度 ≤2,超出 …);
-// 键名无引号;12px/16px code,token 分色同源暗色主题。行内 token 为
-// 固有宽 flex 子项,长行溢出裁切不折行(同源单行语义)。
+// 键名无引号;12px/16px code,token 分色随主题双盘。行内 token 为
+// 固有宽 flex 子项,长行溢出裁切不折行(单行语义)。
 
 fn jt_span(color: Rgba, text: impl Into<String>) -> gpui_kit::AnyElement {
     div()
@@ -2054,7 +2053,7 @@ fn json_entries(v: &serde_json::Value) -> Vec<(String, &serde_json::Value)> {
     }
 }
 
-/// 源 pathId:数组下标 `n{i}`,字符串键 `s{len}:{key}`
+/// 节点路径编码:数组下标 `n{i}`,字符串键 `s{len}:{key}`
 fn jt_child_path(key_path: &str, key: &str, index: usize, is_array: bool) -> String {
     if is_array {
         format!("{key_path}/n{index}")
@@ -2075,8 +2074,7 @@ fn json_leaf_token(value: &serde_json::Value) -> (Rgba, String) {
     }
 }
 
-/// 源 previewValue:折叠态单行内联预览;键名取标点色(同源
-/// previewProperty),深度 ≥2 的容器只显示 `{…}`
+/// 折叠态单行内联预览;键名取标点色,深度 ≥2 的容器只显示 `{…}`
 fn json_preview_tokens(value: &serde_json::Value, depth: usize) -> Vec<(Rgba, String)> {
     let mut out = Vec::new();
     match value {
@@ -2282,7 +2280,6 @@ fn pretty_json(s: &str) -> String {
 }
 
 /// 记录所属请求:message 优先 request_number;工具按 turn + Step N 归属
-/// (源 Hierarchy 的 Request #N 数据面)
 fn owning_request<'a>(
     r: &TrajectoryRecord,
     requests: &'a [TrajectoryRequest],
@@ -2309,7 +2306,7 @@ fn parent_message<'a>(
     })
 }
 
-/// Summary tab(记录;源 dl.overview + overviewSections):
+/// Summary tab(记录):
 /// Hierarchy 跳转 → Status(工具含 Pending)→ Tokens/Duration →
 /// Payload/Result 预览 → Request Timing / Timing 小节
 fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
@@ -2317,8 +2314,8 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
     let req = owning_request(r, requests);
     let mut col = div().v_flex().gap(px(2.));
 
-    // CONTEXT(源 isMarkdownRecord 的 overview:Source › / Status /
-    // Duration + Preview 小节;Preview › 跳渲染页)
+    // CONTEXT:Source › / Status / Duration + Preview 小节;
+    // Preview › 跳渲染页
     if r.kind == "context" {
         if let Some(source) = &r.source {
             let s2 = store.clone();
@@ -2344,7 +2341,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
     }
 
     // Hierarchy:Request #N(所属请求)+ Assistant Message(工具发起消息;
-    // 源另有 Tool Call 嵌套链接——无 SUBTOOL 数据,不渲染)
+    // 无子工具调用数据,不渲染嵌套链接)
     let parent = if r.kind == "tool" {
         parent_message(r, &s.view.records)
     } else {
@@ -2370,13 +2367,12 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
                 }),
             );
         }
-        // 源 dt:assistant request 目标在场 = "Source"(details.source),
-        // 否则 "Hierarchy"
+        // 列名:所属请求在场 = "Source",否则 "Hierarchy"
         let dt = if req.is_some() { "Source" } else { "Hierarchy" };
         col = col.child(dl_row(dt, dd.into_any_element()));
     }
 
-    // Status(message;源 statusLabel:Failed 红 / Completed)
+    // Status(message:Failed 红 / Completed)
     if r.kind == "message" {
         let (label, color) = if r.is_error {
             ("Failed", Some(theme::DANGER()))
@@ -2391,7 +2387,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
         ));
     }
 
-    // Preview 小节(message;源 overviewSections 首节,内容 = rendered
+    // Preview 小节(message 首节,内容 = rendered
     // preview 形态:Thinking 折叠 + 正文 + 工具调用行)
     if r.kind == "message" {
         let s2 = store.clone();
@@ -2402,7 +2398,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
             .child(assistant_preview_body(store, s, r));
     }
 
-    // Status(源 statusLabel:Failed 红 / Pending 无结果 / Completed)
+    // Status(Failed 红 / Pending 无结果 / Completed)
     if r.kind == "tool" {
         let (label, color) = if r.is_error {
             ("Failed", Some(theme::DANGER()))
@@ -2419,7 +2415,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
         ));
     }
 
-    // Tokens(message;源 TokenRows)
+    // Tokens(message)
     if r.kind == "message" && r.output.is_some() {
         let out = r.output.unwrap_or(0);
         let think = r.think.unwrap_or(0);
@@ -2515,7 +2511,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
             .children(timing_rows);
     }
 
-    // Timing 小节(工具;源 tool 专属 OverviewSection,三行同源 RecordTiming)
+    // Timing 小节(工具;三行:Started / Duration / Timing source)
     if r.kind == "tool" {
         let s2 = store.clone();
         let timing_sec = section("sec-timing", "Timing").on_click(move |_, _, cx| {
@@ -2537,8 +2533,8 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
 }
 
 /// 预览块(全文内部滚;标题 `>` 负责跳转,预览本身不抢点击)。
-/// 缺席显示源缺省文案(No payload / No result / Schema unavailable);
-/// JSON 容器内容走 JsonTree 紧凑形态(源 overviewSections preview)
+/// 缺席显示缺省文案(No payload / No result / Schema unavailable);
+/// JSON 容器内容走 JsonTree 紧凑形态
 fn preview_block(
     store: &Entity<AppStore>,
     s: &Snap,
@@ -2635,7 +2631,7 @@ fn preview_block(
         })
 }
 
-/// Payload tab(源 RecordPayload input:JSON 容器 → JsonTree;否则原文等宽)
+/// Payload tab(JSON 容器 → JsonTree;否则原文等宽)
 fn payload_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
     match &r.payload {
         None => div().child(empty_text("No payload captured")),
@@ -2652,7 +2648,7 @@ fn payload_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
     }
 }
 
-/// Result tab(源 RecordPayload output:错误全套红;JSON 容器 → JsonTree)
+/// Result tab(错误全套红;JSON 容器 → JsonTree)
 fn result_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
     let color = if r.is_error {
         theme::DANGER()
@@ -2677,12 +2673,11 @@ fn result_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div 
 /// Raw tab(ASSISTANT:Thinking 折叠 + 输出全文)
 fn raw_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
     let mut col = div().v_flex().gap(px(8.));
-    // CONTEXT(源 MarkdownRecordContent !rendered → SourceBlocks:注入
-    // 文本为单 text 块,「Block #1 text」头 + 等宽原文)
+    // CONTEXT:注入文本为单 text 块,「Block #1 text」头 + 等宽原文
     if r.kind == "context" {
         return col.child(context_source_block(r));
     }
-    // MESSAGE(源 SourceBlocks:thinking/text/tool-call 连续编号)
+    // MESSAGE:thinking/text/tool-call 连续编号
     if r.kind == "message" {
         return assistant_source_blocks(store, s, r);
     }
@@ -2767,7 +2762,7 @@ fn timing_body(r: &TrajectoryRecord) -> Div {
     col.child(dl_row("Timing source", timing_source(total.is_some())))
 }
 
-/// Summary tab(请求;源 request overview:Status/Provider/Model/Tool calls/
+/// Summary tab(请求):Status/Provider/Model/Tool calls/
 /// …/Result 跳转行——链到该请求产出的助手消息或压缩记录)
 fn request_summary_body(store: &Entity<AppStore>, s: &Snap, q: &TrajectoryRequest) -> Div {
     let mut col = div().v_flex().gap(px(2.));
@@ -2787,7 +2782,6 @@ fn request_summary_body(store: &Entity<AppStore>, s: &Snap, q: &TrajectoryReques
     }
     col = col.child(dl_row("Started", fmt_clock(q.started_at)));
     // Result:该请求产出的记录(message/compacted),`>` 跳转其 Summary
-    // (源 overviewHierarchyNavLink:Assistant Message / Compacted)
     if let Some(res) = s.view.records.iter().find(|r| {
         r.request_number == Some(q.number) && matches!(r.kind.as_str(), "message" | "compacted")
     }) {
@@ -2862,7 +2856,7 @@ fn request_timing_body(q: &TrajectoryRequest) -> Div {
         ))
 }
 
-/// 缺失文案(源 .noPayload)
+/// 缺失文案
 fn empty_text(text: &str) -> Div {
     div()
         .py(px(14.))
@@ -2876,7 +2870,7 @@ fn rec_total_ms(r: &TrajectoryRecord) -> Option<i64> {
     r.time_seconds.map(|s| (s * 1000.) as i64)
 }
 
-/// Source 标签(源 messageSourceLabel:kind 特例 + 首字母大写兜底,en)
+/// Source 标签(kind 特例 + 首字母大写兜底,en)
 fn message_source_label(source: &serde_json::Value) -> String {
     let kind = source["kind"].as_str().unwrap_or_default();
     match kind {
@@ -2894,10 +2888,10 @@ fn message_source_label(source: &serde_json::Value) -> String {
     }
 }
 
-// ── ASSISTANT(message)详情(Summary / Preview / Raw,源 isMarkdownRecord)──
+// ── ASSISTANT(message)详情(Summary / Preview / Raw)──
 
-/// 本消息(同 turn + Step)发起的工具调用记录(源 sourceBlocks 的
-/// tool-call 块数据面——RS 由记录分组反查,不另存块)
+/// 本消息(同 turn + Step)发起的工具调用记录
+/// (由记录分组反查,不另存块)
 fn step_tool_calls<'a>(
     r: &TrajectoryRecord,
     records: &'a [TrajectoryRecord],
@@ -2908,9 +2902,9 @@ fn step_tool_calls<'a>(
         .collect()
 }
 
-/// 工具调用行(源 RecordListText 单行形态:扳手 + name + 空格 + args
-/// 同行截断——args 取 text 的紧凑段,payload 是 pretty 多行 JSON 不可用;
-/// 400 12px Menlo/label-primary, payloads label-secondary。点击跳工具记录)
+/// 工具调用行(单行形态:扳手 + name + 空格 + args 同行截断——
+/// args 取 text 的紧凑段,payload 是 pretty 多行 JSON 不可用;
+/// 12px Menlo,名称 LABEL_2 / 参数 LABEL_3。点击跳工具记录)
 fn assistant_tool_call_row(store: &Entity<AppStore>, call: &TrajectoryRecord) -> impl IntoElement {
     let (name, args) = match call.text.split_once(' ') {
         Some((n, a)) => (n, a),
@@ -2952,7 +2946,7 @@ fn assistant_tool_call_row(store: &Entity<AppStore>, call: &TrajectoryRecord) ->
 }
 
 /// Preview 页(Summary 小节同款):Thinking 折叠(默认收)+ 正文
-/// markdown + 工具调用行(源 MarkdownRecordContent rendered)
+/// markdown + 工具调用行
 fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
     let mut col = div()
         .debug_selector(move || format!("traj-preview-{}", r.index))
@@ -3017,8 +3011,7 @@ fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryReco
     col
 }
 
-/// Raw 块头(源 sourceBlockLabel:「Block #N type」;tool-call 带 › 跳
-/// 工具记录,同源 onOpenCall)
+/// Raw 块头(「Block #N type」;tool-call 带 › 跳工具记录)
 fn source_block_header(
     store: &Entity<AppStore>,
     n: usize,
@@ -3057,8 +3050,8 @@ fn source_block_header(
     }
 }
 
-/// Raw 页块形态(源 SourceBlocks:thinking / text / tool-call 按模型
-/// 输出序连续编号;RS 块序 = reasoning → 正文 → 同步工具调用)
+/// Raw 页块形态:thinking / text / tool-call 按模型
+/// 输出序连续编号;块序 = reasoning → 正文 → 同步工具调用
 fn assistant_source_blocks(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
     let mut col = div().v_flex().gap(px(6.));
     let mut n = 0usize;
@@ -3093,8 +3086,8 @@ fn assistant_source_blocks(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRec
     col
 }
 
-/// Summary 的注入文本预览 + Preview tab(源 MarkdownRecordContent
-/// rendered 形态:markdown 渲染;Summary 内为 preview 紧凑形)
+/// Summary 的注入文本预览 + Preview tab(markdown 渲染;
+/// Summary 内为 preview 紧凑形)
 fn context_markdown_body(r: &TrajectoryRecord, key: &str) -> Div {
     let mut col = div().v_flex();
     match r.payload.as_deref() {
@@ -3122,7 +3115,7 @@ fn preview_tab_body(r: &TrajectoryRecord) -> Div {
     col
 }
 
-/// Raw tab 的块形态(源 SourceBlocks:text 块 = 「Block #1 text」头 + 原文)
+/// Raw tab 的块形态(text 块 = 「Block #1 text」头 + 原文)
 fn context_source_block(r: &TrajectoryRecord) -> Div {
     let mut col = div().v_flex();
     let Some(text) = r.payload.as_deref() else {
@@ -3140,8 +3133,7 @@ fn context_source_block(r: &TrajectoryRecord) -> Div {
     col
 }
 
-/// Source tab(源 MessageSource:染色对象的 JSON 树;RS 无树组件,
-/// 以「Message JSON」标签 + 高亮块呈现,内容一致)
+/// Source tab(染色对象数据:以「Message JSON」标签 + 高亮块呈现)
 fn source_tab_body(r: &TrajectoryRecord) -> Div {
     let mut col = div().v_flex();
     let Some(source) = &r.source else {
@@ -3200,7 +3192,7 @@ fn spec_name(t: &serde_json::Value) -> String {
         .to_string()
 }
 
-/// Tools 页:工具目录(源 ToolCatalog:扁平行 + 底部分隔线;折叠行 =
+/// Tools 页:工具目录(扁平行 + 底部分隔线;折叠行 =
 /// chevron + 图标 + mono 名称 + 内联灰描述单行截断;展开 = 完整描述 +
 /// 参数 JSON)
 fn tools_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
@@ -3221,8 +3213,8 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
         let open = s.expanded_tools.contains(&name);
         let s2 = store.clone();
         let toggle_name = name.clone();
-        // 折叠行(源 toolCatalogSummary:12px chevron 列 + 12px 图标列 +
-        // max-content 名称 + minmax(0,1fr) 描述;min-h 30,padding 4/12)
+        // 折叠行:12px chevron 列 + 12px 图标列 + 名称 + 弹性宽描述
+        // (单行截断);min-h 30,padding 4/12
         let header = div()
             .flex()
             .items_center()
@@ -3257,8 +3249,8 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
                     .truncate()
                     .child(description.clone()),
             );
-        // 条目(源 details.toolCatalogItem:行 + 展开体,底部分隔线;
-        // 点击只绑折叠行——展开体内点击不收起)
+        // 条目:行 + 展开体,底部分隔线;
+        // 点击只绑折叠行——展开体内点击不收起
         let mut item = div()
             .v_flex()
             .flex_shrink_0()
@@ -3273,7 +3265,7 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
                         s2.update(cx, |st, cx| st.toggle_inspector_tool(&toggle_name, cx));
                     }),
             );
-        // 展开体(源 toolCatalogDefinition:左缩进对齐名称列 29px)
+        // 展开体(左缩进 29px,对齐名称列)
         if open {
             if !description.is_empty() {
                 item = item.child(
@@ -3366,7 +3358,7 @@ fn line_diff(a: &[&str], b: &[&str]) -> Vec<(DiffOp, String)> {
 }
 
 /// Diff 页:对照前一 SYSTEM 快照,分 System Prompt / Tools 两节
-/// (源 SystemPromptDiff:structuredPatch 语义的行级近似)
+/// (行级 LCS diff)
 fn diff_body(s: &Snap, r: &TrajectoryRecord) -> Div {
     let prev = previous_system_snapshot(&s.view.records, r);
     let mut col = div().v_flex().gap(px(8.));

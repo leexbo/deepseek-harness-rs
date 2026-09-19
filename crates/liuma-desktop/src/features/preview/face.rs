@@ -1,6 +1,6 @@
-//! 文档预览纯函数层:读契约(照源 workspace-files read/readAll)。
+//! 文档预览纯函数层:读契约(read / readAll)。
 //!
-//! 上限语义照源:**超限报错,绝不静默截断**——单页行数 ≤ 5000、单页
+//! 上限语义:**超限报错,绝不静默截断**——单页行数 ≤ 5000、单页
 //! 字节 ≤ 2MiB(`TooLarge`)、整档 ≤ 32MiB;页 = 整页文本字符串 +
 //! 行数 + eof 标志(offset 越过文件尾 = 0 行 + eof)。NUL / 非 UTF-8
 //! = `NotText`。版本 token = (mtime 纳秒, 长度),供变更提示条比对。
@@ -8,11 +8,11 @@
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-/// 默认且最大页行数(照源 maxLines)
+/// 默认且最大页行数
 pub const MAX_LINES: usize = 5000;
-/// 单页字节上限(照源 maxBytes = 2 MiB)
+/// 单页字节上限(2 MiB)
 pub const MAX_BYTES: u64 = 2 * 1024 * 1024;
-/// 整档字节上限(readAll;照源 maxFileBytes = 32 MiB)
+/// 整档字节上限(readAll;32 MiB)
 pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// 一页文本(行页;text = 本页各行以 `\n` 连接、末行无终止符)
@@ -116,7 +116,7 @@ pub fn read_text_page(abs: &Path, offset: u32, limit: usize) -> Result<TextPage,
         return Err(ReadError::NotText);
     }
     let raw = String::from_utf8(buf).map_err(|_| ReadError::NotText)?;
-    // 行间以 \n 连接、末行无终止符(照源);末行若换行终结则剥去
+    // 行间以 \n 连接、末行无终止符;末行若换行终结则剥去
     let text = raw.strip_suffix('\n').unwrap_or(&raw).to_string();
     Ok(TextPage {
         offset,
@@ -157,7 +157,7 @@ pub fn stat_version(abs: &Path) -> Option<(u64, u64)> {
     Some((mtime, meta.len()))
 }
 
-/// 人类可读字节(照源 humanBytes:≥1MiB 显 MB,≥1KiB 显 KB,均一位小数)
+/// 人类可读字节(≥1MiB 显 MB,≥1KiB 显 KB,均一位小数)
 pub fn human_bytes(n: u64) -> String {
     const KIB: f64 = 1024.;
     const MIB: f64 = 1024. * 1024.;
@@ -171,7 +171,7 @@ pub fn human_bytes(n: u64) -> String {
     }
 }
 
-/// 错误文案(照源 zh locale 逐字)
+/// 错误文案(zh 文案逐字)
 pub fn failure_line(err: &ReadError) -> String {
     match err {
         ReadError::NotFound => "文件不存在，可能已被移动或删除".to_string(),

@@ -2080,7 +2080,7 @@ mod tests {
         assert!(list.output.contains("[idle] Bg task"), "{}", list.output);
         assert!(
             !list.output.contains("Fg task"),
-            "前台一次性不列入清单(照源):{}",
+            "前台一次性不列入清单:{}",
             list.output
         );
     }

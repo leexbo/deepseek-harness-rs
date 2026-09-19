@@ -1,11 +1,11 @@
-//! HookPort:引擎拦截点 trait(源七扩展点的 RS 收敛形态;M4.2 拍板 1)。
+//! HookPort:引擎拦截点 trait(收敛为单一 trait;M4.2 拍板)。
 //!
-//! 源拦截点 → RS 四调用点:agent/pre-step → on_prompt_submit;
-//! tools/pre-execute → pre_tool;tools/post-execute → post_tool;
-//! agent/turn-stopping → on_stop。SessionStart / subagent:* 由宿主
+//! RS 四调用点:on_prompt_submit(用户提示提交)、pre_tool(工具
+//! 执行前)、post_tool(工具执行后)、on_stop(turn 收尾前)。
+//! SessionStart / subagent:* 由宿主
 //! detached 处理(不进引擎)。全部可选:None 时引擎零开销直通。
 //!
-//! 决策语义照源:PreToolUse deny ⇒ 工具不执行、isError 结果回灌;
+//! 决策语义:PreToolUse deny ⇒ 工具不执行、isError 结果回灌;
 //! PostToolUse block ⇒ 结果改写 + feedback;Stop continue ⇒ steer 强制
 //! 续跑;UserPromptSubmit reject ⇒ turn 以 blocked 收尾、无 step。
 //! hook/invoked·result 落档归实现方(经宿主 append 回调,唯一写入口)。
@@ -19,7 +19,7 @@ use crate::tools::ToolCallRequest;
 pub enum PreStepVerdict {
     /// 放行(进入正常消息组装)
     Proceed,
-    /// 拒绝:turn 直接收尾,无 step(源 {kind:'reject'})
+    /// 拒绝:turn 直接收尾,无 step(kind='reject')
     Reject,
 }
 
@@ -37,11 +37,11 @@ pub enum PreToolVerdict {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PostToolVerdict {
     Pass,
-    /// 结果改写:output = feedback、success = false(源 block+feedback)
+    /// 结果改写:output = feedback、success = false(block + feedback)
     Block {
         feedback: String,
     },
-    /// 结果照落,其后追加一条注入上下文(源 context-only 委托折叠)
+    /// 结果照落,其后追加一条注入上下文(context-only 委托折叠)
     Inject {
         text: String,
     },
@@ -51,13 +51,13 @@ pub enum PostToolVerdict {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StopVerdict {
     Pass,
-    /// 强制续跑:reason 压入引擎 steer 通道(源 agent.steer)
+    /// 强制续跑:reason 压入引擎 steer 通道
     Continue {
         reason: String,
     },
 }
 
-/// 引擎拦截点(源 waterfall listeners 的 RS 形态)。
+/// 引擎拦截点。
 ///
 /// 实现方(liuma-hooks HookPortImpl)负责 hook/invoked·result 落档与
 /// 多钩子合并;引擎只消费最终裁决。`turn` 为引擎侧本 turn 序号
@@ -144,7 +144,7 @@ impl<T: HookPort> HookPortObj for T {
     }
 }
 
-/// 注入上下文的 source 染色(源 mislabel guard:kind=plugin;
+/// 注入上下文的 source 染色(mislabel guard:kind=plugin;
 /// RS 面沿用 source.kind 字符串,宿主 translate 原样透传)
 pub fn hook_context_source(dialect: &str) -> Value {
     serde_json::json!({ "kind": "plugin", "plugin": dialect })

@@ -4,7 +4,7 @@
 //! 不软换行保列对齐、内部双向滚动)。失败语义:非零退出是
 //! **结果数据**(success=true + exitCode 透出),信号终止才计失败。
 //!
-//! ANSI 解析(务实移植):OSC/非 CSI 转义与惰性
+//! ANSI 解析(务实实现):OSC/非 CSI 转义与惰性
 //! 控制符清除;SGR 状态跨行折叠(换行不重置);基本 16 色映射主题
 //! token(黑/白→LABEL、亮黑→弱化、红/绿/黄→DANGER/SUCCESS/WARN、
 //! 蓝→BRAND),256 色/真彩直渲;`\r`/退格/擦行(`ESC[K`)按终端列
@@ -722,7 +722,7 @@ pub(crate) fn render(
         .border_color(theme::BORDER())
         .bg(theme::CODE())
         .overflow_hidden()
-        // 小号代码字体(--dsw-font-markdown-code-block-small:12px/18px)
+        // 小号代码字体:12px/18px
         .font_family("Menlo")
         .text_size(px(12.))
         .line_height(gpui_kit::relative(1.5))

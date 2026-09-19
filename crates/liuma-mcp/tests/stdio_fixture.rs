@@ -122,7 +122,7 @@ async fn stdio_fixture_connect_discover_and_call() {
     assert_eq!(
         port.specs()[0]["function"]["name"],
         "mcp__fixture__echo",
-        "公共名照源 mcp__<server>__<raw>"
+        "公共名 mcp__<server>__<raw>"
     );
     let out = ToolPort::execute(
         &mut port,

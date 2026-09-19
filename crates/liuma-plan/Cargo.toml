@@ -1,6 +1,6 @@
 [package]
 name = "liuma-plan"
-description = "计划模式协作状态:session/mode 折叠、plan:policy 提示词段、exit_plan_mode turn 内评审(照源 packages/plan 语义)"
+description = "计划模式协作状态:session/mode 折叠、plan:policy 提示词段、exit_plan_mode turn 内评审"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

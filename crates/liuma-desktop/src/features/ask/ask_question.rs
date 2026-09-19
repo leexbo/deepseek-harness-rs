@@ -63,8 +63,8 @@ pub fn render(
     store.update(cx, |st, cx| st.sync_ask_input(&call_id, index, window, cx));
     let multi = q.multi_select.unwrap_or(false);
     let options = q.options.clone().unwrap_or_default();
-    // 主按钮情境化(照源):非末页 = 「下一题」,末页 = 「提交」;
-    // 当前题未答时禁用(源 primary disabled = !answered)
+    // 主按钮情境化:非末页 = 「下一题」,末页 = 「提交」;
+    // 当前题未答时禁用
     let is_last = index + 1 >= total;
     let answered_current = !selected.is_empty() || !custom.trim().is_empty();
     let error_text = store.read(cx).ask.ask_state.as_ref().and_then(|s| s.error);
@@ -174,7 +174,7 @@ pub fn render(
             .p(px(14.))
             .gap(px(10.))
             .child(
-                // 卡头行(源 QuestionComposer 结构):heading block =
+                // 卡头行:heading block =
                 // eyebrow(header,可选)+ title(question,恒唯一);
                 // header 缺席不回退到 question——回退曾造成标题重复
                 div()
@@ -289,7 +289,7 @@ pub fn render(
                             .unwrap_or_else(|| div().child(custom.clone()).into_any_element()),
                     ),
             )
-            // 卡内错误行(源 error.unanswered/incomplete;作答交互即清)
+            // 卡内错误行(未答/作答不完整;作答交互即清)
             .when_some(error_text, |el, t| {
                 el.child(div().text_size(px(11.)).text_color(theme::WARN()).child(t))
             })
@@ -298,7 +298,7 @@ pub fn render(
                     .flex()
                     .items_center()
                     .justify_between()
-                    // 单题无需翻页(源 pager 单题也隐藏)
+                    // 单题无需翻页
                     .when(total > 1, |el| {
                         el.child(
                             div()

@@ -57,8 +57,7 @@ pub struct SearchHit {
 }
 
 /// 事件 → 可检索文档投影(纯函数;None = 不进索引)。
-/// user/assistant 对话文本 + 工具调用(名 + 参数)——与源 session-query
-/// 的可检索面同构
+/// user/assistant 对话文本 + 工具调用(名 + 参数)
 pub fn project(ev: &EventEnvelope) -> Option<(&'static str, String)> {
     let d = &ev.data;
     // content 两态:块数组([{type:text,text}…])或纯字符串(引擎落档

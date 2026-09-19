@@ -1,7 +1,7 @@
 //! 沙箱升级审批卡(intent = sandbox-escalation):bash 命令被沙箱拒绝
 //! 后,模型带 `sandbox_permissions` + `justification` 请求一次性加宽;
 //! 卡片信任锚 = **命令原文 + 目标模式**(justification 是模型写的不可信
-//! 文本)。交互 = 一步两钮(批准一次 / 拒绝,✕ = 取消)——源语义:被拒
+//! 文本)。交互 = 一步两钮(批准一次 / 拒绝,✕ = 取消)——被拒
 //! 对该命令终局,无反馈通道;批准只盖本次执行,不落 sandbox/mode。
 
 use gpui_kit::component::IconName;

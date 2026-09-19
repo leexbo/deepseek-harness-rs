@@ -63,7 +63,7 @@ pub fn render(
 }
 
 /// 头行:根路径(目录前缀灰显 + 末段全色,truncate)+ 刷新钮
-/// (照源 body header:唯一控件)
+/// (头行唯一控件)
 fn files_header(store: &Entity<AppStore>, root: &std::path::Path) -> impl IntoElement {
     let display = root.display().to_string();
     let (prefix, last) = match display.rsplit_once('/') {

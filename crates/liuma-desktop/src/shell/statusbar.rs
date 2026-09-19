@@ -1,5 +1,4 @@
-//! 窗口底状态栏(26px 全宽条):会话统计两 pill 居中(照源 StatsPills——
-//! 仪表 pill「N 轮 M 步 · T tok/s」弹会话统计卡,数据库 pill「75M tok ·
+//! 窗口底状态栏(26px 全宽条):会话统计两 pill 居中(仪表 pill「N 轮 M 步 · T tok/s」弹会话统计卡,数据库 pill「75M tok ·
 //! 缓存命中 99.7%」弹 Token 用量卡;详情进卡片,状态栏只留摘要)。
 //! 右侧:当前 provider 计费徽标(余额 / 5h·7d 两窗;不同源,另拍板保留)+
 //! preset 模式指示。
@@ -82,7 +81,7 @@ fn current_stats(st: &AppStore) -> Option<&serde_json::Value> {
     st.stats_by_id.get(id)
 }
 
-/// 会话统计 pill 组(照源 StatsPills:steps==0 且无 token 整组不渲染;
+/// 会话统计 pill 组(steps==0 且无 token 整组不渲染;
 /// steps==0 隐仪表 pill,总量 0 隐用量 pill)。两 pill 各自 bounds 捕获,
 /// 点击恒开对应卡(关闭走外点全关;嵌套 on_click toggle 真机连发禁 toggle)
 fn stats_pills(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {

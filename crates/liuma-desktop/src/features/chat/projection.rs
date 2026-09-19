@@ -108,7 +108,7 @@ pub enum ChatNode {
         /// 文本
         text: String,
     },
-    /// 压缩标记行(compaction/summary 落档;照源 CompactionItem:
+    /// 压缩标记行(compaction/summary 落档;
     /// 折叠态显统计行,点击展开摘要全文)
     Compaction {
         /// 稳定 key(cpt:<seq>)
@@ -120,7 +120,7 @@ pub enum ChatNode {
         /// 折叠前缀估算 token
         tokens: Option<u64>,
     },
-    /// 压缩空反馈行(compaction/error kind=empty;照源原样显示
+    /// 压缩空反馈行(compaction/error kind=empty;原样显示
     /// 宿主英文 settlement 文本,中性别红)
     CompactStatus {
         /// 稳定 key(cpt-empty:<seq>)
@@ -185,7 +185,7 @@ impl ChatNode {
 }
 
 /// session/queue 帧 items → 队列投影(preview = text 块拼接;
-/// 全部块均为文本才可编辑,与源 QueuedMessage.text 一致)
+/// 全部块均为文本才可编辑)
 pub fn parse_queue_items(items: Vec<serde_json::Value>) -> Vec<QueueEntry> {
     items
         .iter()
@@ -321,7 +321,7 @@ impl ChatState {
     /// 应用单个客方事件
     pub fn apply(&mut self, ev: &SessionEvent) {
         match ev.ty.as_str() {
-            // 新回合清空任务列表(源 todos 投影同语义:turn/start 置空,
+            // 新回合清空任务列表(turn/start 置空,
             // turn/end 保留完成的清单可见)
             "turn/start" => {
                 self.running = true;
@@ -583,7 +583,7 @@ impl ChatState {
                     status: PlanStatus::Pending,
                 });
             }
-            // 压缩标记行(历史折叠落档;照源 CompactionItem:标记行不
+            // 压缩标记行(历史折叠落档;标记行不
             // 替换被折叠的转写行,展开看摘要)。终局清进行/排队位
             "compaction/summary" => {
                 self.compact_running = false;
@@ -596,8 +596,8 @@ impl ChatState {
                 });
             }
             // 压缩终局失败/空(kind 区分:empty=无历史可压 → 中性状态行
-            // 照显宿主 settlement 文本(照源英文原文);error=真实失败 →
-            // 红色告警行,文本=消息原文(对齐源错误态直显 settlement))
+            // 原样显示宿主 settlement 英文文本;error=真实失败 →
+            // 红色告警行,文本=消息原文(错误态直显 settlement))
             "compaction/error" => {
                 self.compact_running = false;
                 self.compact_queued = false;
@@ -700,7 +700,7 @@ impl ChatState {
     }
 
     // 回合用量摘要已退役(旧「耗时 · 首 token · tok/s」文本行):轮尾
-    // 统计改由 turn_usage 桶驱动 pill + 详情卡(照源 TurnUsagePanel)
+    // 统计改由 turn_usage 桶驱动 pill + 详情卡
 }
 
 /// 零高节点:空正文且无思考的定稿 Assistant(纯 tool_calls 步的
@@ -1065,7 +1065,7 @@ fn one_line(s: &str, max: usize) -> String {
 }
 
 /// 工作区根前缀剥离(显示面):绝对路径落在根内 → 相对形,其余原样
-/// (源 relativizeToCcd 同语义;折叠行摘要与卡横幅 path 共用)
+/// (折叠行摘要与卡横幅 path 共用)
 pub(crate) fn relativize(root: Option<&str>, text: &str) -> String {
     let Some(root) = root
         .map(|r| r.trim_end_matches('/'))
@@ -1333,7 +1333,7 @@ mod tests {
             }
             other => panic!("expected compaction marker, got {other:?}"),
         }
-        // kind=empty → 中性状态行,照显宿主 settlement 原文(照源英文)
+        // kind=empty → 中性状态行,原样显示宿主 settlement 英文原文
         st.compact_running = true;
         st.apply(&ev(
             "compaction/error",

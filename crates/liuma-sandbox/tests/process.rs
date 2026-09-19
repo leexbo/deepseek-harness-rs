@@ -303,7 +303,7 @@ async fn fail_closed_when_no_rung() {
 }
 
 /// stdin 载荷:Some(bytes) = piped,写完即关;子进程读到 EOF 后消费。
-/// hooks 桥依赖此原语喂序列化载荷(源 runHook stdin 语义)。
+/// hooks 桥依赖此原语喂序列化载荷。
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // 测试串行化意图明确
 async fn stdin_payload_reaches_child_and_closes() {

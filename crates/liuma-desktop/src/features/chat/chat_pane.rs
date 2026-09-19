@@ -1,4 +1,4 @@
-//! 消息滚动区(web `ChatView`):统一列宽居中(见 shell::metrics)。
+//! 消息滚动区:统一列宽居中(见 shell::metrics)。
 //! gpui 内建 [`gpui_kit::list`] 虚拟化:逐项测高缓存(变高 markdown/卡片
 //! 原生支持)、Bottom 对齐(聊天自底语义,logical 为 None 即钉底跟随)、
 //! overdraw 预渲染缓冲;节点数变化经 store 的 splice 增量通知。
@@ -777,11 +777,11 @@ fn context_block(
         .into_any_element()
 }
 
-/// 压缩状态行(照源 GenericCommandCard 行格式):终端形图标 + `compact`
-/// 标题 + 2px 圆点分隔 + 消息,全部中性色(源仅错误态标红——红色走
-/// notice())。running = 透明度呼吸 shimmer(照源扫光态);排队态静态。
+/// 压缩状态行:终端形图标 + `compact`
+/// 标题 + 2px 圆点分隔 + 消息,全部中性色(仅错误态标红——红色走
+/// notice())。running = 透明度呼吸 shimmer;排队态静态。
 /// 用于:进行中(compact-running)/ 排队(compact-queued)/ 空反馈
-/// (compact-row,kind=empty 照显宿主 settlement 原文)。
+/// (compact-row,kind=empty 原样显示宿主 settlement 原文)。
 fn compact_row(message: &str, running: bool, selector: &'static str) -> AnyElement {
     let row = div()
         .debug_selector(move || selector.to_string())
@@ -797,7 +797,7 @@ fn compact_row(message: &str, running: bool, selector: &'static str) -> AnyEleme
                 .text_color(theme::LABEL())
                 .child("compact"),
         )
-        // 2px 圆点分隔(照源 .separator:label-caption 色)
+        // 2px 圆点分隔(label-caption 色)
         .child(
             div()
                 .flex_shrink_0()
@@ -828,10 +828,10 @@ fn compact_row(message: &str, running: bool, selector: &'static str) -> AnyEleme
     }
 }
 
-/// 压缩标记行(compaction/summary;照源 CompactionItem quiet 行样式):
+/// 压缩标记行(compaction/summary;quiet 行样式):
 /// 折叠态 = 终端图标 + `compact` + 圆点分隔 + 统计消息(hover 才显
 /// chevron),点击展开渲染摘要全文(markdown);展开态 chevron 常显。
-/// 消息文案 zh 逐字照源 locale:有统计 = 已压缩 N 条历史记录(约
+/// 消息文案(zh locale):有统计 = 已压缩 N 条历史记录(约
 /// X tokens)(全角括号);有摘要无统计 = 点击查看压缩摘要;都无 =
 /// 压缩摘要不可用。
 fn compaction_block(
@@ -890,7 +890,7 @@ fn compaction_block(
                         .text_color(theme::CAPTION())
                         .child(message),
                 )
-                // 折叠态 hover 才显 chevron(照源 hover/focus 淡入);
+                // 折叠态 hover/focus 才淡入 chevron;
                 // 展开态常显向下
                 .child(
                     div()
@@ -1467,7 +1467,7 @@ fn user_bubble(
         .child(copy_button(store, cx, ("copy-user", ix), "copy", key, text))
 }
 
-/// 用户气泡富文本:`@file`/`@folder`/`@session` 渲染成胶囊(源 refChip),
+/// 用户气泡富文本:`@file`/`@folder`/`@session` 渲染成胶囊,
 /// 其余文本原样分段。GPUI 无真正 inline 混排,以 flex-wrap 近似:
 /// 文本片段与胶囊同为 flex item,断行由 wrap 承担。文本片段经
 /// [`gpui_kit::base::SelectableText`] 参与窗口选择(拖选/复制)。
@@ -1526,7 +1526,7 @@ fn bubble_rich_text(ix: usize, text: &str) -> impl IntoElement {
         .into_any_element()
 }
 
-/// 单个 @ 引用胶囊:图标 + 主题蓝 label(源 .refChip)
+/// 单个 @ 引用胶囊:图标 + 主题蓝 label
 fn bubble_ref_chip(tok: &super::reference::AtToken) -> impl IntoElement {
     use super::reference::AtKind;
     let (icon, label) = match tok.kind {
@@ -1553,7 +1553,7 @@ fn bubble_ref_chip(tok: &super::reference::AtToken) -> impl IntoElement {
         .child(label)
 }
 
-/// 胶囊显示 label = 路径 basename(源 displayLabel:切片后取末尾段)
+/// 胶囊显示 label = 路径 basename(切片后取末尾段)
 fn basename_of(path: &str) -> String {
     path.rsplit(['/', '\\'])
         .next()
@@ -1671,7 +1671,7 @@ fn assistant_block(
         // 定稿后可复制(流式中复制半截无意义);正文下方左对齐
         // 常显动作行(文档流内,非浮层)= 复制 + 消息反馈(赞/踩/备注)。
         // 若紧邻的下一渲染槽是本轮收尾行,动作由收尾行统一承载
-        // (照源 MessageIconActions 单行;否则赞/踩/复制重复两行)
+        // (收尾行单行承载;否则赞/踩/复制重复两行)
         if !streaming && !hide_actions {
             col = col.child(
                 div()
@@ -1730,7 +1730,7 @@ fn tool_block(
         None
     };
     let ws_root = ws_root_of(store.read(cx));
-    // skill 行摘要 = 参数名(源 SkillRow 折叠态「Skill <名>」:标题槽
+    // skill 行摘要 = 参数名(折叠态「Skill <名>」:标题槽
     // 固定「Skill」,名字落摘要槽)
     let summary_display = match name {
         "file_read" | "file_edit" => super::projection::relativize(ws_root.as_deref(), summary),
@@ -1899,7 +1899,7 @@ fn tool_expanded_body(
             _ if name == "todo_write" => {
                 todo_write_expanded(ix, arguments, output, state == ToolState::Error)
             }
-            // skill 展开体 = Instructions 卡(源 SkillRow:加载中/失败/
+            // skill 展开体 = Instructions 卡(加载中/失败/
             // 正文三态;Inspect 药丸由展开体外层恒挂)
             _ if name == "skill" => {
                 super::toolcard::render_skill(store, cx, ix, key, output, state == ToolState::Error)
@@ -1927,15 +1927,15 @@ fn tool_expanded_body(
     wrap.child(inspect).into_any_element()
 }
 
-/// 展开体底部的 Inspect 药丸(源 ToolRow.inspect → inspectCall(callId)):
-/// 点击切到轨迹 tab 并打开该 tool 调用的检查器。样式对齐 deliverable_chip。
+/// 展开体底部的 Inspect 药丸:点击切到轨迹 tab 并打开该 tool
+/// 调用的检查器。样式对齐 deliverable_chip。
 fn inspect_button(store: &Entity<AppStore>, ix: usize, key: &str) -> gpui_kit::AnyElement {
     let s = store.clone();
     let k = key.to_string();
     let sel = format!("inspect-{key}");
     div()
         .id(("inspect", ix))
-        // 左对齐,贴住卡体(容 gap(4));不右拉(源 .inspectButton 位于 bodyWrap
+        // 左对齐,贴住卡体(容 gap(4));不右拉(位于 bodyWrap
         // 内容流底部,非右对齐)
         .flex()
         .flex_shrink_0()
@@ -2189,7 +2189,7 @@ fn actions_in_tail(store: &Entity<AppStore>, cx: &App, ix: usize) -> bool {
             .is_some_and(|n| matches!(n, ChatNode::TurnTail { .. }))
 }
 
-/// 回合收尾行(照源 MessageIconActions + TurnTailNodeView:复制/赞/踩/
+/// 回合收尾行:复制/赞/踩/
 /// 分支 + 用量 pill + 用时 pill + 时钟,同一行;中断轮保留警示标。
 /// 详情卡根级渲染,点击坐标锚定)+ 产物行
 #[allow(clippy::too_many_arguments)]
@@ -2286,7 +2286,7 @@ fn turn_tail(
                     .child(fixed(LiumaIcon::GitBranch, 12.)),
             )
         })
-        // 中断轮警示标(照源无状态文案;中断语义必须可见,保留)
+        // 中断轮警示标(无独立状态行;中断语义必须可见,保留)
         .when(aborted, |el| {
             el.child(
                 div()
@@ -2384,7 +2384,7 @@ fn tail_pill(
         .into_any_element()
 }
 
-/// 本轮用量卡(用量 pill 详情,照源 TurnUsagePanel):头部总数 +
+/// 本轮用量卡(用量 pill 详情):头部总数 +
 /// 提供方 / 模型 + 缓存命中 + 输入侧桶 + 输出(含推理后缀)
 pub(crate) fn turn_usage_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
     let bucket = tail_card_bucket(store, cx);
@@ -2437,7 +2437,7 @@ pub(crate) fn turn_usage_card(store: &Entity<AppStore>, cx: &App) -> AnyElement 
     card.into_any_element()
 }
 
-/// 本轮用时和速度卡(用时 pill 详情,照源 TurnTimePanel):
+/// 本轮用时和速度卡(用时 pill 详情):
 /// 本轮总用时 / 输出速度（TPS）/ 首 token 用时（TTFT）
 pub(crate) fn turn_time_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
     let bucket = tail_card_bucket(store, cx);
@@ -2752,7 +2752,7 @@ fn pretty_json(s: &str) -> String {
         .unwrap_or_else(|_| s.to_string())
 }
 
-/// 插队待投递气泡(源 PendingSteeringBubble):用户气泡同款视觉,
+/// 插队待投递气泡:用户气泡同款视觉,
 /// pending 态 = 70% 透明 + 「插队 · 待投递」小标;右对齐
 fn pending_steering_bubble(
     entry: &crate::features::chat::QueueEntry,

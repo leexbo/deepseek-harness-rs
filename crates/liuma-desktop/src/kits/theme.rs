@@ -283,7 +283,7 @@ pub fn ONGOING() -> Rgba {
     cur().ongoing
 }
 
-/// 文件类型徽章底色(照源 FileTypeIcon 分类配色:word 蓝 / excel 绿 /
+/// 文件类型徽章底色(分类配色:word 蓝 / excel 绿 /
 /// ppt 橙 / pdf 红;其余灰阶系。双盘同值——徽章恒为白字彩色方块,
 /// 深浅盘上均成立;属图标语义色,非界面分层色)
 pub fn FILE_KIND_BADGE(kind: liuma_attachment::FileKind) -> Rgba {
@@ -300,8 +300,8 @@ pub fn FILE_KIND_BADGE(kind: liuma_attachment::FileKind) -> Rgba {
         K::Other => rgba(0x6E6E73FF),
     }
 }
-/// 文件类型家族染色(gpui SVG = alpha-mask 单色,源项目彩色渐变图标
-/// 不可照搬;家族中饱和色双盘同值可读,属图标语义色,非界面分层色。
+/// 文件类型家族染色(gpui SVG = alpha-mask 单色,彩色渐变图标
+/// 无法呈现;家族中饱和色双盘同值可读,属图标语义色,非界面分层色。
 /// office 三色与 [`FILE_KIND_BADGE`] 同源)
 pub fn FILE_TYPE_TINT(class: crate::kits::filetype::FileClass) -> Rgba {
     use crate::kits::filetype::FileClass as F;

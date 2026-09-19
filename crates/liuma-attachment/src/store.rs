@@ -2,10 +2,10 @@
 //!
 //! 内容寻址不可变对象:`<root>/objects/<sha256 前2hex>/<sha256>`,
 //! root = `~/.liuma/attachments/v1`。写入去重 = 目标已存在即跳过
-//! (同 id 必同字节);读取验证 digest。与源的差异:不做逐级 fsync
+//! (同 id 必同字节);读取验证 digest。不做逐级 fsync
 //! (桌面进程,O_EXCL/link 链简化为 tmp+rename,崩溃窗口只影响新附件)。
 //!
-//! 文件通道(源 file-store 语义):canonical 对象外另发
+//! 文件通道:canonical 对象外另发
 //! `files/<2hex>/<sha256>/<名>` 只读别名(硬链;模型面句柄文本指向
 //! 可读名路径),硬链失败回退 canonical 路径。
 
@@ -19,7 +19,7 @@ use crate::types::{
     ImageMediaType,
 };
 
-/// 一张待持久化图片(源 SaveImageAttachment)
+/// 一张待持久化图片
 #[derive(Debug, Clone)]
 pub struct SaveImage {
     /// 编码字节
@@ -30,7 +30,7 @@ pub struct SaveImage {
     pub name: Option<String>,
 }
 
-/// 一个待持久化文件(源 SaveFileAttachment 对应物;RS 本地单机直传
+/// 一个待持久化文件(RS 本地单机直传
 /// 源路径,流式拷贝+哈希,不整读字节进内存)
 #[derive(Debug, Clone)]
 pub struct SaveFile {
@@ -77,7 +77,7 @@ struct ImageMeta {
 }
 
 /// 全解码校验:格式 ∈ 白名单、类型与声明一致、维度/像素在限内
-/// (源 detectImage 语义:完整解码拒绝截断/损坏文件)。
+/// (完整解码拒绝截断/损坏文件)。
 fn detect_image(
     data: &[u8],
     declared: ImageMediaType,
@@ -153,7 +153,7 @@ impl AttachmentStore {
         Ok(self.root.join("objects").join(&hex[..2]).join(hex))
     }
 
-    /// 批量准入(源 saveImages 序:张数 → 总量 → 逐张白名单/大小/解码;
+    /// 批量准入(校验序:张数 → 总量 → 逐张白名单/大小/解码;
     /// 全批先验证后写入——任一失败零落盘)。
     /// `existing_count`/`existing_bytes` = 草稿已有量(超限检查的权威面)。
     pub fn save_images(
@@ -214,7 +214,7 @@ impl AttachmentStore {
         })
     }
 
-    /// 读取对象字节(digest 验证;源 readImageFile 语义)
+    /// 读取对象字节(digest 验证)
     pub fn read_image(&self, id: &str) -> Result<Vec<u8>, AttachmentStoreError> {
         let path = self.object_path(id)?;
         let data = std::fs::read(&path).map_err(|e| {
@@ -231,7 +231,7 @@ impl AttachmentStore {
         Ok(data)
     }
 
-    /// 文件持久化(源 saveFile 语义;无 MIME/大小限制):流式 sha256 →
+    /// 文件持久化(无 MIME/大小限制):流式 sha256 →
     /// canonical 对象(tmp+rename,去重跳过)→ `files/` 别名硬链
     /// (失败回退 canonical,句柄文本仍可读)。引用带净化后的显示名
     pub fn save_file(&self, input: &SaveFile) -> Result<FileAttachmentRef, AttachmentStoreError> {
@@ -280,7 +280,7 @@ impl AttachmentStore {
         })
     }
 
-    /// 文件引用的当前可读路径(源 fileHostPath 语义):别名优先、
+    /// 文件引用的当前可读路径:别名优先、
     /// canonical 兜底;两者皆缺席 = None(句柄文本走无路径分支)
     pub fn file_path(&self, id: &str, name: &str) -> Option<PathBuf> {
         let hex = id.strip_prefix("sha256:")?;

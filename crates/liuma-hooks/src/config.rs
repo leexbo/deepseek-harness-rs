@@ -1,5 +1,4 @@
-//! config:两方言 hooks.json 解析(源 hooks-claude-code/config.ts +
-//! hooks-codex/config.ts 逐字对齐)。
+//! config:两方言 hooks.json 解析。
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -7,7 +6,7 @@ use std::collections::BTreeMap;
 use crate::events::HookDialect;
 use crate::matcher::{MatcherMode, matcher_diagnostic};
 
-/// Claude Code 七事件点(源 CLAUDE_EVENTS)
+/// Claude Code 七事件点
 pub const CLAUDE_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -18,7 +17,7 @@ pub const CLAUDE_EVENTS: &[&str] = &[
     "SubagentStop",
 ];
 
-/// Codex 五事件点(源 CODEX_EVENTS)
+/// Codex 五事件点
 pub const CODEX_EVENTS: &[&str] = &[
     "PreToolUse",
     "PostToolUse",
@@ -28,19 +27,19 @@ pub const CODEX_EVENTS: &[&str] = &[
 ];
 
 /// 无 matcher 主语的事件(UserPromptSubmit / Stop 的 matcher 字段解析期
-/// 直接丢弃,坏 matcher 也不报错——照源)
+/// 直接丢弃,坏 matcher 也不报错)
 fn ignores_matchers(point: &str) -> bool {
     point == "UserPromptSubmit" || point == "Stop"
 }
 
-/// 一个 command 钩子(源 CommandHook;wire 单位 timeout 秒,运行时转 ms)
+/// 一个 command 钩子(wire 单位 timeout 秒,运行时转 ms)
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandHook {
     pub command: String,
     pub timeout_sec: Option<f64>,
 }
 
-/// 一个 matcher 组(源 MatcherGroup)
+/// 一个 matcher 组
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatcherGroup {
     pub matcher: Option<String>,
@@ -94,7 +93,7 @@ impl BridgeDialect {
     }
 }
 
-/// CC 解析期命令替换(源 substituteCommand):全出现处替换,变量未设
+/// CC 解析期命令替换:全出现处替换,变量未设
 /// token 原样保留
 pub fn substitute_command(
     command: &str,
@@ -115,7 +114,7 @@ fn as_object(v: &Value) -> Option<&serde_json::Map<String, Value>> {
     v.as_object()
 }
 
-/// 解析 hooks.json(源 parseClaudeCodeConfig / parseCodexConfig 共形):
+/// 解析 hooks.json(两方言共形):
 /// 接受 `{hooks:{…}}` 包装或裸事件映射;不支持事件整体忽略(其上的坏
 /// matcher 不拖垮支持钩子);非 command(CC)/ `async:true`(Codex)进
 /// skipped;CC 做替换、Codex 不做;含 matcher 的可运行组带无效 regex ⇒

@@ -66,8 +66,7 @@ pub fn actions(store: &Entity<AppStore>, message_id: &str, cx: &App) -> Vec<gpui
         )
         .into_any_element(),
     );
-    // 备注钮:仅在有评分时出现(源 MessageFeedbackActions.tsx:262 语义
-    // `rating !== undefined &&`)。无评分时动作行 = 复制+赞/踩,不常驻
+    // 备注钮:仅在有评分时出现。无评分时动作行 = 复制+赞/踩,不常驻
     // 「补充说明」文字;有了评分才让用户补一句说明。
     if rating.is_empty() {
         return els;
@@ -138,7 +137,7 @@ fn feedback_btn(
 }
 
 /// 备注弹窗(根级渲染;open → 锚定在「补充说明」钮下方的 popover,非居中模态。
-/// 定位循源 useAnchoredPosition:trigger 下缘 + gap(4px),面板靠右展开。
+/// 定位:trigger 下缘 + gap(4px),面板靠右展开。
 /// 透明全屏层捕获外点关闭(无视觉遮罩),卡片 occlude 防穿透)
 pub fn render_note_editor(store: &Entity<AppStore>, cx: &mut App) -> Option<impl IntoElement> {
     let (_message_id, text) = store.read(cx).feedback.feedback_note_editor.clone()?;

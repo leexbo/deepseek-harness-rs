@@ -1,5 +1,4 @@
-//! events:hook/invoked · hook/result 载荷构造(源 hook-protocol/events.ts
-//! 逐字对齐)。
+//! events:hook/invoked · hook/result 载荷构造。
 //!
 //! log-only、turn 封闭:事件对必须落在打开 turn 内(实现方判断;
 //! SessionStart 等三个 emit 点在 turn 外运行不落记录)。decision 派生:
@@ -9,7 +8,7 @@
 use crate::codec::HookOutput;
 use serde_json::{Value, json};
 
-/// 方言(源 HookDialect;hook/invoked.dialect 字段值)
+/// 方言(hook/invoked.dialect 字段值)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookDialect {
     ClaudeCode,
@@ -25,10 +24,10 @@ impl HookDialect {
     }
 }
 
-/// stderrSummary 默认上限(源 DEFAULT_STDERR_SUMMARY_MAX_CHARS)
+/// stderrSummary 默认上限
 pub const DEFAULT_STDERR_SUMMARY_MAX_CHARS: usize = 500;
 
-/// hook/invoked 载荷(源 HookInvocation;matcher 缺省时键整体省略)
+/// hook/invoked 载荷(matcher 缺省时键整体省略)
 #[derive(Debug, Clone)]
 pub struct HookInvocation {
     pub turn: u64,
@@ -52,7 +51,7 @@ pub fn hook_invoked_payload(inv: &HookInvocation) -> Value {
     v
 }
 
-/// stderr 截断(源 summarizeStderr):trim、空⇒None、超 maxChars 截断加 `…`
+/// stderr 截断:trim、空⇒None、超 maxChars 截断加 `…`
 pub fn summarize_stderr(stderr: &str, max_chars: usize) -> Option<String> {
     let t = stderr.trim();
     if t.is_empty() {
@@ -67,7 +66,7 @@ pub fn summarize_stderr(stderr: &str, max_chars: usize) -> Option<String> {
     }
 }
 
-/// hook/result 载荷(源 appendHookResult 派生规则;exitCode/stderrSummary
+/// hook/result 载荷(decision 派生规则;exitCode/stderrSummary
 /// 缺席时键省略——零噪音惯例)
 pub fn hook_result_payload(
     turn: u64,

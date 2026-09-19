@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use liuma_session::EventEnvelope;
 
-/// 固定文本密度(estimate.ts `CHARS_PER_TOKEN`)
+/// 固定文本密度(4 字符/令牌)
 const CHARS_PER_TOKEN: u64 = 4;
 /// 每块结构开销(`BLOCK_OVERHEAD`)
 const BLOCK_OVERHEAD: u64 = 4;

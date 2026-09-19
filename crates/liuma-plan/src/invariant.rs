@@ -1,5 +1,5 @@
-//! plan 族事件载荷形状校验(写入 chokepoint 调用;镜像源 plan-mode-invariant
-//! 插件——校验 plan/mode 载荷形状,坏形状在写入前拦截)。
+//! plan 族事件载荷形状校验(写入 chokepoint 调用——
+//! 校验 plan/mode 载荷形状,坏形状在写入前拦截)。
 
 use serde_json::Value;
 

@@ -163,7 +163,7 @@ pub(crate) fn narrow(view: &serde_json::Value) -> Option<CardView> {
 
 // ── 家族公共件 ────────────────────────────────────────────────
 
-/// 头尾切分算术(源 head-tail-cap:head = ceil(cap/2),tail = 余数)
+/// 头尾切分算术:head = ceil(cap/2),tail = 余数
 struct HeadTail {
     hidden: usize,
     capped: bool,
@@ -221,7 +221,7 @@ pub(crate) fn render_read(
         .take(if ht.capped { ht.head } else { usize::MAX })
         .map(|(i, (n, text))| read_line(*n, text, hl.as_ref().map(|h| h[i].as_slice())))
         .collect();
-    // 展开/收起行在 hidden>0 时**恒显示**(源 ReadBlock.hidden>0 无条件渲染;
+    // 展开/收起行在 hidden>0 时**恒显示**(无条件渲染;
     // 展开后文案切「收起」,不随展开消失)。展开(capped=false)时按钮独立于
     // 头尾切片之外(hidden 仍准确),capped 时插在头尾之间。
     if ht.hidden > 0 {
@@ -661,7 +661,7 @@ fn search_expand_row(
     key: &str,
     hidden: usize,
 ) -> gpui_kit::AnyElement {
-    // 收敛行在 hidden>0 时恒显示(源 SearchBlock.hidden>0 无条件渲染),不随
+    // 收敛行在 hidden>0 时恒显示(hidden>0 无条件渲染),不随
     // capped(展开)消失;capped 仅决定展开前头尾是否截断,不影响按钮存在。
     if hidden == 0 {
         return div().into_any_element();
@@ -895,7 +895,7 @@ fn content_lines(text: &str) -> Vec<&str> {
     body.split('\n').collect()
 }
 
-// ── 公共复制钮(源 copyButton:label-secondary,13px,文案切换)──
+// ── 公共复制钮(label-secondary,13px,文案切换)──
 
 fn copy_button(
     store: &Entity<AppStore>,
@@ -926,7 +926,7 @@ fn copy_button(
 /// 聊天位卡体头尾上限(CHAT_*_MAX_LINES = 原语默认 16 的一半)
 pub(crate) const CHAT_CARD_MAX_LINES: usize = 8;
 
-// ── skill 卡(源 SkillRow)────────────────────────────────────
+// ── skill 卡────────────────────────────────────
 
 /// 解析 skill 调用参数的 name(折叠行「Skill <名>」摘要用;JSON 字符串
 /// 与对象两形态都接受——wire 上 arguments 是编码字符串)
@@ -935,8 +935,8 @@ pub(crate) fn skill_arg_name(arguments: &str) -> Option<String> {
     args["name"].as_str().map(str::to_string)
 }
 
-/// skill 卡展开体(源 SkillRow:折叠态「Skill <名>」由聊天行头承担;
-/// 展开体 = Instructions 正文 + 复制)。源用 260px 限高滚动,GPUI list
+/// skill 卡展开体(折叠态「Skill <名>」由聊天行头承担;
+/// 展开体 = Instructions 正文 + 复制)。GPUI list
 /// 行内嵌滚动容器有测量/绘制脱节叠绘前科(D48),故用家族统一的头尾
 /// 截断 + 展开钮。加载中 = 「正在加载 skill」;失败 = 错误首行红字。
 pub(crate) fn render_skill(
@@ -1171,7 +1171,7 @@ mod tests {
         assert_eq!(ht.hidden, 0);
         assert!(!ht.capped);
         // 展开不切(capped=false),但 hidden 仍非零——收起按钮在展开后
-        // 仍应渲染(源 ReadBlock/SearchBlock/DiffBlock 按钮条件 = hidden>0)。
+        // 仍应渲染(收起按钮的渲染条件 = hidden>0)。
         let ht = head_tail(20, 8, true);
         assert!(!ht.capped);
         assert_eq!(ht.hidden, 12, "展开后 hidden 仍准确(收起按钮据此恒渲染)");

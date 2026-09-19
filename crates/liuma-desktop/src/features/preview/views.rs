@@ -244,7 +244,7 @@ fn preview_header(
     )
 }
 
-/// 变更/元数据失败提示条(照源:只提示不自动重载,占 header 下同一位)
+/// 变更/元数据失败提示条(只提示不自动重载,占 header 下同一位)
 fn preview_changed_bar(
     store: &Entity<AppStore>,
     rel: &std::path::Path,
@@ -706,7 +706,7 @@ fn preview_lines_body(
             }
             row.into_any_element()
         } else {
-            // 纯文本行:可拖选(域基址 + 行序;无行号,照源)
+            // 纯文本行:可拖选(域基址 + 行序;无行号)
             let sel = SelectableText::new(("preview-text-line", ix), line)
                 .document_order(PREVIEW_ORDER_BASE + ix as u64);
             div()
