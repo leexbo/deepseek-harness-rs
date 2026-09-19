@@ -307,16 +307,26 @@ pub(crate) fn treesitter_spans(lang: &str, text: &str) -> Option<Vec<Vec<Span>>>
     }
     line_starts.push(text.len());
     let mut out: Vec<Vec<Span>> = vec![Vec::new(); line_starts.len() - 1];
+    // 字节边界安全化:上游 styles 的 range 端点理应已 clip 到字符边界,
+    // 但切行后 seg_end = range.end.min(line_end) 与末哨兵运算仍可能在
+    // 多字节字符(中文 3 字节)中间落点——切片崩 char boundary(真机
+    // 崩溃:大文件含中文时点产物卡死)。floor/ceil 一律收敛到边界。
+    let floor_boundary = |mut i: usize| {
+        while i > 0 && !text.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    };
     for (range, style) in styles {
         let Some(color) = style.color else {
             continue;
         };
         let color = Rgba::from(color);
         let mut line = line_starts.partition_point(|&s| s <= range.start) - 1;
-        let mut offset = range.start;
+        let mut offset = floor_boundary(range.start);
         while line < out.len() && offset < range.end {
             let line_end = line_starts[line + 1].saturating_sub(1).max(offset);
-            let seg_end = range.end.min(line_end);
+            let seg_end = floor_boundary(range.end.min(line_end));
             if offset < seg_end {
                 let seg = &text[offset..seg_end];
                 if !seg.is_empty() {
@@ -330,6 +340,7 @@ pub(crate) fn treesitter_spans(lang: &str, text: &str) -> Option<Vec<Vec<Span>>>
             }
             if offset < range.end {
                 offset = line_starts[line + 1].max(offset + 1);
+                offset = floor_boundary(offset);
                 line += 1;
             }
         }
@@ -478,6 +489,40 @@ mod tests {
         }
         // 未注册语言 → None(纯色语义)
         assert!(treesitter_spans("no-such-lang", "x").is_none());
+    }
+
+    /// 多字节字符边界锁:中文行 + tree-sitter 高亮,行切分/段切分的
+    /// 字节落点必须收敛到 char boundary——回归锚:真机点产物(大文件
+    /// 含中文)时 treesitter_spans 在非边界切片 panic 整窗崩溃
+    /// 「end byte index ... is not a char boundary; it is inside '时'」。
+    /// 不变式:spans 为**稀疏**着色段(预览端 StyledText 以行全文为底,
+    /// 间隙走行前景),故断言 = 每段文本必为对应源行的子串且段间有序
+    /// 不重叠(跨界切片必然产生源行中不存在的碎字符,在此暴露)。
+    #[test]
+    fn treesitter_spans_never_split_multibyte_chars() {
+        // 多行中文注释 + 中文串 + ASCII 混排(行界落在多字节字符邻域)
+        let text = "// 时区处理说明\nfn f() {\n    let s = \"北京时间\";\n    // 上核对时区\n}\n";
+        let spans = treesitter_spans("rs", text).expect("rust 应可用");
+        assert_eq!(spans.len(), text.lines().count() + 1, "行数对齐");
+        for (ix, line) in text.split_inclusive('\n').enumerate() {
+            let expect = line.strip_suffix('\n').unwrap_or(line);
+            let mut last_end = 0usize;
+            for s in &spans[ix] {
+                assert!(
+                    expect.contains(s.text.as_str()),
+                    "行 {ix} 段 {:?} 应为源行 {expect:?} 的子串(跨界切片会产生碎字符)",
+                    s.text
+                );
+                assert!(
+                    s.offset >= last_end,
+                    "行 {ix} 段 {:?} 应有序不重叠(offset {} < 前段末 {})",
+                    s.text,
+                    s.offset,
+                    last_end
+                );
+                last_end = s.offset + s.text.len();
+            }
+        }
     }
 
     /// TOML 高亮着色锁:字符串行吃 STRING 色、注释行吃 COMMENT 色
