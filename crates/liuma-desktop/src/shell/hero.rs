@@ -58,7 +58,7 @@ pub fn render(
                 .relative()
                 .w(col_w)
                 .gap(px(12.))
-                // 品牌鲸鱼 logo + 标语(logo.svg)
+                // 品牌流马 logo + 标语(logo.svg)
                 .child(
                     div()
                         .v_flex()
@@ -75,7 +75,7 @@ pub fn render(
                                 .text_size(px(15.))
                                 .font_weight(gpui_kit::FontWeight::MEDIUM)
                                 .text_color(theme::LABEL())
-                                .child("探索未至之境"),
+                                .child("木牛流马,替你驮活"),
                         ),
                 )
                 // 首运行引导:凭据未配置时给出去设置的入口

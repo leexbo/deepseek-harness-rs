@@ -2308,9 +2308,7 @@ fn about_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .gap(px(12.))
         .child(section_title("关于"))
         .child(info_line("版本", info.version.clone()))
-        .child(intro_line(
-            "liuma-desktop —— deepseek-harness 的 Rust 桌面重写。",
-        ))
+        .child(intro_line("流马 liuma —— Rust 桌面 agent harness。"))
 }
 
 /// 通用区(行序与形态按 settings.general.item):

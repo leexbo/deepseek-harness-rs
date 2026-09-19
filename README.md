@@ -1,32 +1,19 @@
-# 流马 liuma
+<div align="center">
+  <img src="crates/liuma-desktop/assets/logo.svg" alt="流马 liuma" width="200"/>
+  <h1>流马 liuma</h1>
+</div>
 
-Rust + WASM Component Agent Harness——以事件日志为唯一事实源,驱动 LLM 多轮对话与工具执行;工具以 WASM 组件形态接入,在 fail-closed 沙箱中运行;附 GPUI 原生桌面客户端与 JSON-RPC stdio 网关。取名自木牛流马:不食不眠、自行运转的运输 agent。
+流马 liuma 是一个本地运行的 AI 编程智能体:接入多家大模型,驱动多轮对话与工具执行;工具在受控沙箱中安全运行,全过程完整记录、可回放;附桌面客户端。取名自木牛流马:不食不眠、自行运转的运输 agent。
 
-## 与 DeepSeek Harness 的关系
-
-本项目起步时以 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(DeepSeek AI 的开源 agent harness,TypeScript,npm 包 `@deepseek-ai/dsh`)为初始蓝本,参照其开发快照设计早期的 system prompt、工具语义与交互形态;此后分为独立的多厂商 harness 并更名 liuma。内核原生自研:Rust 事件溯源核心、wasmtime WASM 组件工具、GPUI 桌面客户端,运行时不依赖 Node.js。
-
-## 兼容性说明
-
-- 兼容不是目标:不追求与 DeepSeek Harness 功能对齐,后续也不同步其演进。
-- 本项目自身处于早期开发阶段(0.1.0):会话日志格式、JSON-RPC 协议、配置与 preset 格式均可能随时变更,开发期不提供迁移与向后兼容。
-- 沙箱与 PTY 当前支持 macOS(Seatbelt)与 Linux(Landlock / bubblewrap);Windows 未支持。
+项目起步阶段参照 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的开发快照设计部分语义。
 
 ## 特性
 
 - **事件溯源**:会话全部状态是追加式 JSONL 事件日志;模型历史、审计、遥测均为投影,同一日志任意时刻重放结果一致,崩溃后从日志恢复。
 - **结构性不变式**:「模型可见 ⟺ 已记录」由不变式闸门在唯一出网点强制,不依赖调用方自律;沙箱不可用即拒绝执行。
-- **多方言 LLM 接入**:deepseek-responses(默认)/ openai-responses / anthropic / deepseek-chat / openai-chat——三个通用方言引擎(chat / responses / anthropic)加 Ext 差异点,SSE 流式、取消、重试;provider 目录(内置卡 + 自定义 provider)、计费端点与用量规范五键归一。
-- **WASM 组件工具**:接口以 WIT 契约定义(`wit/`,WASI 0.3 形状),wasmtime 运行;组件权限由能力束显式界定,时钟与随机源显式注入保证重放确定性。
-- **沙箱执行**:macOS Seatbelt / Linux Landlock / bubblewrap 沙箱链(fail-closed),受控 spawn 与 PTY(独立进程组,SIGTERM→宽限→SIGKILL);权限三态 + 审批门(ask / never)与 bash 一次性沙箱升级。
-- **内置工具面**:bash / file_read / file_edit / file_search(ripgrep 引擎)/ todo / plan / goal / 子代理(嵌套引擎、独立子日志、能力束窄化)/ 后台任务(输出落盘,状态可查可停)。
-- **多模态附件**:图片与文件附件,粘贴 / 拖拽 / `@` 引用统一准入链;MCP 图片自动转附件。
-- **上下文压缩**:手动 `/compact` 与压力阈值自动折叠(0.8×窗口触发、保留尾 0.16×窗口、tool 配对平衡切点),结构化 checkpoint 摘要照源 compaction 语义,桌面「已压缩」标记行可展开;窗口按模型解析(`liuma.toml context_window` > 设置页逐模型设定 > 默认 1M),provider 报上下文超长时强制压缩一次并重试(照源 maxOverflowRetries=1)。
-- **MCP 工具桥**:rmcp 官方 SDK,stdio + streamable-http 双传输,工具以 `mcp__<server>__<tool>` 桥入,断线自动重连。
-- **Skill 子系统**:加载 `.agents/skills` 的 SKILL.md,渐进披露目录 + `skill` 工具 + `/name` 用户手势。
-- **Hooks 桥**:运行 Claude Code / Codex 形态的 hooks.json,UserPromptSubmit / PreToolUse / PostToolUse / Stop 四拦截点。
-- **两种入口**:`liuma` CLI(单轮 / REPL / `serve` JSON-RPC stdio 网关)与 `liuma-desktop`(GPUI 桌面客户端:聊天、队列与插队、计划审批、问答与审批卡、轨迹检查器、全文检索、会话导出、Mermaid 渲染、暗色主题与 Liquid Glass 毛玻璃;进程内直连核心)。
-- **能力 preset**:YAML manifest 声明工具与权限面(内置 standard / minimal,工作区可扩展)。
+- **WASM 组件工具**:接口以 WIT 契约定义(`wit/`),wasmtime 运行;组件权限由能力束显式界定,时钟与随机源显式注入保证重放确定性。
+- **沙箱执行**:macOS Seatbelt / Linux Landlock / bubblewrap 沙箱链(fail-closed);权限三态 + 审批门(ask / never)。
+- **原生桌面客户端**:GPUI 桌面端(聊天 / 计划审批 / 问答卡 / 轨迹检查器 / 全文检索 / 会话导出),另有 `liuma` CLI(REPL / JSON-RPC stdio 网关)。
 
 ## 快速开始
 

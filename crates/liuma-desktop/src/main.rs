@@ -77,7 +77,7 @@ fn main() {
         // 自有图标(_liuma)优先,回落 gpui-component 内置(见 icons.rs)
         .with_assets(crate::kits::icons::MergedAssets)
         .run(move |cx| {
-            // Dock 图标(favicon 同款鲸鱼,深色圆角方底同主题
+            // Dock 图标(favicon 同款流马,深色圆角方底同主题
             // BASE;NSImage 的 app-icon 位不支持 SVG,运行时绘制,见
             // app_icon.rs)。必须在此设置:gpui 在 Application 构造
             // 时已把 NSApplication 单例创建为 GPUIApplication 子类

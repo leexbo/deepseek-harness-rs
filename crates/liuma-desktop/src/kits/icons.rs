@@ -41,7 +41,7 @@ pub enum LiumaIcon {
     ListChecks,
     /// 会话行
     MessageSquare,
-    /// hero 品牌鲸鱼(assets/logo.svg,设计定稿)
+    /// hero 品牌流马(assets/logo.svg,设计定稿)
     Logo,
     /// Session log 导出
     Download,
