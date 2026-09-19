@@ -159,6 +159,31 @@ pub(crate) fn clipboard_image_bytes(item: &gpui_kit::ClipboardItem) -> Vec<Vec<u
         .collect()
 }
 
+/// 剪贴板文本恰为现存图片文件路径时取出该路径(截图粘贴修复;纯函数供测试)。
+///
+/// 根因:截图工具(微信/QQ 等)拷图时在剪贴板同时放一条纯文本条目 =
+/// 图片临时文件路径,而 gpui macOS 读剪贴板 string-first
+/// (`public.utf8-plain-text` 命中即返回,图条目被路径字符串遮蔽)→
+/// `clipboard_image_bytes` 取空 → 文本照常粘进输入框。
+/// 判据(保守边界,不把普通路径文本吞成附件):单行(trim 后不含换行)、
+/// 绝对路径、文件存在、文件头嗅探可识别为图片(与 `intake_dropped_paths`
+/// 同款 `image::guess_format`,32 字节魔数足够判定)。
+pub(crate) fn image_path_from_clipboard_text(text: &str) -> Option<std::path::PathBuf> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') {
+        return None;
+    }
+    let path = std::path::PathBuf::from(trimmed);
+    if !path.is_absolute() || !path.is_file() {
+        return None;
+    }
+    let mut head = [0u8; 32];
+    let n = std::fs::File::open(&path)
+        .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+        .ok()?;
+    image::guess_format(&head[..n]).is_ok().then_some(path)
+}
+
 /// 命令行(输入卡内、输入框上缘):`/name` 品牌色 + 参数 hint 灰字 +
 /// × 移除钮。命令与输入文字的区分载体——命令是结构化前缀不是正文,
 /// 发送时与输入框文本拼接(/name args)走既有文本路径

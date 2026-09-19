@@ -307,13 +307,27 @@ impl AppStore {
                             return;
                         };
                         let images = crate::features::chat::composer::clipboard_image_bytes(&item);
-                        if images.is_empty() {
+                        if !images.is_empty() {
+                            cx.stop_propagation();
+                            store.update(cx, |st, _| {
+                                st.intake_images(&images);
+                            });
                             return;
                         }
-                        cx.stop_propagation();
-                        store.update(cx, |st, _| {
-                            st.intake_images(&images);
-                        });
+                        // 截图工具拷图 = 图条目 + 路径文本条目并存,gpui
+                        // mac 读剪贴板 string-first,图条目被路径字符串
+                        // 遮蔽(见 image_path_from_clipboard_text 注释)。
+                        // 文本恰为现存图片路径 → 按图片 intake 并阻断文本
+                        // 粘贴;其余(含非图片现存路径)放行,不吞普通文本。
+                        let path_text = item.text();
+                        if let Some(path) = path_text.as_deref().and_then(
+                            crate::features::chat::composer::image_path_from_clipboard_text,
+                        ) {
+                            cx.stop_propagation();
+                            store.update(cx, |st, _| {
+                                st.intake_dropped_paths(&[path]);
+                            });
+                        }
                     }
                     "c" => {
                         let text = gpui_kit::base::TextSelection::selected_text(window, cx);

@@ -1714,6 +1714,97 @@ fn paste_clipboard_image_lands_in_draft(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 截图粘贴修复:剪贴板文本恰为现存图片文件路径 → cmd-v 按图片入轨并
+/// 阻断文本粘贴。回归锚:截图工具(微信等)拷图 = 图条目 + 路径文本
+/// 条目并存,gpui mac 读剪贴板 string-first,图条目被路径字符串遮蔽,
+/// 路径文本被照常粘进输入框。
+#[gpui_kit::test]
+fn paste_image_file_path_attaches_image(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "paste-img-path");
+    // 临时目录写真 PNG,剪贴板放它的路径文本(复刻微信截图行为)
+    let dir = root.join("shot");
+    std::fs::create_dir_all(&dir).expect("mkdir shot");
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        2,
+        2,
+        image::Rgba([7, 8, 9, 255]),
+    ))
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .expect("编码 PNG 失败");
+    let img_path = dir.join("InputTemp-abc.png");
+    std::fs::write(&img_path, &png).expect("write png");
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+        img_path.display().to_string(),
+    ));
+
+    // 聚焦输入框后按 cmd-v
+    click_sel(&mut wcx, "composer-hit");
+    cx.run_until_parked();
+    wcx.simulate_keystrokes("cmd-v");
+    cx.run_until_parked();
+
+    let (images, files, text) = cx.update(|app| {
+        use gpui_kit::component::input::TextareaState;
+        let st = store.read(app);
+        let text = st
+            .chat
+            .composer_input
+            .as_ref()
+            .map(|e| TextareaState::value(e.read(app)).to_string());
+        (
+            st.attachments
+                .drafts
+                .iter()
+                .filter(|d| matches!(d, DraftAttachment::Image(_)))
+                .count(),
+            st.attachments.drafts.len(),
+            text,
+        )
+    });
+    assert_eq!(images, 1, "路径文本 cmd-v 应按图片入轨,实际 {images} 张");
+    assert_eq!(files, 1, "不得同时入文件轨(嗅探为图走图片管线)");
+    assert!(
+        text.as_deref().is_none_or(|t| t.trim().is_empty()),
+        "路径文本不得粘进输入框,实际 {text:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 保守边界:不存在的 .png 路径文本不是图片 → 不入轨,文本照常粘贴
+/// (不把普通路径文本吞成附件)。
+#[gpui_kit::test]
+fn paste_missing_image_path_stays_text(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "paste-missing-path");
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(format!(
+        "{}{}",
+        root.display(),
+        "/ghost/不存在-2e3856.png"
+    )));
+
+    click_sel(&mut wcx, "composer-hit");
+    cx.run_until_parked();
+    wcx.simulate_keystrokes("cmd-v");
+    cx.run_until_parked();
+
+    let (drafts, text) = cx.update(|app| {
+        use gpui_kit::component::input::TextareaState;
+        let st = store.read(app);
+        let text = st
+            .chat
+            .composer_input
+            .as_ref()
+            .map(|e| TextareaState::value(e.read(app)).to_string());
+        (st.attachments.drafts.len(), text)
+    });
+    assert_eq!(drafts, 0, "不存在的路径不得入轨");
+    assert!(
+        text.is_some_and(|t: String| t.contains("不存在-2e3856")),
+        "非图片路径文本应照常粘贴进输入框"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 附件分流与文件卡:intake 按文件头嗅探——图片入字节管线(草稿图),
 /// 文档直传源路径入草稿文件(此前非图片整批拒收);草稿文件卡渲染
 /// (240×64 徽章+名称+meta),历史消息 file 块渲染同族文件卡
