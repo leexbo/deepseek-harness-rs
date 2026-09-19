@@ -457,6 +457,9 @@ impl Render for WorkspaceView {
                             // 到窗底;挂在 chat_pane 内只到聊天框上边,
                             // 不可取)
                             .relative()
+                            // 聊天内容区最小宽(composer 默认宽度形态的
+                            // 下限;窄窗不再压缩对话列,超出裁剪)
+                            .min_w(px(crate::shell::metrics::CHAT_AREA_MIN))
                             // 测试钩子:布局回归断言双栏分离(release 空操作)
                             .debug_selector(|| "content-card".to_string())
                             .when(hero, |el| {

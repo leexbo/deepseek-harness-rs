@@ -7117,6 +7117,42 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// composer 与消息列对齐(同列宽同中心线;窄窗最小宽下亦然):
+/// 卡片左右缘与消息行左右缘逐像素一致(回归锁:composer 满宽错位)
+#[gpui_kit::test]
+fn composer_aligns_with_message_column(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "composer-align");
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = crate::features::chat::ChatState::default();
+            chat.nodes.push(ChatNode::Assistant {
+                key: "a:1:1".into(),
+                text: "正文".into(),
+                reasoning: String::new(),
+                streaming: false,
+                usage: None,
+                message_id: "m-1".into(),
+            });
+            st.state.chats.insert(id, chat);
+            st.chat.chat_version += 1;
+            cx.notify();
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let node = wcx.debug_bounds("node-0").expect("消息行在场");
+    let card = wcx.debug_bounds("composer-card").expect("composer 卡在场");
+    let left_gap = (node.origin.x - card.origin.x).abs();
+    let right_gap = (node.origin.x + node.size.width - (card.origin.x + card.size.width)).abs();
+    assert!(
+        left_gap <= gpui_kit::px(2.) && right_gap <= gpui_kit::px(2.),
+        "composer 与消息列错位:左 {left_gap:?} 右 {right_gap:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 消息导航轨 = 滚动条一体化:锚点**只有用户消息(轮次开始)**,按文档
 /// 坐标比例落位(canvas 捕获/邻点插值);轨上一条通高轨道线 + 可拖视口
 /// 拇指 + 当前位白点;hover 摘要卡;点圆点跳轮次顶对齐;拖拇指滚动、

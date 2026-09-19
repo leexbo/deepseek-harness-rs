@@ -31,6 +31,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
     let has_at = st.chat.at_completion.is_some();
     div()
         .w_full()
+        .debug_selector(|| "composer-card".to_string())
         .v_flex()
         .relative()
         .rounded(px(22.))
