@@ -1198,6 +1198,7 @@ fn render_node(
             *streaming,
             message_id,
             actions_in_tail(store, cx, ix),
+            col_w,
         )
         .into_any_element(),
         ChatNode::Tool {
@@ -1575,13 +1576,24 @@ fn assistant_block(
     streaming: bool,
     message_id: &str,
     hide_actions: bool,
+    col_w: gpui_kit::Pixels,
 ) -> impl IntoElement {
     let open = open_reasoning.contains(key);
     let s = store.clone();
     let key = key.to_string();
     let click_key = key.clone();
     // gap 10:Think 折叠行与正文之间留呼吸感(6 过贴,过程与结论糊在一起)
-    let mut col = div().v_flex().flex_shrink_0().relative().gap(px(10.));
+    // 显式限宽 = col_w:链上(style 适配层→asst-body→styled_view→TextView)
+    // 此前无绝对宽,taffy 文本测量回落 MaxContent/混合——真机平台 shape
+    // 报宽大于 wrapper(col_w)时 asst-body 伸出(flex_shrink_0 不缩),
+    // styled_view 的 overflow_hidden 把每行末尾整段剪进卡内空白带
+    // (真机反馈「内容右边缘被截断」,红圈宽约 90px)。
+    let mut col = div()
+        .v_flex()
+        .flex_shrink_0()
+        .relative()
+        .max_w(col_w)
+        .gap(px(10.));
     if !reasoning.is_empty() {
         col = col.child(
             div()

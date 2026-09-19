@@ -24,6 +24,7 @@ use gpui_kit::{
 /// 代码块经 [`TextViewStyle`] 调
 fn styled_view(view: TextView) -> gpui_kit::AnyElement {
     div()
+        .w_full()
         .text_size(px(14.))
         .line_height(relative(1.75))
         // 行尾不可断段(行内代码 chip)的少量溢出由裁剪兜底。
@@ -31,13 +32,10 @@ fn styled_view(view: TextView) -> gpui_kit::AnyElement {
         // (悬浮滚动条在槽内,不在列上),内层再扣一份 = 正文比
         // composer 窄一截、右缘不齐
         //
-        // pr 12:真机(平台字体 shape)折行宽对容器宽存在个位~十几像素
-        // 的测量差,行末字符被 overflow_hidden 裁半(真机反馈「内容右
-        // 缘被截断」,侧栏全关、空间充足仍复现;测试 TestTextSystem 无
-        // 此差)。右内边距把折行宽压回可视宽内,症状消除;余量不改变
-        // 文本右缘与 composer 对齐的观感。
+        // w_full:宽度锚(assistant_block 已 max_w(col_w))必须在此层
+        // 维持——断链则 taffy 文本测量回落混合模式,真机平台 shape 报宽
+        // 大于 wrapper 时行末整段被 overflow_hidden 剪进卡内空白带。
         .overflow_hidden()
-        .pr(px(12.))
         .child(view)
         .into_any_element()
 }

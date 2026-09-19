@@ -8459,6 +8459,14 @@ fn tv_wrap_width_matches_container(cx: &mut TestAppContext) {
         f32::from(b.size.width),
         f32::from(b.origin.x) + f32::from(b.size.width)
     );
+    // 宽度锚定锁:助手正文卡不得超出对话列宽(MIN_COL=748)——链上无
+    // 绝对宽时真机平台 shape 报宽大于 wrapper,正文伸出被裁出卡内空白
+    // 带(真机反馈「内容右边缘被截断」)。旧形态 w 可超 748(无锚)。
+    assert!(
+        b.size.width <= gpui_kit::px(crate::shell::metrics::MIN_COL + 0.5),
+        "助手正文卡应被限宽在对话列内,实际 w={}",
+        f32::from(b.size.width)
+    );
 }
 
 /// 验收矩阵 ④(跨域拖选泄漏)取证:聊天正文与右栏面板同为 gpui-kit
