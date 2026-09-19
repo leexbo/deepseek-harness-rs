@@ -5938,6 +5938,15 @@ fn context_meter_renders_and_opens(cx: &mut TestAppContext) {
         card.origin.x + card.size.width,
         ring.origin.x + ring.size.width
     );
+    // 垂直锚:卡底缘贴圆环顶上方(缝隙 4px 设计;旧值把卡锚到输入卡
+    // 顶,与圆环之间隔着整条 bottom_row)。双向断言防「飘高」:卡底与
+    // 圆环顶的缝隙应在容差带内
+    let gap = ring.origin.y - (card.origin.y + card.size.height);
+    assert!(
+        gap >= px(-2.) && gap <= px(12.),
+        "卡底应贴圆环顶上方(缝隙 4px 设计):实际缝隙 {:.1}px",
+        f32::from(gap)
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 

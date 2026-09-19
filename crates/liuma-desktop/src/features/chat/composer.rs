@@ -391,14 +391,14 @@ fn bottom_row(
         .child(menu_slot(
             model_trigger,
             (menu == ComposerMenu::Model).then(|| model_card(store, cx)),
-            anchor_bottom,
+            TRIGGER_ANCHOR_BOTTOM,
             AlignRight(true),
         ))
         .children(occupancy.map(|o| {
             menu_slot(
                 context_button(store, o),
                 (menu == ComposerMenu::Context).then(|| context_card(store, cx)),
-                anchor_bottom,
+                TRIGGER_ANCHOR_BOTTOM,
                 AlignRight(true),
             )
         }))
@@ -415,6 +415,12 @@ fn bottom_row(
 /// 锚卡水平对齐(true = 右缘贴锚右、向左展开;false = 左缘贴锚左)
 #[derive(Clone, Copy)]
 pub(crate) struct AlignRight(pub(crate) bool);
+
+/// 右段锚卡(模型/上下文)的垂直锚:卡底贴 trigger(bottom_row,声明
+/// 高 42px)顶上方 4px——旧值 `composer_h - 7` 把卡锚到输入卡顶,与
+/// 小尺寸 trigger 之间隔着整条 bottom_row,视觉上不在按钮上方(真机
+/// 反馈「弹出位置应该在圆环上方」)。
+const TRIGGER_ANCHOR_BOTTOM: f32 = 36.;
 
 fn menu_slot(
     trigger: gpui_kit::Stateful<gpui_kit::Div>,
