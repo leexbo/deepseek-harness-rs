@@ -1,11 +1,10 @@
-//! 对话列宽策略(全应用统一):clamp(内容区×50%, 748, [内容区−双槽−32, 780])。
+//! 对话列宽策略(全应用统一):恒定默认宽度 MIN_COL=748,窄窗让位
+//! (扣左锚点槽/右滚动条槽,不足吃满可用宽)。
 //!
 //! 消息列 / composer / plan_review / todo_dock / hero 共用同一宽度、
-//! 同一中心线——取代此前「消息列 748 / 输入卡 780」的硬编码错位;
-//! 中小窗口保底 748 不收窄;大屏封顶 780(大宽度下输入框太长,
-//! 回到输入卡宽度语义,50% 只在 748..780 过渡带
-//! 内起作用);窄窗列收缩时先扣左锚点槽/右滚动条槽,边缘控件不叠文字。
-//! 侧栏宽常量也收口于此(展开 280 / 收起完全隐藏 = 0)。
+//! 同一中心线,不随窗口宽度伸缩(用户拍板:composer 恒定默认宽度,
+//! 不压缩——此前的 50%/780 过渡带已废)。侧栏宽常量也收口于此
+//! (展开 280 / 让位隐藏 = 0,见 sync_sidebar_yield)。
 
 use gpui_kit::{Pixels, Window, px};
 
@@ -33,13 +32,8 @@ pub const NAV_GUTTER_W: f32 = 56.;
 /// 16(THUMB_INSET 4),留 24 呼吸。滚动条挂 content-card 右缘不动,
 /// 让位靠列宽扣减。
 pub const SCROLLBAR_GUTTER_W: f32 = 24.;
-/// 列宽下限:保持原 748px,中小窗口不收窄
+/// 列宽(恒定默认宽度,不随窗口伸缩)
 pub const MIN_COL: f32 = 748.;
-/// 列宽上限(大宽度下输入框太长):大屏封顶,
-/// 回到输入卡 780px 语义;50% 比例只在 748..780 过渡带内起作用
-pub const MAX_COL: f32 = 780.;
-/// 大屏放宽比例:内容区的 50%
-pub const COL_RATIO: f32 = 0.5;
 /// 用户气泡占列宽比例(原 525/748 ≈ 70%,随列等比)
 pub const BUBBLE_RATIO: f32 = 0.7;
 /// 侧栏让位阈值:窗口减侧栏(展开态)不足此宽 = 对话列将跌破
@@ -91,17 +85,12 @@ pub fn sidebar_width_for(collapsed: bool, width: f32) -> Pixels {
     px(if collapsed { 0. } else { clamp_sidebar(width) })
 }
 
-/// 对话列宽:clamp(内容区×50%, 748, [内容区−双槽−32, 780])。
-/// content_w = 窗口宽 − 侧栏宽。avail 扣左锚点槽/右滚动条槽——窄窗下
-/// 列吃满可用宽时,刻度与滚动条 thumb 会叠上文字(锚点与滚动条
-/// 侵入内容区域);大屏封顶 MAX_COL=780(大宽度下输入框太长)。
+/// 对话列宽:恒定默认宽度 MIN_COL;窄窗可用宽(扣左右边槽 56+24)
+/// 不足时吃满可用宽(锚点与滚动条 thumb 不叠文字)。
+/// content_w = 窗口宽 − 侧栏宽。
 pub fn chat_col_w(content_w: Pixels) -> Pixels {
     let avail = content_w - px(2. * H_PAD + NAV_GUTTER_W + SCROLLBAR_GUTTER_W);
-    (content_w * COL_RATIO)
-        .max(px(MIN_COL))
-        .min(avail)
-        .min(px(MAX_COL))
-        .max(px(0.))
+    px(MIN_COL).min(avail).max(px(0.))
 }
 
 /// 由窗口直接推对话列宽(内容区 = viewport − 侧栏 − 右面板;侧栏宽取
@@ -138,17 +127,15 @@ mod tests {
 
     #[test]
     fn col_width_policy() {
-        // 中小窗口:50% 低于保底 → 748,且不超内容区−双槽−32
+        // 恒定默认宽度:中小窗 748,大屏也 748(不随窗口伸缩)
         assert_eq!(chat_col_w(px(1160.)), px(748.)); // 1440 默认窗 − 280
+        assert_eq!(chat_col_w(px(2280.)), px(748.)); // 2560 窗 − 280
+        assert_eq!(chat_col_w(px(1560.)), px(748.));
         // 窄窗:可用宽(扣左右边槽 56+24)本身不足 748 → 填满可用宽
         assert_eq!(
             chat_col_w(px(744.)),
             px(744. - 32. - NAV_GUTTER_W - SCROLLBAR_GUTTER_W)
         );
-        // 过渡带:内容区 1560 → 50% = 780,恰好触顶
-        assert_eq!(chat_col_w(px(1560.)), px(MAX_COL));
-        // 大屏:封顶 780(大宽度下输入框太长)
-        assert_eq!(chat_col_w(px(2280.)), px(MAX_COL)); // 2560 窗 − 280
     }
 
     #[test]
