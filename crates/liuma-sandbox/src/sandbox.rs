@@ -648,8 +648,9 @@ mod tests {
             .expect("spawn touch");
         assert!(!out.status.success(), "workspace 外写必须被拒");
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        // macOS/Linux 的 strerror 文案首字母大写,方言匹配不区分大小写
         assert!(
-            stderr.contains("operation not permitted"),
+            stderr.to_lowercase().contains("operation not permitted"),
             "拒绝方言应为 seatbelt「operation not permitted」,实际: {stderr}"
         );
     }
