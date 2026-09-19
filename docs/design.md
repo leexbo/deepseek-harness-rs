@@ -344,6 +344,8 @@ around 续体:waterfall listener 收 `(payload, Next)`;`Next.invoke` 继续链,�
 
 探测一次缓存为 rung(仅成功才缓存,`set_disabled_for_tests` 测试缝保留);探测失败且策略要求沙箱 → 拒绝执行(fail-closed,绝不静默降级为无沙箱)。
 
+**Seatbelt 拒绝面(macOS)**:profile 语义对齐源(`allow default` + `deny file-write*`)——**文件写是唯一拒绝面**:workspace 可写根与 `/dev/null` 以显式 `file-write*` 放行压过拒绝,mach-lookup / network / IPC 不进拒绝面(Directory Services、DNS 与联网工具在沙箱内照常可用;拒绝它们曾致沙箱内 `ssh`/`git push` 与 cargo 联网全断,属实现缺陷已修正)。文件写边界承诺不变:workspace/临时区外写仍被内核拦,拒绝方言(`operation not permitted`)与升级闸门不受影响。
+
 **Confined 元数据与退出分类**:argv 包装返回 `Confined{program, argv, enforcement, denial_dialect, runner_failure_rules}`——enforcement(full / partial 完整性声明)、拒绝方言(bwrap `read-only file system` / landlock `permission denied` / seatbelt `operation not permitted`)、runner 失败规则(命令未执行的判别:bwrap / seatbelt fatal 签名)。spawn 后 stderr 经 drain 任务读至 EOF(修复「stderr piped 无人读 → 子进程大 stderr 堵塞」;`stderr_text` await 收尾,分类/落盘无缺尾);退出分类序 = runner 失败(命令从未执行)→ 拒绝(执行了但被内核拦)→ 常规退出(退出码是结果数据、非执行失败)。工具结果呈现:RunnerFailed → 「sandbox runner 失败(命令未执行)」+ 命中行;Denied → `[sandbox: file access denied under <mode> mode]`+ stderr 原文——均走既有 `tool/result` 字段,不加新事件(single boundary rule)。
 
 **进程**:独立进程组,SIGTERM → grace → SIGKILL;PTY(portable-pty)不暴露 pre_exec,沙箱仅经 argv 包装,landlock-only 系统拒绝 PTY 执行(fail-closed)。
