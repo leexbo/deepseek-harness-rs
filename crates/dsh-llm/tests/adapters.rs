@@ -352,6 +352,57 @@ async fn deepseek_responses_http_endpoint_and_events() {
     );
 }
 
+/// 首 token 判定锁(照源 assistantStreamFirstTokenTime:首个非空 delta
+/// 含推理)。纯工具调用步(仅 reasoning 流、零正文 chunk)也必须合成
+/// ttftMs 尾帧——此前只认正文 Chunk,88 步的工具重会话 86 步无 TTFT,
+/// 首 token 均值与解码口径 TPS 随之失真。
+#[tokio::test]
+async fn reasoning_only_stream_still_yields_ttft() {
+    let body = "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\" think\"}\n\n\
+                data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"ing\"}\n\n\
+                data: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n";
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 8192];
+        let _ = socket.read(&mut buf).await.unwrap();
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+        );
+        socket.write_all(reply.as_bytes()).await.unwrap();
+        socket.shutdown().await.unwrap();
+    });
+
+    let mut transport = HttpTransport::with_adapter(
+        ProviderConfig {
+            base_url: format!("http://{addr}"),
+            api_key: "sk-ds-test".into(),
+            stream_mode: StreamMode::Sse,
+        },
+        dsh_llm::adapter_by_name("deepseek-responses").unwrap(),
+    )
+    .unwrap();
+    use dsh_agent_loop::LlmTransport;
+    let events = transport
+        .stream(
+            &header("", vec![]),
+            &json!([{ "role": "user", "content": "hi" }]),
+        )
+        .await
+        .expect("stream");
+
+    // 无正文 delta,但尾帧 ttftMs 必须在场(修前缺失)
+    let tail = events.iter().rev().find_map(|e| match e {
+        dsh_agent_loop::LlmEvent::Usage(u) if u.get("ttftMs").is_some() => Some(u.clone()),
+        _ => None,
+    });
+    assert!(
+        tail.is_some(),
+        "纯 reasoning 流也应合成 ttftMs 尾帧: {events:?}"
+    );
+}
+
 /// 测试辅助:构造期望 LlmEvent(仅本文件断言用)
 struct LlmEventLike(dsh_agent_loop::LlmEvent);
 

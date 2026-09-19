@@ -236,7 +236,7 @@ impl LlmTransport for HttpTransport {
         }
 
         // 流式消费:字节 → 帧提取 + 方言映射 → 事件
-        // (记录首内容帧到达时刻——状态栏「首 token」指标的数据源)
+        // (记录首增量到达时刻——状态栏「首 token」指标的数据源)
         let started = std::time::Instant::now();
         let mut first_chunk_at: Option<std::time::Duration> = None;
         let mut decoder = MappedDecoder::new(self.config.stream_mode, self.adapter.mapper());
@@ -256,7 +256,13 @@ impl LlmTransport for HttpTransport {
             }
             for event in decoder.feed(&chunk) {
                 if let Some(mapped) = map_event(event) {
-                    if first_chunk_at.is_none() && matches!(mapped, LlmEvent::Chunk(_)) {
+                    // 首 token = 首个任意文本增量(正文或推理;照源
+                    // assistantStreamFirstTokenTime)。只认正文会让纯
+                    // 工具调用步(仅 reasoning 流)拿不到 TTFT,统计
+                    // 卡的首 token 均值/解码口径 TPS 随之失真
+                    if first_chunk_at.is_none()
+                        && matches!(mapped, LlmEvent::Chunk(_) | LlmEvent::Reasoning(_))
+                    {
                         first_chunk_at = Some(started.elapsed());
                     }
                     events.push(mapped);
@@ -348,7 +354,9 @@ impl LlmTransport for HttpTransport {
                         };
                         eprintln!("[t1] +{}ms {tag}", started.elapsed().as_millis());
                     }
-                    if first_chunk_at.is_none() && matches!(mapped, LlmEvent::Chunk(_)) {
+                    if first_chunk_at.is_none()
+                        && matches!(mapped, LlmEvent::Chunk(_) | LlmEvent::Reasoning(_))
+                    {
                         first_chunk_at = Some(started.elapsed());
                     }
                     let _ = tx.send(mapped);
