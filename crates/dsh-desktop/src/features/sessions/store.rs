@@ -482,11 +482,14 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 分叉会话(复制日志为新会话并打开)
+    /// 分叉会话(按最后一个完成轮截断复制为新会话并打开;失败走通告)
     pub fn fork(&mut self, id: &str, cx: &mut Context<Self>) {
-        if let Ok(new_id) = self.bridge.host().fork_session(id) {
-            self.refresh_list();
-            self.open_session(&new_id, cx);
+        match self.bridge.host().fork_session(id, None) {
+            Ok(new_id) => {
+                self.refresh_list();
+                self.open_session(&new_id, cx);
+            }
+            Err(e) => self.push_local_notice(&format!("分叉失败:{}", e.message), cx),
         }
     }
 

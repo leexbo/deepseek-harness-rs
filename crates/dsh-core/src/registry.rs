@@ -3521,7 +3521,7 @@ impl AppHost {
     }
 
     /// 分叉:复制整份日志为新会话(同 preset/模型/权限沿用)
-    pub fn fork_session(&self, id: &str) -> Result<String, RpcError> {
+    pub fn fork_session(&self, id: &str, at_seq: Option<u64>) -> Result<String, RpcError> {
         let src = self.slot_path(id);
         if !src.exists() {
             return Err(RpcError::session_not_found(id));
@@ -3549,23 +3549,70 @@ impl AppHost {
             std::fs::create_dir_all(parent)
                 .map_err(|e| RpcError::internal(format!("分叉目录创建失败:{e}")))?;
         }
-        std::fs::copy(&src, &dst).map_err(|e| RpcError::internal(format!("分叉复制失败:{e}")))?;
-        // 血缘落档:日志尾追加 session/forked,seq = 父日志
-        // 末 seq + 1(load_log/检索按行 decode,连续性由 append 侧保证)
-        let parent_last_seq = dsh_app::load_log(&src.display().to_string())
-            .ok()
-            .and_then(|l| l.iter().last().map(|ev| ev.seq))
-            .unwrap_or(0);
-        let mut forked = dsh_session::EventEnvelope::new(
-            "session/forked",
-            now_ms() as i64,
-            json!({ "parent": id }),
-        );
-        forked.seq = parent_last_seq + 1;
-        use std::io::Write as _;
-        let line = serde_json::to_string(&forked).unwrap_or_default();
-        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&dst) {
-            let _ = writeln!(f, "{line}");
+        // 截断复制(照源 sessions.fork atSeq 契约):边界 = 首个
+        // seq ≥ at_seq 的 turn/end(含该整轮——轮尾按钮传收口 seq 即
+        // 「从这一轮分叉」);锚点越过日志末尾或缺省 → 回落最后一个
+        // 完成轮;锚点在档但其轮未收口 → fork-unavailable(不向前裁剪)
+        let events = dsh_app::load_log(&src.display().to_string())
+            .map_err(|e| RpcError::internal(format!("分叉读取源日志失败:{e}")))?;
+        let last_completed = events
+            .iter()
+            .rev()
+            .find(|ev| ev.r#type == "turn/end")
+            .map(|ev| ev.seq);
+        // 无任何完成轮(空白/种子会话)→ 回退全量复制(旧行为):
+        // 末完成轮缺位时以末 seq 为界
+        let last_seq = events.iter().last().map(|ev| ev.seq).unwrap_or(0);
+        let cut_seq = match at_seq {
+            Some(anchor) => {
+                match events
+                    .iter()
+                    .find(|ev| ev.seq >= anchor && ev.r#type == "turn/end")
+                    .map(|ev| ev.seq)
+                {
+                    Some(seq) => seq,
+                    None => {
+                        if events.iter().any(|ev| ev.seq >= anchor) {
+                            return Err(RpcError {
+                                code: "fork-unavailable".into(),
+                                message: format!("锚点 seq {anchor} 所在轮尚未收口"),
+                                details: Value::Null,
+                            });
+                        }
+                        // 锚点越过日志末尾:末完成轮,无完成轮则全量
+                        last_completed.unwrap_or(last_seq)
+                    }
+                }
+            }
+            None => last_completed.unwrap_or(last_seq),
+        };
+
+        // seq 自 1 连续(EventLog 守卫):前 cut_seq 行即完成轮前缀
+        let src_content = std::fs::read_to_string(&src)
+            .map_err(|e| RpcError::internal(format!("分叉读取失败:{e}")))?;
+        {
+            use std::io::Write as _;
+            let mut out = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&dst)
+                .map_err(|e| RpcError::internal(format!("分叉写入失败:{e}")))?;
+            for (ix, line) in src_content.lines().enumerate() {
+                if ix as u64 >= cut_seq {
+                    break;
+                }
+                let _ = writeln!(out, "{line}");
+            }
+            // 血缘落档:seq = 截断边界 + 1(子日志连续性由 append 侧保证)
+            let mut forked = dsh_session::EventEnvelope::new(
+                "session/forked",
+                now_ms() as i64,
+                json!({ "parent": id, "atSeq": cut_seq }),
+            );
+            forked.seq = cut_seq + 1;
+            let line = serde_json::to_string(&forked).unwrap_or_default();
+            let _ = writeln!(out, "{line}");
         }
         // 沿用模型/preset/推理等级覆盖(权限随 fork 复制的日志事件,
         // 无需再记 override——事件已在子会话日志里)
@@ -9920,8 +9967,8 @@ mod tests {
         })
         .await
         .expect("turn/end");
-        let child = host.fork_session(&parent).unwrap();
-        let grand = host.fork_session(&child).unwrap();
+        let child = host.fork_session(&parent, None).unwrap();
+        let grand = host.fork_session(&child, None).unwrap();
 
         // 仅根
         let bytes = host.export_session_zip(&parent, false).unwrap();
@@ -10241,7 +10288,7 @@ mod tests {
         })
         .await
         .expect("turn/end");
-        let child = host.fork_session(&parent).unwrap();
+        let child = host.fork_session(&parent, None).unwrap();
 
         let trace = host.session_trace(&child).unwrap();
         assert_eq!(trace["ancestors"].as_array().unwrap().len(), 1);
@@ -10256,6 +10303,88 @@ mod tests {
         // 子日志可整读(新事件类型已登记,不拒读)
         let events = host.session_log(&child).unwrap();
         assert!(events.iter().any(|ev| ev.r#type == "session/forked"));
+    }
+
+    /// fork 截断语义(照源 sessions.fork atSeq):锚点轮整轮包含
+    /// (边界 = 首个 ≥ at_seq 的 turn/end);锚点越过日志末尾 → 回落
+    /// 最后一个完成轮;锚点所在轮未收口 → fork-unavailable。轮尾
+    /// 「分支」传收口 seq =「从这一轮分叉」的回归锁。
+    #[tokio::test]
+    async fn fork_session_truncates_at_turn_boundary() {
+        let host = temp_host("forkcut");
+        host.set_fake_script(script(&["一", "二"]));
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+        host.prompt(&id, &[json!({ "type": "text", "text": "第一轮" })], "queue")
+            .await
+            .unwrap();
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await
+        .expect("第一轮收口");
+        host.prompt(&id, &[json!({ "type": "text", "text": "第二轮" })], "queue")
+            .await
+            .unwrap();
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await
+        .expect("第二轮收口");
+
+        let src = host.session_log(&id).unwrap();
+        let turn1_end = src
+            .iter()
+            .find(|ev| ev.r#type == "turn/end")
+            .map(|ev| ev.seq)
+            .expect("第一轮 turn/end");
+        let turn2_end = src
+            .iter()
+            .rev()
+            .find(|ev| ev.r#type == "turn/end")
+            .map(|ev| ev.seq)
+            .unwrap();
+        assert!(turn2_end > turn1_end);
+        // 锚点落在第一轮内(收口前的一个 seq)
+        let anchor = (turn1_end - 1).max(1);
+
+        let child = host.fork_session(&id, Some(anchor)).unwrap();
+        let child_log = host.session_log(&child).unwrap();
+        // 子日志截到第一轮收口:不含第二轮 turn/end
+        assert!(
+            child_log
+                .iter()
+                .all(|ev| ev.r#type != "turn/end" || ev.seq <= turn1_end)
+        );
+        let forked = child_log
+            .iter()
+            .rev()
+            .find(|ev| ev.r#type == "session/forked")
+            .expect("forked 落档");
+        assert_eq!(forked.seq, turn1_end + 1, "forked 接在截断边界后");
+        assert_eq!(forked.data["atSeq"], turn1_end);
+        assert_eq!(forked.data["parent"], json!(id));
+
+        // 锚点越过日志末尾 → 回落最后一个完成轮(全量)
+        let child2 = host.fork_session(&id, Some(100_000)).unwrap();
+        let log2 = host.session_log(&child2).unwrap();
+        assert!(
+            log2.iter()
+                .any(|ev| ev.r#type == "turn/end" && ev.seq == turn2_end)
+        );
+
+        // 锚点所在轮未收口:手工追加开放的 turn/start(无 turn/end)
+        let path = host.session_log_path(&id);
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        let open_seq = src.iter().last().map(|ev| ev.seq).unwrap() + 1;
+        text.push_str(&format!(
+            "{}\n",
+            json!({"type": "turn/start", "seq": open_seq, "time": 0,
+                   "data": {}, "ignorable": false})
+        ));
+        std::fs::write(&path, text).unwrap();
+        let err = host.fork_session(&id, Some(open_seq)).unwrap_err();
+        assert_eq!(err.code, "fork-unavailable", "未收口轮拒绝分叉");
     }
 
     /// event_read 全文 + 邻居;event_trace 归因链
@@ -10639,7 +10768,7 @@ mod tests {
         let host = temp_host("ws-del-cascade");
         let parent = host.create_session(None, None, None);
         let sub = host.create_subagent_session(&parent);
-        let forked = host.fork_session(&parent).unwrap();
+        let forked = host.fork_session(&parent, None).unwrap();
         let sub_path = host.session_log_path(&sub);
         let fork_path = host.session_log_path(&forked);
         host.delete_session(&parent).unwrap();
@@ -11941,11 +12070,11 @@ for line in sys.stdin:
         let slot = host.get_slot(&id).expect("槽应在场");
         slot.running
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        let err = host.fork_session(&id).unwrap_err();
+        let err = host.fork_session(&id, None).unwrap_err();
         assert_eq!(err.code, "bad-request", "运行中 fork 应被拒");
         slot.running
             .store(false, std::sync::atomic::Ordering::Relaxed);
         // 停止后 fork 放行
-        assert!(host.fork_session(&id).is_ok());
+        assert!(host.fork_session(&id, None).is_ok());
     }
 }

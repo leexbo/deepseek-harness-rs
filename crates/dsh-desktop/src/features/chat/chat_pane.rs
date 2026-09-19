@@ -2269,6 +2269,7 @@ fn turn_tail(
         .when(!session.is_empty(), |el| {
             let fork_store = store.clone();
             let fork_session = session.clone();
+            let fork_turn_key = key.to_string();
             let fork_sel = format!("turn-tail-{key}-fork");
             el.child(
                 div()
@@ -2283,7 +2284,9 @@ fn turn_tail(
                     .text_color(theme::CAPTION())
                     .hover(|s| s.bg(theme::DOCK()))
                     .on_click(move |_, _, cx| {
-                        fork_store.update(cx, |st, cx| st.fork(&fork_session, cx));
+                        fork_store.update(cx, |st, cx| {
+                            st.fork_from_turn(&fork_session, &fork_turn_key, cx)
+                        });
                     })
                     .child(fixed(DshIcon::GitBranch, 12.)),
             )

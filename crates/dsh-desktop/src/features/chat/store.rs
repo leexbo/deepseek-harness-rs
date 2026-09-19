@@ -1403,7 +1403,7 @@ impl AppStore {
     }
 
     /// 产物行:打开文件(workspace-relative 按当前工作区根解析;系统 open)
-    pub fn open_deliverable(&self, path: &str, cx: &mut Context<Self>) {
+    pub fn open_deliverable(&mut self, path: &str, cx: &mut Context<Self>) {
         let Some(root) = self.current_workspace_dir() else {
             return;
         };
@@ -1595,6 +1595,26 @@ impl AppStore {
     pub fn cancel_at_completion(&mut self, cx: &mut Context<Self>) {
         if self.chat.at_completion.take().is_some() {
             cx.notify();
+        }
+    }
+
+    /// 轮尾「分支」:按本轮收口 seq 截断分叉(照源 forkAt(closing.seq)
+    /// ——边界 = 首个 ≥ seq 的 turn/end,含该整轮;失败走通告行)
+    pub fn fork_from_turn(
+        &mut self,
+        session_id: &str,
+        turn_key: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let at_seq = turn_key
+            .strip_prefix("turn-end:")
+            .and_then(|s| s.parse::<u64>().ok());
+        match self.bridge.host().fork_session(session_id, at_seq) {
+            Ok(new_id) => {
+                self.refresh_list();
+                self.open_session(&new_id, cx);
+            }
+            Err(e) => self.push_local_notice(&format!("分支失败:{}", e.message), cx),
         }
     }
 
