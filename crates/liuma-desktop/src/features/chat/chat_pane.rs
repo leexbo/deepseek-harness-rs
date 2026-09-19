@@ -1667,9 +1667,35 @@ fn assistant_block(
                 )
             });
         let body_key = key.clone();
+        let body_probe = div().absolute().inset_0().when(
+            std::env::var_os("LIUMA_PROBE").is_some_and(|v| v == "layout"),
+            |el| {
+                let col = col_w;
+                let key2 = body_key.clone();
+                el.child(gpui_kit::canvas(
+                    move |bounds: gpui_kit::Bounds<gpui_kit::Pixels>, _, _| {
+                        static N: std::sync::atomic::AtomicUsize =
+                            std::sync::atomic::AtomicUsize::new(0);
+                        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if n <= 8 {
+                            eprintln!(
+                                "[probe-layout] asst-body({key2}) x={} w={} right={} col_w={}",
+                                f32::from(bounds.origin.x),
+                                f32::from(bounds.size.width),
+                                f32::from(bounds.origin.x) + f32::from(bounds.size.width),
+                                f32::from(col)
+                            );
+                        }
+                    },
+                    |_, _, _, _| {},
+                ))
+            },
+        );
         let body = div()
             .debug_selector(move || format!("asst-body-{body_key}"))
             .min_w(px(0.))
+            .relative()
+            .child(body_probe)
             .child(body_view)
             .when(streaming, |el| {
                 el.child(
