@@ -66,7 +66,7 @@ pub fn render(
                         .gap(px(10.))
                         .child(
                             div().flex().justify_center().child(
-                                fixed(crate::kits::icons::LiumaIcon::Logo, 44.)
+                                fixed(crate::kits::icons::LiumaIcon::Logo, 64.)
                                     .text_color(theme::LABEL()),
                             ),
                         )
@@ -124,13 +124,13 @@ pub fn render(
                 .child(composer::render(store, window, cx))
                 // 菜单卡挂列尾(后于 composer,绘制在其上——挂 chip 行内
                 // 会被 composer 盖住).以内容盒为锚,top 从内容盒顶到
-                // chips 行底 + 6:logo(44)+gap(10)+标题(~21)+gap(12)
-                // + chips(28)+6 ≈ 121(内容盒加 relative,不随居中漂移)
+                // chips 行底 + 6:logo(64)+gap(10)+标题(~21)+gap(12)
+                // + chips(28)+6 ≈ 141(内容盒加 relative,不随居中漂移)
                 .when(hero_menu != HeroMenu::None, |el| {
                     el.child(
                         div()
                             .absolute()
-                            .top(px(121.))
+                            .top(px(141.))
                             .left_0()
                             .child(match hero_menu {
                                 HeroMenu::Workspace => overlay_card(
@@ -218,6 +218,9 @@ fn preset_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::Stateful<gpui_ki
         );
     }
     overlay_card("hero-preset-card", 320., rows)
+        // 布局回归锁锚点(layout_tests hero_preset_select 按 bounds
+        // 断言卡片不叠 chip 行;debug_bounds 只认 selector 不认 id)
+        .debug_selector(|| "hero-preset-card".to_string())
 }
 
 /// Hero 态 chip(工作区/模式触发钮;图标 + 文字,点击开下拉)

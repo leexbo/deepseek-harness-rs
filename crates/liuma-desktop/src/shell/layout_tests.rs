@@ -5473,6 +5473,18 @@ fn hero_preset_select(cx: &mut TestAppContext) {
         "preset 卡未弹出"
     );
 
+    // 回归锁:菜单卡锚定偏移随品牌块高度联动(hero.rs 顶部注释的
+    // 字面 top = logo+gap+标题+gap+chips+6)——改 logo 尺寸漏同步
+    // 偏移时卡片上叠 chip 行,必须在此变红
+    let chip = wcx.debug_bounds("hero-preset").expect("preset chip 缺失");
+    let card = wcx.debug_bounds("hero-preset-card").expect("preset 卡缺失");
+    assert!(
+        card.top() >= chip.bottom() - px(0.5),
+        "preset 卡叠上 chip 行:card top {:?} < chip bottom {:?}(logo 尺寸与菜单偏移未同步)",
+        card.top(),
+        chip.bottom()
+    );
+
     click_sel(&mut wcx, "preset-item-minimal");
     cx.run_until_parked();
     assert_eq!(
