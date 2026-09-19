@@ -4293,23 +4293,20 @@ fn ask_user_question_card_pops_via_pump(cx: &mut TestAppContext) {
             });
         });
     });
-    // 直接走宿主问答面:ask_questions 发射 question/requested(随后阻塞
-    // 等应答,接收端丢弃即可)→ 帧泵 → reducer → 问答卡。fake 会话无
-    // 工具面(NoTools),工具执行段由宿主测试另测
+    let questions: Vec<serde_json::Value> = serde_json::from_value(serde_json::json!([
+        {
+            "id": "switch_mode",
+            "header": "切换语义",
+            "question": "「TTS/ASR/LLM 都切换为阿里百炼」的含义是？",
+            "options": [
+                { "label": "默认走百炼 (Recommended)", "description": "新增 DashScope 缺省" },
+                { "label": "彻底替换", "description": "移除本地后端" }
+            ],
+            "multi_select": false
+        }
+    ]))
+    .unwrap();
     cx.update(|app| {
-        let questions: Vec<serde_json::Value> = serde_json::from_value(serde_json::json!([
-            {
-                "id": "switch_mode",
-                "header": "切换语义",
-                "question": "「TTS/ASR/LLM 都切换为阿里百炼」的含义是？",
-                "options": [
-                    { "label": "默认走百炼 (Recommended)", "description": "新增 DashScope 缺省" },
-                    { "label": "彻底替换", "description": "移除本地后端" }
-                ],
-                "multi_select": false
-            }
-        ]))
-        .unwrap();
         store.update(app, |st, cx| {
             st.ask_questions_json(&sid, questions, cx);
         });
@@ -4324,6 +4321,77 @@ fn ask_user_question_card_pops_via_pump(cx: &mut TestAppContext) {
         }
     }
     assert!(popped, "question/requested 后问答卡应弹在内容区");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 问答卡标题语义(照源 QuestionComposer):header = 可选眉标,question =
+/// 恒唯一的标题,二者从不互相回退。回归锚:header 缺席时曾
+/// `unwrap_or_else(|| question.clone())` 把问题文本当标题,而问题文本
+/// 本身又完整渲染一遍 → 同一句出现两次。
+#[gpui_kit::test]
+fn ask_card_header_states_never_fall_back_to_question(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "ask-heading");
+    let sid = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("自动新建会话应在场");
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.entry(id).or_default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:seed".into(),
+                text: "先聊着".into(),
+                images: vec![],
+                files: Vec::new(),
+            });
+        });
+    });
+
+    // 态 1:header 在场 → eyebrow 在场且 title 在场(各渲染一次)
+    let with_header: Vec<serde_json::Value> = serde_json::from_value(serde_json::json!([
+        { "id": "q1", "header": "确认", "question": "继续吗?", "multi_select": false }
+    ]))
+    .unwrap();
+    cx.update(|app| store.update(app, |st, cx| st.ask_questions_json(&sid, with_header, cx)));
+    let mut popped = false;
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        cx.run_until_parked();
+        if wcx.debug_bounds("ask-question").is_some() {
+            popped = true;
+            break;
+        }
+    }
+    assert!(popped, "问答卡应弹出");
+    assert!(
+        wcx.debug_bounds("ask-eyebrow").is_some(),
+        "header 在场时应渲染眉标"
+    );
+    assert!(wcx.debug_bounds("ask-title").is_some(), "标题应恒在场");
+
+    // 态 2:header 缺席 → eyebrow 缺席、title 在场(问题文本只出现一次)
+    cx.update(|app| store.update(app, |st, cx| st.cancel_ask(cx)));
+    cx.run_until_parked();
+    let no_header: Vec<serde_json::Value> = serde_json::from_value(serde_json::json!([
+        { "id": "q2", "question": "只有这一句问题文本", "multi_select": false }
+    ]))
+    .unwrap();
+    cx.update(|app| store.update(app, |st, cx| st.ask_questions_json(&sid, no_header, cx)));
+    let mut popped2 = false;
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        cx.run_until_parked();
+        if wcx.debug_bounds("ask-question").is_some() {
+            popped2 = true;
+            break;
+        }
+    }
+    assert!(popped2, "第二张问答卡应弹出");
+    assert!(
+        wcx.debug_bounds("ask-eyebrow").is_none(),
+        "header 缺席时不得回退出眉标(= 标题重复消失)"
+    );
+    assert!(wcx.debug_bounds("ask-title").is_some(), "标题应恒在场");
     let _ = std::fs::remove_dir_all(root);
 }
 

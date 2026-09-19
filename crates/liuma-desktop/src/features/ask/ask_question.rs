@@ -174,16 +174,39 @@ pub fn render(
             .p(px(14.))
             .gap(px(10.))
             .child(
+                // 卡头行(源 QuestionComposer 结构):heading block =
+                // eyebrow(header,可选)+ title(question,恒唯一);
+                // header 缺席不回退到 question——回退曾造成标题重复
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
                     .child(
                         div()
-                            .text_size(px(13.))
-                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                            .text_color(theme::LABEL())
-                            .child(q.header.clone().unwrap_or_else(|| q.question.clone())),
+                            .v_flex()
+                            .gap(px(2.))
+                            .when_some(
+                                q.header.as_deref().map(str::trim).filter(|h| !h.is_empty()),
+                                |el, eyebrow| {
+                                    el.child(
+                                        div()
+                                            .id("ask-eyebrow")
+                                            .debug_selector(|| "ask-eyebrow".to_string())
+                                            .text_size(px(11.))
+                                            .text_color(theme::CAPTION())
+                                            .child(eyebrow.to_string()),
+                                    )
+                                },
+                            )
+                            .child(
+                                div()
+                                    .id("ask-title")
+                                    .debug_selector(|| "ask-title".to_string())
+                                    .text_size(px(14.))
+                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                    .text_color(theme::LABEL())
+                                    .child(q.question.clone()),
+                            ),
                     )
                     .child(
                         div()
@@ -198,12 +221,6 @@ pub fn render(
                             .on_click(move |_, _, cx| cancel.update(cx, |st, cx| st.cancel_ask(cx)))
                             .child(fixed(IconName::Close, 12.)),
                     ),
-            )
-            .child(
-                div()
-                    .text_size(px(14.))
-                    .text_color(theme::LABEL())
-                    .child(q.question.clone()),
             )
             .children(option_rows)
             // 「其他」自定义行——checkbox + 可输入框;
