@@ -1409,6 +1409,9 @@ impl AppStore {
 
     /// 产物行:打开文件(workspace-relative 按当前工作区根解析;系统 open)
     pub fn open_deliverable(&mut self, path: &str, cx: &mut Context<Self>) {
+        // 侧栏预览打开(阅读流不离开应用;旧体 cx.open_with_system 会跳
+        // 出到系统编辑器)。产物行聚合的是本轮 file_edit 成功写入的工作
+        // 区内路径;文件事后被删时预览桶立 unsupported 空态,语义一致。
         let Some(root) = self.current_workspace_dir() else {
             return;
         };
@@ -1418,7 +1421,7 @@ impl AppStore {
         } else {
             root.join(p)
         };
-        cx.open_with_system(&abs);
+        self.open_file_preview(&abs.display().to_string(), None, cx);
     }
 
     /// @ 补全:从 composer_input 的 text/cursor 探测 hit 并构造候选。

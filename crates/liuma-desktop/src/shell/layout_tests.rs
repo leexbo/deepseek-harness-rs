@@ -5500,6 +5500,72 @@ fn statusbar_stats_pills_open_detail_cards(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 产物 chip 点击 = 右栏预览 tab 打开(阅读流不离开应用;2026-09-19
+/// 真机反馈曾回落系统编辑器跳出应用——open_deliverable 旧体是
+/// cx.open_with_system 直开,68a78cc 标称修复但实际只重排了无关签名,
+/// 行为从未落地)。恒走预览:文件事后被删时预览桶立 unsupported 空态,
+/// 不回退系统打开(测试宿主 open_with_system 为 unimplemented panic,
+/// 亦锁死「永不系统打开」语义)。回归锚:chip 点击后 active tab 应为
+/// Preview{path=产物 rel 路径}。
+#[gpui_kit::test]
+fn deliverable_chip_opens_preview_panel(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "deliverable-preview");
+    // 工作区夹具 + ws_paths 注入(current_workspace_dir 兜底取 values().next())
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("建 ws");
+    std::fs::write(ws.join("report.md"), "# 报告\n\n产物正文\n").expect("写产物");
+    let rel_path = "report.md";
+    let abs = ws.join(rel_path);
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            st.sessions.ws_paths.insert("w".to_string(), ws.clone());
+        });
+    });
+
+    // ① 工作区内产物 → 预览 tab,不落系统打开
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.open_deliverable(&abs.display().to_string(), cx)
+        });
+    });
+    cx.run_until_parked();
+    let active = cx.update(|app| store.read(app).panel_active_tab.clone());
+    assert!(
+        matches!(
+            active,
+            Some(crate::shell::panel::PanelTab::Preview(ref p))
+                if p.path == std::path::Path::new(rel_path)
+        ),
+        "产物 chip 应打开右栏预览 tab(rel 路径),实际 {active:?}"
+    );
+    assert!(cx.update(|app| store.read(app).panel_open), "面板应展开");
+
+    // ② 已被删的产物 → 仍走预览(unsupported 空态),不回退系统打开
+    //    (若走 open_with_system,测试宿主 unimplemented panic 即失败)
+    let tabs_before = cx.update(|app| store.read(app).panel_tabs.len());
+    let ghost_rel = "ghost-deliverable.md";
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.open_deliverable(&ws.join(ghost_rel).display().to_string(), cx)
+        });
+    });
+    cx.run_until_parked();
+    let (tabs_after, active2) = cx.update(|app| {
+        let st = store.read(app);
+        (st.panel_tabs.len(), st.panel_active_tab.clone())
+    });
+    assert_eq!(tabs_before + 1, tabs_after, "被删产物应新开预览 tab");
+    assert!(
+        matches!(
+            active2,
+            Some(crate::shell::panel::PanelTab::Preview(ref p))
+                if p.path == std::path::Path::new(ghost_rel)
+        ),
+        "被删产物应激活对应预览 tab(unsupported 空态),实际 {active2:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 轮尾统计 pill(照源 TurnTailNodeView):用量/用时 pill + 两张详情卡,
 /// 桶按轮号喂入(冷读 turnList 与直播 lastTurn 同形)
 #[gpui_kit::test]
