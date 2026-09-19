@@ -20,6 +20,7 @@ use gpui_kit::{
 };
 
 use super::projection::relativize;
+use crate::kits::highlight::Span;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
@@ -700,8 +701,8 @@ pub(crate) fn search_recovery_footer(output: Option<&str>) -> Option<String> {
 /// 展平行(path 头/删行/增行/同文件间隙)
 enum DiffRow {
     Path(String),
-    Del(String),
-    Add(String),
+    Del(String, Option<Vec<Span>>),
+    Add(String, Option<Vec<Span>>),
     Gap,
 }
 
@@ -716,42 +717,51 @@ pub(crate) fn render_diff(
 ) -> gpui_kit::AnyElement {
     let expanded = store.read(cx).chat.card_expanded.contains(key);
 
-    // 展平:同文件第二条 hunk 以 `⋯` 间隙开头(不重复路径头)
+    // 展平:同文件第二条 hunk 以 `⋯` 间隙开头(不重复路径头)。
+    // 每文件:路径 + (row_index, text) 段(展平序追加);展平完成后
+    // attach_diff_spans 按段高亮回填。
     let mut rows: Vec<DiffRow> = Vec::new();
     let mut added = 0usize;
     let mut removed = 0usize;
     let mut paths = std::collections::HashSet::new();
     let mut prev_path: Option<&str> = None;
+    let mut segs: Vec<(&str, Vec<(usize, String)>)> = Vec::new();
     for d in &card.diffs {
         paths.insert(d.path.as_str());
         if prev_path != Some(d.path.as_str()) {
             rows.push(DiffRow::Path(d.path.clone()));
+            segs.push((d.path.as_str(), Vec::new()));
         } else {
             rows.push(DiffRow::Gap);
         }
         prev_path = Some(d.path.as_str());
-        if let Some(old) = &d.old_text {
-            for line in content_lines(old) {
-                rows.push(DiffRow::Del(line.to_string()));
-                removed += 1;
+        if let Some((_, seg)) = segs.last_mut() {
+            if let Some(old) = &d.old_text {
+                for line in content_lines(old) {
+                    seg.push((rows.len(), line.to_string()));
+                    rows.push(DiffRow::Del(line.to_string(), None));
+                    removed += 1;
+                }
             }
-        }
-        for line in content_lines(&d.new_text) {
-            rows.push(DiffRow::Add(line.to_string()));
-            added += 1;
+            for line in content_lines(&d.new_text) {
+                seg.push((rows.len(), line.to_string()));
+                rows.push(DiffRow::Add(line.to_string(), None));
+                added += 1;
+            }
         }
     }
     if rows.is_empty() {
         return div().into_any_element();
     }
+    attach_diff_spans(key, &segs, &mut rows);
 
     let ht = head_tail(rows.len(), CHAT_CARD_MAX_LINES, expanded);
     let head_end = if ht.capped { ht.head } else { rows.len() };
     let copy_text = rows
         .iter()
         .map(|r| match r {
-            DiffRow::Del(t) => format!("- {t}"),
-            DiffRow::Add(t) => format!("+ {t}"),
+            DiffRow::Del(t, _) => format!("- {t}"),
+            DiffRow::Add(t, _) => format!("+ {t}"),
             DiffRow::Path(t) => t.clone(),
             DiffRow::Gap => "⋯".to_string(),
         })
@@ -822,7 +832,41 @@ pub(crate) fn render_diff(
         .into_any_element()
 }
 
-/// 一条 diff 行(Path 粗体 pr 56;Del 红 `+ Add 绿;Gap ⋯)
+/// diff 高亮回填:逐文件段(路径 + 行序号 + 文本)按「后缀 → lang」
+/// 整段喂行级高亮(highlight_window 有状态,跨行语法上下文正确;
+/// find_syntax_by_token 对扩展名亦认,未知名/无后缀回退纯文本——spans
+/// 恒 None),结果写回对应 row。key = 卡 key(`{key}·diff·{path}`),
+/// 缓存随内容哈希,重渲零重算。
+fn attach_diff_spans(key: &str, segs: &[(&str, Vec<(usize, String)>)], rows: &mut [DiffRow]) {
+    for (path, seg) in segs {
+        if seg.is_empty() {
+            continue;
+        }
+        let Some(lang) = std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+        else {
+            continue;
+        };
+        let texts: Vec<&str> = seg.iter().map(|(_, t)| t.as_str()).collect();
+        let Some(hl) = crate::kits::highlight::highlight_window(
+            &format!("{key}·diff·{path}"),
+            Some(lang),
+            &texts,
+        ) else {
+            continue;
+        };
+        for ((ri, _), spans) in seg.iter().zip(hl.iter()) {
+            match &mut rows[*ri] {
+                DiffRow::Del(_, s) | DiffRow::Add(_, s) => *s = Some(spans.clone()),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// 一条 diff 行(Path 粗体 pr 56;Del 红 `+ Add 绿——前缀符号恒语义色,
+/// 内容段走高亮 spans(read 卡同款渲染),未知名回退单色;Gap ⋯)
 fn diff_row_el(row: &DiffRow) -> gpui_kit::AnyElement {
     let el = match row {
         DiffRow::Path(p) => div()
@@ -832,18 +876,8 @@ fn diff_row_el(row: &DiffRow) -> gpui_kit::AnyElement {
             .font_weight(gpui_kit::FontWeight::BOLD)
             .text_color(theme::LABEL())
             .child(p.clone()),
-        DiffRow::Del(t) => div()
-            .flex()
-            .min_h(px(22.))
-            .line_height(px(22.))
-            .text_color(theme::DANGER())
-            .child(format!("- {t}")),
-        DiffRow::Add(t) => div()
-            .flex()
-            .min_h(px(22.))
-            .line_height(px(22.))
-            .text_color(theme::SUCCESS())
-            .child(format!("+ {t}")),
+        DiffRow::Del(t, spans) => diff_code_line("-", theme::DANGER(), t, spans.as_deref()),
+        DiffRow::Add(t, spans) => diff_code_line("+", theme::SUCCESS(), t, spans.as_deref()),
         DiffRow::Gap => div()
             .min_h(px(22.))
             .line_height(px(22.))
@@ -851,6 +885,38 @@ fn diff_row_el(row: &DiffRow) -> gpui_kit::AnyElement {
             .child("⋯"),
     };
     el.into_any_element()
+}
+
+/// diff 代码行:前缀符号(2 字符宽,恒语义色)+ 内容(spans 横排不折行
+/// ——与 read_line 同款;无 spans 回退单色文本)
+fn diff_code_line(
+    sign: &str,
+    sign_color: gpui_kit::Rgba,
+    text: &str,
+    spans: Option<&[Span]>,
+) -> gpui_kit::Div {
+    let content = match spans {
+        Some(spans) if !spans.is_empty() => {
+            let mut el = div().flex();
+            for s in spans {
+                el = el.child(div().text_color(s.color).child(s.text.clone()));
+            }
+            el
+        }
+        _ => div().text_color(theme::LABEL()).child(text.to_string()),
+    };
+    div()
+        .flex()
+        .min_h(px(22.))
+        .line_height(px(22.))
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(18.))
+                .text_color(sign_color)
+                .child(format!("{sign} ")),
+        )
+        .child(content)
 }
 
 /// diff 展开钮(无缩进;源 .expand padding 0)
@@ -1183,5 +1249,53 @@ mod tests {
         assert_eq!(content_lines("a\n"), vec!["a"]);
         assert_eq!(content_lines("a\nb"), vec!["a", "b"]);
         assert_eq!(content_lines("a\n\n"), vec!["a", ""]); // 内部空行保留
+    }
+
+    /// diff 卡语法高亮锁:rust 代码行内容应携带高亮 spans(read 卡同款
+    /// 渲染面;此前 diff 卡恒纯色 +/- 行)。回归锚 = 2026-09-19 真机反馈
+    /// 「file_edit 语法高亮有问题」。
+    #[test]
+    fn diff_card_highlights_code_lines() {
+        let mut rows = vec![
+            DiffRow::Path("src/lib.rs".into()),
+            DiffRow::Del("fn old() {}".into(), None),
+            DiffRow::Add("fn new() {".into(), None),
+            DiffRow::Add("    let s = \"字符串\";".into(), None),
+            DiffRow::Add("}".into(), None),
+        ];
+        let segs = vec![(
+            "src/lib.rs",
+            vec![
+                (1, "fn old() {}".to_string()),
+                (2, "fn new() {".to_string()),
+                (3, "    let s = \"字符串\";".to_string()),
+                (4, "}".to_string()),
+            ],
+        )];
+        attach_diff_spans("k", &segs, &mut rows);
+        // rust 后缀命中语法:代码行应回填非空 spans(字符串行应有样式段)
+        for row in rows.iter().skip(1) {
+            let ok = matches!(row, DiffRow::Del(_, Some(_)) | DiffRow::Add(_, Some(_)));
+            assert!(ok, "代码行应回填 spans");
+        }
+        // 字符串行 spans 覆盖内容文本(不丢行)
+        if let DiffRow::Add(t, Some(spans)) = &rows[3] {
+            let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
+            assert_eq!(joined, t.as_str(), "spans 拼接应还原整行");
+        } else {
+            panic!("字符串行应为带 spans 的 Add 行");
+        }
+
+        // 无扩展名 / 未知名 → 回退纯文本(spans 恒 None),不崩
+        let mut plain = vec![
+            DiffRow::Path("README".into()),
+            DiffRow::Add("plain text".into(), None),
+        ];
+        let segs2 = vec![("README", vec![(1, "plain text".to_string())])];
+        attach_diff_spans("k2", &segs2, &mut plain);
+        assert!(
+            matches!(&plain[1], DiffRow::Add(_, None)),
+            "无后缀文件应回退纯文本"
+        );
     }
 }
