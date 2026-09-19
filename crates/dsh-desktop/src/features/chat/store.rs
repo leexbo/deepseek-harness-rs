@@ -1600,12 +1600,7 @@ impl AppStore {
 
     /// 轮尾「分支」:按本轮收口 seq 截断分叉(照源 forkAt(closing.seq)
     /// ——边界 = 首个 ≥ seq 的 turn/end,含该整轮;失败走通告行)
-    pub fn fork_from_turn(
-        &mut self,
-        session_id: &str,
-        turn_key: &str,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn fork_from_turn(&mut self, session_id: &str, turn_key: &str, cx: &mut Context<Self>) {
         let at_seq = turn_key
             .strip_prefix("turn-end:")
             .and_then(|s| s.parse::<u64>().ok());
