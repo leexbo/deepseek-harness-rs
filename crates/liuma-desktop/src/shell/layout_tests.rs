@@ -5926,6 +5926,18 @@ fn context_meter_renders_and_opens(cx: &mut TestAppContext) {
         wcx.debug_bounds("context-ring-open").is_some(),
         "详情卡未打开"
     );
+    // 自适应对齐:锚在 composer 行右段 → 卡右缘不得超出锚(圆环)右缘
+    // (left_0 旧形态向右展开,真机反馈卡体右缘被视口切掉)
+    let card = wcx
+        .debug_bounds("composer-menu-anchor-right")
+        .expect("锚卡 bounds");
+    let ring = wcx.debug_bounds("context-ring").expect("圆环 bounds");
+    assert!(
+        card.origin.x + card.size.width <= ring.origin.x + ring.size.width + px(1.),
+        "卡右缘应贴齐锚(圆环)右缘:卡右 {:.1} vs 锚右 {:.1}",
+        card.origin.x + card.size.width,
+        ring.origin.x + ring.size.width
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 

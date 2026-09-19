@@ -358,6 +358,7 @@ fn bottom_row(
                 )
             }),
             anchor_bottom,
+            AlignRight(false),
         ))
         .child(attach_trigger)
         // 「+」与模式 chips 之间的细竖线分组
@@ -391,12 +392,14 @@ fn bottom_row(
             model_trigger,
             (menu == ComposerMenu::Model).then(|| model_card(store, cx)),
             anchor_bottom,
+            AlignRight(true),
         ))
         .children(occupancy.map(|o| {
             menu_slot(
                 context_button(store, o),
                 (menu == ComposerMenu::Context).then(|| context_card(store, cx)),
                 anchor_bottom,
+                AlignRight(true),
             )
         }))
         .child(send_or_stop(store, running))
@@ -409,10 +412,15 @@ fn bottom_row(
 /// stop_propagation:根级外点关闭按 hitbox 树派发,锚卡几何上超出
 /// wrapper 矩形,豁免必须各自持有——漏挂锚卡则点菜单行先触发关闭
 /// 重绘,行元素消失,on_click(按下+抬起成对)永不完成
+/// 锚卡水平对齐(true = 右缘贴锚右、向左展开;false = 左缘贴锚左)
+#[derive(Clone, Copy)]
+pub(crate) struct AlignRight(pub(crate) bool);
+
 fn menu_slot(
     trigger: gpui_kit::Stateful<gpui_kit::Div>,
     card: Option<gpui_kit::AnyElement>,
     anchor_bottom: f32,
+    align_right: AlignRight,
 ) -> impl IntoElement {
     div()
         .relative()
@@ -422,16 +430,31 @@ fn menu_slot(
         })
         .child(trigger)
         .when_some(card, |el, card| {
-            el.child(
-                div()
-                    .id("composer-menu-anchor")
-                    .absolute()
-                    .left_0()
-                    .bottom(px(anchor_bottom))
-                    .occlude()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(card),
-            )
+            let anchor = div()
+                .id(gpui_kit::SharedString::from(format!(
+                    "composer-menu-anchor-{}",
+                    if align_right.0 { "right" } else { "left" }
+                )))
+                .debug_selector(|| {
+                    format!(
+                        "composer-menu-anchor-{}",
+                        if align_right.0 { "right" } else { "left" }
+                    )
+                })
+                .absolute()
+                .bottom(px(anchor_bottom))
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(card);
+            // 对齐:锚在 composer 行右段(模型/上下文)→ 卡右缘贴锚右
+            // 缘向左展开(卡宽 > 锚右剩余空间时 left_0 会溢出视口,真机
+            // 反馈上下文卡右缘被切);左段(命令菜单)保持左缘贴齐。
+            let anchor = if align_right.0 {
+                anchor.right_0()
+            } else {
+                anchor.left_0()
+            };
+            el.child(anchor)
         })
 }
 
