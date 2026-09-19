@@ -18,13 +18,13 @@ use gpui_kit::{
     Styled, div, px, relative,
 };
 
-/// 正文排版(照旧手调渲染器指标,双盘):
-/// 正文 14px/1.75、标题 16/15/14、块距 8px、代码块 13px/黑底。
-/// TextView 的正文字号/行高走继承,由外层包装承担;标题/间距/代码块
-/// 经 [`TextViewStyle`] 调
+/// 正文排版(手调渲染器指标,双盘):
+/// 正文 14px/1.75、标题同字号加粗、块距 8px、代码块 12px/主题底。
+/// TextView 的正文字号/行高/颜色走继承,由外层包装承担;标题/间距/
+/// 代码块经 [`TextViewStyle`] 调
 fn styled_view(view: TextView) -> gpui_kit::AnyElement {
     div()
-        .text_size(px(13.))
+        .text_size(px(14.))
         .line_height(relative(1.75))
         // 滚动条槽预留(旧渲染器世界由列宽计算扣除,TextView 路径
         // 丢失 = 换行宽度吃满整行,右缘数个字符被裁);行尾不可断段

@@ -120,7 +120,7 @@ const fn dark_palette() -> Palette {
         success: color(0x30D158, 1.0),
         warn: color(0xFF9F0A, 1.0),
         bubble: color(0x303A49, 1.0),
-        label: color(0xFFFFFF, 1.0),
+        label: color(0xF9FAFB, 1.0),
         label_2: color(0xEBEBF5, 0.72),
         label_3: color(0xEBEBF5, 0.55),
         caption: color(0xEBEBF5, 0.38),
