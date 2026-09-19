@@ -36,11 +36,12 @@ pub const SCROLLBAR_GUTTER_W: f32 = 24.;
 pub const MIN_COL: f32 = 748.;
 /// 用户气泡占列宽比例(原 525/748 ≈ 70%,随列等比)
 pub const BUBBLE_RATIO: f32 = 0.7;
-/// 侧栏让位阈值:窗口减侧栏(展开态)不足此宽 = 对话列将跌破
-/// composer 默认宽度(MIN_COL)→ 左侧栏自动让位隐藏(变宽自动恢复;
-/// 见 AppStore::sync_sidebar_yield)。窗口硬下限另由 window_min_size
+/// 聊天内容区需求宽 = 对话列默认宽(MIN_COL)+ 双槽 + 两侧留白。
+/// 面板让位/拖宽协商预留此宽(面板打开时对话列仍恒 748);侧栏
+/// 让位同一阈值(窗口减侧栏不足此宽 → 左侧栏自动隐藏,
+/// 见 AppStore::sync_sidebar_yield);窗口硬下限由 window_min_size
 /// (960 ≥ 此值)兜底
-pub const SIDEBAR_YIELD_MIN: f32 = MIN_COL + 2. * H_PAD + NAV_GUTTER_W + SCROLLBAR_GUTTER_W;
+pub const CHAT_AREA_MIN: f32 = MIN_COL + 2. * H_PAD + NAV_GUTTER_W + SCROLLBAR_GUTTER_W;
 
 /// 侧栏拖宽 clamp 到协议范围 [SIDEBAR_MIN, SIDEBAR_MAX]。
 pub fn clamp_sidebar(px: f32) -> f32 {
@@ -52,7 +53,7 @@ pub fn clamp_sidebar(px: f32) -> f32 {
 /// 侧栏展开态算出更小的上限,收起态(隐藏)算出更宽的上限——正好对应
 /// 「先压聊天区 → 收左栏 → 继续压」协商序。
 pub fn panel_limit(viewport_w: f32, sidebar_collapsed: bool, sidebar_px: f32) -> f32 {
-    (viewport_w - f32::from(sidebar_width_for(sidebar_collapsed, sidebar_px)) - MIN_COL)
+    (viewport_w - f32::from(sidebar_width_for(sidebar_collapsed, sidebar_px)) - CHAT_AREA_MIN)
         .max(PANEL_MIN)
 }
 
@@ -72,7 +73,7 @@ pub fn panel_width_for(
 ) -> Pixels {
     px(if open {
         let sidebar = f32::from(sidebar_width_for(sidebar_collapsed, sidebar_px));
-        width.min((viewport_w - sidebar - MIN_COL).max(0.))
+        width.min((viewport_w - sidebar - CHAT_AREA_MIN).max(0.))
     } else {
         0.
     })
@@ -165,16 +166,16 @@ mod tests {
 
     #[test]
     fn panel_limit_negotiates_with_sidebar_form() {
-        // 展开态上限 = 1600 − 280 − 748 = 572(高于下限 540,原样)
-        assert_eq!(panel_limit(1600., false, SIDEBAR_W), 572.);
-        // 收起态(完全隐藏)= 1600 − 0 − 748 = 852
-        assert_eq!(panel_limit(1600., true, SIDEBAR_W), 852.);
+        // 展开态上限 = 1600 − 280 − 860 = 460(低于下限 540,触底)
+        assert_eq!(panel_limit(1600., false, SIDEBAR_W), PANEL_MIN);
+        // 收起态(完全隐藏)= 1600 − 0 − 860 = 740
+        assert_eq!(panel_limit(1600., true, SIDEBAR_W), 740.);
         // 极窄窗:上限触底 PANEL_MIN(面板仍在,聊天区让位)
         assert_eq!(panel_limit(800., false, SIDEBAR_W), PANEL_MIN);
         // 渲染兜底:存储宽超上限就地让位;面板收起恒 0
         assert_eq!(
             panel_width_for(true, 900., 1600., false, SIDEBAR_W),
-            px(572.)
+            px(460.)
         );
         assert_eq!(
             panel_width_for(true, 400., 1600., false, SIDEBAR_W),

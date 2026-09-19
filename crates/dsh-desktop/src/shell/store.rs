@@ -969,7 +969,7 @@ impl AppStore {
         // unfit 按展开态宽度判定(与当前是否已收起无关,防收起↔展开振荡):
         // 窗口减「若展开的侧栏」装不下对话列需求宽即不足
         let expanded_w = f32::from(crate::shell::metrics::clamp_sidebar(self.sidebar_px));
-        let unfit = viewport_w - expanded_w < crate::shell::metrics::SIDEBAR_YIELD_MIN;
+        let unfit = viewport_w - expanded_w < crate::shell::metrics::CHAT_AREA_MIN;
         if unfit && !self.sidebar_collapsed {
             self.sidebar_collapsed = true;
             self.sidebar_auto_collapsed = true;

@@ -3401,7 +3401,7 @@ fn panel_resize_negotiation_collapses_sidebar(cx: &mut TestAppContext) {
         (s.sidebar_collapsed, s.panel_px)
     });
     assert!(collapsed2, "越上限应自动收起左栏");
-    assert!((px2 - 1252.).abs() < 1., "收左栏后面板到协商上限,px2={px2}");
+    assert!((px2 - 1140.).abs() < 1., "收左栏后面板到协商上限,px2={px2}");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -3467,7 +3467,7 @@ fn panel_drag_widens_via_mouse_and_negotiates(cx: &mut TestAppContext) {
         (s.sidebar_collapsed, s.panel_px)
     });
     assert!(collapsed2, "左栏应保持收起");
-    assert!((px2 - 840.).abs() < 1., "面板随动到 840,px2={px2}");
+    assert!((px2 - 740.).abs() < 1., "面板随动到协商上限 740,px2={px2}");
     let col = wcx.debug_bounds("right-panel").expect("面板列应渲染");
     assert!(
         (col.size.width - px(px2)).abs() < px(1.),
@@ -3527,7 +3527,8 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
     };
 
     // 场景 A:960 窗 + 收起侧栏(完全隐藏 = 0)+ 面板意愿 540:
-    // 让位宽 = 960 − 0 − 748 = 212,面板渲染 212,聊天列拿足 748
+    // 面板让位预留内容区需求宽 860 → 面板 = 960 − 860 = 100,
+    // 聊天列恒 748
     resize(&mut wcx, 960.);
     open_panel(cx, &store);
     cx.update(|app| {
@@ -3544,13 +3545,13 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
     );
     let panel = wcx.debug_bounds("right-panel").expect("面板列应渲染");
     assert!(
-        (panel.size.width - px(212.)).abs() < px(1.),
-        "窄窗面板应让位到 212,panel={panel:?}"
+        (panel.size.width - px(100.)).abs() < px(1.),
+        "窄窗面板应让位到 100,panel={panel:?}"
     );
     let card = wcx.debug_bounds("content-card").expect("内容区应渲染");
     assert!(
-        (card.size.width - px(748.)).abs() < px(1.),
-        "聊天列应拿足 MIN_COL=748,card={card:?}"
+        (card.size.width - px(860.)).abs() < px(1.),
+        "内容卡应守 CHAT_AREA_MIN=860,聊天列恒 748,card={card:?}"
     );
     let rail = wcx.debug_bounds("nav-rail").expect("导航轨应渲染");
     assert!(
@@ -3565,8 +3566,8 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
         "滚动条挂点(content-card 右缘)应贴面板左缘,gap={gap:?} card={card:?} panel={panel:?}"
     );
 
-    // 场景 B:同窗展开侧栏(280):960 − 280 < 860(SIDEBAR_YIELD_MIN)
-    // → 侧栏自动让位隐藏;面板 = 960 − 0 − 748 = 212,聊天列拿足 748
+    // 场景 B:同窗展开侧栏(280):960 − 280 < 860(CHAT_AREA_MIN)
+    // → 侧栏自动让位隐藏;面板 = 960 − 860 = 100,聊天列恒 748
     // (回归锁:让位协商不得沿用在「到最小宽度继续压缩对话列」)
     cx.update(|app| {
         store.update(app, |st, cx| {
@@ -3587,8 +3588,8 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
     );
     let card_b = wcx.debug_bounds("content-card").expect("内容区应渲染");
     assert!(
-        (card_b.size.width - px(748.)).abs() < px(1.),
-        "侧栏让位后聊天列应拿足 MIN_COL=748,card={card_b:?}"
+        (card_b.size.width - px(860.)).abs() < px(1.),
+        "侧栏让位后内容卡守 860,聊天列恒 748,card={card_b:?}"
     );
     let rail_b = wcx.debug_bounds("nav-rail").expect("导航轨应渲染");
     assert!(
