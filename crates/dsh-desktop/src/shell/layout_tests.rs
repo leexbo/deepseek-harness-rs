@@ -5398,6 +5398,11 @@ fn turn_tail_pills_open_detail_cards(cx: &mut TestAppContext) {
     ] {
         assert!(wcx.debug_bounds(sel).is_some(), "轮尾动作钮 {sel} 未渲染");
     }
+    // 动作行去重:消息自带动作行让位(紧邻尾行时不再渲染消息复制钮)
+    assert!(
+        wcx.debug_bounds("copy-a:1:1").is_none(),
+        "紧邻尾行的消息不应再渲染自带复制钮(动作统一由尾行承载)"
+    );
     // 点用量 pill → 本轮用量卡;点用时 pill → 本轮用时和速度卡
     click_sel(&mut wcx, "turn-tail-turn-end:9-usage");
     wcx.refresh().expect("刷新失败");

@@ -1197,6 +1197,7 @@ fn render_node(
             reasoning,
             *streaming,
             message_id,
+            actions_in_tail(store, cx, ix),
         )
         .into_any_element(),
         ChatNode::Tool {
@@ -1573,6 +1574,7 @@ fn assistant_block(
     reasoning: &str,
     streaming: bool,
     message_id: &str,
+    hide_actions: bool,
 ) -> impl IntoElement {
     let open = open_reasoning.contains(key);
     let s = store.clone();
@@ -1667,8 +1669,10 @@ fn assistant_block(
             });
         col = col.child(body);
         // 定稿后可复制(流式中复制半截无意义);正文下方左对齐
-        // 常显动作行(文档流内,非浮层)= 复制 + 消息反馈(赞/踩/备注)
-        if !streaming {
+        // 常显动作行(文档流内,非浮层)= 复制 + 消息反馈(赞/踩/备注)。
+        // 若紧邻的下一渲染槽是本轮收尾行,动作由收尾行统一承载
+        // (照源 MessageIconActions 单行;否则赞/踩/复制重复两行)
+        if !streaming && !hide_actions {
             col = col.child(
                 div()
                     .flex()
@@ -2165,6 +2169,24 @@ fn copy_button(
             let (k, t) = (k.clone(), t.clone());
             s.update(cx, |st, cx| st.copy_message(&k, &t, cx));
         })
+}
+
+/// 紧邻的下一渲染槽是否为本轮收尾行(Node/组内成员槽位,节点为
+/// TurnTail)——成立时该 assistant 的消息动作行让位给收尾行
+fn actions_in_tail(store: &Entity<AppStore>, cx: &App, ix: usize) -> bool {
+    let st = store.read(cx);
+    let tail_next = st.chat.row_slots.iter().any(|s| match s {
+        RowSlot::Node(n) | RowSlot::GroupMember(n) => *n == ix + 1,
+        _ => false,
+    });
+    tail_next
+        && st
+            .state
+            .current_id
+            .as_deref()
+            .and_then(|id| st.state.chats.get(id))
+            .and_then(|c| c.nodes.get(ix + 1))
+            .is_some_and(|n| matches!(n, ChatNode::TurnTail { .. }))
 }
 
 /// 回合收尾行(照源 MessageIconActions + TurnTailNodeView:复制/赞/踩/
