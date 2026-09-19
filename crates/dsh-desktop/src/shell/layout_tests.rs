@@ -3358,8 +3358,8 @@ fn plan_review_compact_card_two_options(cx: &mut TestAppContext) {
 /// 面板拖宽协商:窄于 PANEL_MIN(540,320→640 实测
 /// 过宽→终值 540)就地抬到下限 → 加宽越过当前形态上限时自动收左栏
 /// (280→56)→ 继续加宽至新上限。以 store 动作直接驱动(viewport 经
-/// begin 固定;2000 视口:展开态上限 = 2000−280−748 = 972,收起态 =
-/// 2000−56−748 = 1196;面板默认 = 下限 540)
+/// begin 固定;2000 视口:展开态上限 = 2000−280−860 = 860,收起态 =
+/// 2000−860 = 1140;面板默认 = 下限 540)
 #[gpui_kit::test]
 fn panel_resize_negotiation_collapses_sidebar(cx: &mut TestAppContext) {
     let (store, _wcx, root) = menu_harness(cx, "panel-nego");
@@ -3381,18 +3381,18 @@ fn panel_resize_negotiation_collapses_sidebar(cx: &mut TestAppContext) {
         !cx.update(|app| store.read(app).sidebar_collapsed),
         "触下限不越上限,不应收左栏"
     );
-    // 阶段1:加宽到 want 860(cursor 680;972 上限内)→ 面板随动,左栏不动
+    // 阶段1:加宽到 want 780(cursor 760;860 上限内)→ 面板随动,左栏不动
     cx.update(|app| {
-        store.update(app, |st, cx| st.panel_resize_move(680., cx));
+        store.update(app, |st, cx| st.panel_resize_move(760., cx));
     });
     let (collapsed1, px1) = cx.update(|app| {
         let s = store.read(app);
         (s.sidebar_collapsed, s.panel_px)
     });
-    assert!((px1 - 860.).abs() < 1., "上限内面板随拖加宽,px1={px1}");
+    assert!((px1 - 780.).abs() < 1., "上限内面板随拖加宽,px1={px1}");
     assert!(!collapsed1, "阶段1内不应收起左栏");
-    // 阶段2:继续加宽到 want 1260(> 972)→ 自动收左栏,面板 1252(新上限
-    // = 2000 − 0(收起隐藏)− 748)
+    // 阶段2:继续加宽到 want 1260(> 860)→ 自动收左栏,面板 1140(新上限
+    // = 2000 − 0(收起隐藏)− 860)
     cx.update(|app| {
         store.update(app, |st, cx| st.panel_resize_move(280., cx));
     });
@@ -3401,13 +3401,14 @@ fn panel_resize_negotiation_collapses_sidebar(cx: &mut TestAppContext) {
         (s.sidebar_collapsed, s.panel_px)
     });
     assert!(collapsed2, "越上限应自动收起左栏");
-    assert!((px2 - 1252.).abs() < 1., "收左栏后面板到协商上限,px2={px2}");
+    assert!((px2 - 1140.).abs() < 1., "收左栏后面板到协商上限,px2={px2}");
     let _ = std::fs::remove_dir_all(root);
 }
 
 /// 面板拖宽全链路(真鼠标事件链:把手 mousedown → 窗口级 move → up):
 /// 加宽随动 → 越当前形态上限自动收左栏 → 抬起收尾;渲染宽 = 协商宽
-/// (无固定上限墙)。窗口 1600:展开态上限 572,收起态(隐藏)852。
+/// (无固定上限墙)。窗口 1600:展开态上限 460(触底 540),收起态
+/// (隐藏)740。
 #[gpui_kit::test]
 fn panel_drag_widens_via_mouse_and_negotiates(cx: &mut TestAppContext) {
     let (store, wcx, root) = menu_harness(cx, "panel-drag");
@@ -3429,8 +3430,8 @@ fn panel_drag_widens_via_mouse_and_negotiates(cx: &mut TestAppContext) {
         handle.origin.y + handle.size.height / 2.,
     );
 
-    // 面板默认 = 下限 540。按下 → 左移 100(want 640 > 展开态上限 572)
-    // → 自动收左栏,面板 640(≤ 收起态上限 796)
+    // 面板默认 = 下限 540。按下 → 左移 100(want 640 > 展开态上限 460)
+    // → 自动收左栏,面板 640(≤ 收起态上限 740)
     wcx.simulate_mouse_down(
         start,
         gpui_kit::MouseButton::Left,
@@ -3452,8 +3453,8 @@ fn panel_drag_widens_via_mouse_and_negotiates(cx: &mut TestAppContext) {
     assert!((px1 - 640.).abs() < 1., "面板随拖加宽到 640,px1={px1}");
     assert!(collapsed, "越展开态上限应自动收起左栏");
 
-    // 继续左移至 want 840(≤ 收起态上限 852):上限内随动(收起侧栏
-    // 不占宽,可再宽 56)
+    // 继续左移至 want 840(> 收起态上限 740):就地让位到 740(收起
+    // 侧栏不占宽,聊天区守 CHAT_AREA_MIN)
     wcx.simulate_mouse_move(
         gpui_kit::point(start.x - px(300.), start.y),
         gpui_kit::MouseButton::Left,
@@ -3467,7 +3468,7 @@ fn panel_drag_widens_via_mouse_and_negotiates(cx: &mut TestAppContext) {
         (s.sidebar_collapsed, s.panel_px)
     });
     assert!(collapsed2, "左栏应保持收起");
-    assert!((px2 - 840.).abs() < 1., "面板随动到 840,px2={px2}");
+    assert!((px2 - 740.).abs() < 1., "面板让位到协商上限 740,px2={px2}");
     let col = wcx.debug_bounds("right-panel").expect("面板列应渲染");
     assert!(
         (col.size.width - px(px2)).abs() < px(1.),
@@ -3527,7 +3528,8 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
     };
 
     // 场景 A:960 窗 + 收起侧栏(完全隐藏 = 0)+ 面板意愿 540:
-    // 让位宽 = 960 − 0 − 748 = 212,面板渲染 212,聊天列拿足 748
+    // 让位宽 = 960 − 0 − 860(CHAT_AREA_MIN)= 100,面板渲染 100,
+    // 内容卡守 860 下限(composer 默认宽度形态不再被压缩)
     resize(&mut wcx, 960.);
     open_panel(cx, &store);
     cx.update(|app| {
@@ -3544,13 +3546,13 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
     );
     let panel = wcx.debug_bounds("right-panel").expect("面板列应渲染");
     assert!(
-        (panel.size.width - px(212.)).abs() < px(1.),
-        "窄窗面板应让位到 212,panel={panel:?}"
+        (panel.size.width - px(100.)).abs() < px(1.),
+        "窄窗面板应让位到 100,panel={panel:?}"
     );
     let card = wcx.debug_bounds("content-card").expect("内容区应渲染");
     assert!(
-        (card.size.width - px(748.)).abs() < px(1.),
-        "聊天列应拿足 MIN_COL=748,card={card:?}"
+        (card.size.width - px(860.)).abs() < px(1.),
+        "内容卡应守 CHAT_AREA_MIN=860,card={card:?}"
     );
     let rail = wcx.debug_bounds("nav-rail").expect("导航轨应渲染");
     assert!(
@@ -3565,8 +3567,8 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
         "滚动条挂点(content-card 右缘)应贴面板左缘,gap={gap:?} card={card:?} panel={panel:?}"
     );
 
-    // 场景 B:同窗展开侧栏(280):960 − 280 − 748 < 0 → 面板让位到 0
-    // (不渲染),聊天区全宽可用(680)
+    // 场景 B:同窗展开侧栏(280):960 − 280 − 860 < 0 → 面板让位到 0
+    // (不渲染),内容卡守 860 下限(超出视口 180 由 overflow 裁剪)
     cx.update(|app| {
         store.update(app, |st, cx| {
             st.sidebar_collapsed = false;
@@ -3581,8 +3583,8 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
     );
     let card_b = wcx.debug_bounds("content-card").expect("内容区应渲染");
     assert!(
-        (card_b.size.width - px(680.)).abs() < px(1.),
-        "面板让没后内容区应全宽 680,card={card_b:?}"
+        (card_b.size.width - px(860.)).abs() < px(1.),
+        "面板让没后内容卡应守 860 下限,card={card_b:?}"
     );
     let rail_b = wcx.debug_bounds("nav-rail").expect("导航轨应渲染");
     assert!(

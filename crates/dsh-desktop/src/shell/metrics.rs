@@ -57,7 +57,7 @@ pub fn clamp_sidebar(px: f32) -> f32 {
 /// 侧栏展开态算出更小的上限,收起态(隐藏)算出更宽的上限——正好对应
 /// 「先压聊天区 → 收左栏 → 继续压」协商序。
 pub fn panel_limit(viewport_w: f32, sidebar_collapsed: bool, sidebar_px: f32) -> f32 {
-    (viewport_w - f32::from(sidebar_width_for(sidebar_collapsed, sidebar_px)) - MIN_COL)
+    (viewport_w - f32::from(sidebar_width_for(sidebar_collapsed, sidebar_px)) - CHAT_AREA_MIN)
         .max(PANEL_MIN)
 }
 
@@ -77,7 +77,7 @@ pub fn panel_width_for(
 ) -> Pixels {
     px(if open {
         let sidebar = f32::from(sidebar_width_for(sidebar_collapsed, sidebar_px));
-        width.min((viewport_w - sidebar - MIN_COL).max(0.))
+        width.min((viewport_w - sidebar - CHAT_AREA_MIN).max(0.))
     } else {
         0.
     })
@@ -177,16 +177,16 @@ mod tests {
 
     #[test]
     fn panel_limit_negotiates_with_sidebar_form() {
-        // 展开态上限 = 1600 − 280 − 748 = 572(高于下限 540,原样)
-        assert_eq!(panel_limit(1600., false, SIDEBAR_W), 572.);
-        // 收起态(完全隐藏)= 1600 − 0 − 748 = 852
-        assert_eq!(panel_limit(1600., true, SIDEBAR_W), 852.);
+        // 展开态上限 = 1600 − 280 − 860 = 460(低于下限 540,触底)
+        assert_eq!(panel_limit(1600., false, SIDEBAR_W), PANEL_MIN);
+        // 收起态(完全隐藏)= 1600 − 0 − 860 = 740
+        assert_eq!(panel_limit(1600., true, SIDEBAR_W), 740.);
         // 极窄窗:上限触底 PANEL_MIN(面板仍在,聊天区让位)
         assert_eq!(panel_limit(800., false, SIDEBAR_W), PANEL_MIN);
         // 渲染兜底:存储宽超上限就地让位;面板收起恒 0
         assert_eq!(
             panel_width_for(true, 900., 1600., false, SIDEBAR_W),
-            px(572.)
+            px(460.)
         );
         assert_eq!(
             panel_width_for(true, 400., 1600., false, SIDEBAR_W),
