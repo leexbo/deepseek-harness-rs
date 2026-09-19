@@ -279,6 +279,10 @@ pub(crate) struct ChatStore {
     pub tv_subs: Vec<gpui_kit::Subscription>,
     /// 轮尾统计卡开态(用量/用时 pill 点击;点击坐标锚定,根级渲染)
     pub tail_card: Option<TailCard>,
+    /// 轮号用量桶,键 = (会话 id, 轮号)。挂应用级 ChatStore 而非会话
+    /// 投影:回填 RPC 与投影建立谁先到都不丢(投影重建不焚毁),重开
+    /// 会话由冷读 turnList 再灌一次
+    pub turn_usage: HashMap<(String, u64), serde_json::Value>,
 }
 
 /// 轮尾统计卡(照源 TurnUsagePanel/TurnTimePanel 的 popover)
@@ -342,6 +346,7 @@ impl Default for ChatStore {
             composer_menu: ComposerMenu::None,
             perm_chip_bounds: None,
             tail_card: None,
+            turn_usage: HashMap::new(),
             composer_submenu: None,
             queue_dock_collapsed: true,
             queue_editing: None,
@@ -1645,11 +1650,9 @@ impl AppStore {
         let Some(turn) = last_turn["turn"].as_u64() else {
             return;
         };
-        let Some(chat) = self.state.chats.get_mut(id) else {
-            return;
-        };
-        if chat.turn_usage.get(&turn) != Some(last_turn) {
-            chat.note_turn_usage(turn, last_turn);
+        let key = (id.to_string(), turn);
+        if self.chat.turn_usage.get(&key) != Some(last_turn) {
+            self.chat.turn_usage.insert(key, last_turn.clone());
             cx.notify();
         }
     }
@@ -1665,16 +1668,14 @@ impl AppStore {
         let Some(list) = turn_list.as_array() else {
             return;
         };
-        let Some(chat) = self.state.chats.get_mut(id) else {
-            return;
-        };
         let mut changed = false;
         for bucket in list {
-            if let Some(turn) = bucket["turn"].as_u64()
-                && chat.turn_usage.get(&turn) != Some(bucket)
-            {
-                chat.note_turn_usage(turn, bucket);
-                changed = true;
+            if let Some(turn) = bucket["turn"].as_u64() {
+                let key = (id.to_string(), turn);
+                if self.chat.turn_usage.get(&key) != Some(bucket) {
+                    self.chat.turn_usage.insert(key, bucket.clone());
+                    changed = true;
+                }
             }
         }
         if changed {

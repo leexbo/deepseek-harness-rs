@@ -2223,12 +2223,7 @@ fn turn_tail(
                 _ => None,
             })
     });
-    let bucket = st
-        .state
-        .chats
-        .get(&session)
-        .and_then(|c| c.turn_usage.get(&turn))
-        .cloned();
+    let bucket = st.chat.turn_usage.get(&(session.clone(), turn)).cloned();
     let total = bucket.as_ref().map(|b| {
         b["uncachedInputTokens"].as_u64().unwrap_or(0)
             + b["cacheReadTokens"].as_u64().unwrap_or(0)
@@ -2477,11 +2472,9 @@ pub(crate) fn turn_time_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
 fn tail_card_bucket(store: &Entity<AppStore>, cx: &App) -> Option<serde_json::Value> {
     let st = store.read(cx);
     let tc = st.chat.tail_card.as_ref()?;
-    st.state
-        .chats
-        .get(&tc.session_id)?
+    st.chat
         .turn_usage
-        .get(&tc.turn)
+        .get(&(tc.session_id.clone(), tc.turn))
         .cloned()
 }
 

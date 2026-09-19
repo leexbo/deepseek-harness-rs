@@ -274,9 +274,6 @@ pub struct ChatState {
     pub compact_queued: bool,
     /// 当前 turn 已产出的 diff/edit 路径(去重保序;turn/end 挂 TurnTail 产物行)
     pub turn_deliverables: Vec<String>,
-    /// 轮号 → 轮桶(session/stats `lastTurn` 直播喂入 + 冷读 `turnList`
-    /// 整批喂入;轮尾用量/用时 pill 与统计卡的查询源)
-    pub turn_usage: std::collections::HashMap<u64, serde_json::Value>,
     /// 当前 turn 起始时刻(信封毫秒;turn/end 求轮墙钟用时,瞬态不入相等性)
     turn_started_ms: Option<i64>,
     /// 节点出生时刻(入场动画年龄门控:超龄不包动画,gpui list 虚拟化
@@ -319,15 +316,6 @@ impl ChatState {
         self.node_born.retain(|k, _| live.contains(k.as_str()));
         self.retry_deadlines
             .retain(|k, _| live.contains(k.as_str()));
-    }
-
-    /// 喂入单轮用量桶(宿主 session/stats `lastTurn` 直播帧与冷读
-    /// `turnList` 同形;按轮号覆盖写,直播后到不漂移)
-    pub fn note_turn_usage(&mut self, turn: u64, bucket: &serde_json::Value) {
-        if bucket.is_null() {
-            return;
-        }
-        self.turn_usage.insert(turn, bucket.clone());
     }
 
     /// 应用单个客方事件
@@ -1293,10 +1281,9 @@ mod tests {
         }
     }
 
-    /// 轮墙钟用时:turn/start 与 turn/end 信封时刻差;turn_usage 桶按
-    /// 轮号喂入后可被尾行查询
+    /// 轮墙钟用时:turn/start 与 turn/end 信封时刻差
     #[test]
-    fn turn_tail_tracks_run_ms_and_usage_bucket() {
+    fn turn_tail_tracks_run_ms() {
         let mut st = ChatState::default();
         let mut start = ev("turn/start", 1, json!({ "turn": 1 }));
         start.time = 1_000;
@@ -1315,13 +1302,6 @@ mod tests {
             }
             other => panic!("expected turn tail, got {other:?}"),
         }
-        // 桶喂入(宿主 stats lastTurn 同形)→ 按轮号可查
-        st.note_turn_usage(
-            1,
-            &json!({ "turn": 1, "runMs": 30_000, "outputTokens": 2645 }),
-        );
-        assert!(st.turn_usage.contains_key(&1));
-        assert_eq!(st.turn_usage.get(&1).unwrap()["outputTokens"], 2645);
     }
 
     /// 压缩事件对:summary → Compaction 标记行(带统计);error →

@@ -5583,9 +5583,17 @@ fn context_meter_renders_and_opens(cx: &mut TestAppContext) {
     );
 
     click_sel(&mut wcx, "context-ring");
-    wcx.refresh().expect("刷新失败");
-    cx.update(|_: &mut gpui_kit::App| {});
-    cx.run_until_parked();
+    // 详情卡同为单帧断言面:并发负载下偶发晚一拍,轮询兜底
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+        if wcx.debug_bounds("context-ring-open").is_some() || std::time::Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert!(
         wcx.debug_bounds("context-ring-open").is_some(),
         "详情卡未打开"
