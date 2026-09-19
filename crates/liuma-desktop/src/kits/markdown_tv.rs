@@ -30,7 +30,14 @@ fn styled_view(view: TextView) -> gpui_kit::AnyElement {
         // 滚动条槽不在内层预留:外层列表容器已让位 SCROLLBAR_GUTTER
         // (悬浮滚动条在槽内,不在列上),内层再扣一份 = 正文比
         // composer 窄一截、右缘不齐
+        //
+        // pr 12:真机(平台字体 shape)折行宽对容器宽存在个位~十几像素
+        // 的测量差,行末字符被 overflow_hidden 裁半(真机反馈「内容右
+        // 缘被截断」,侧栏全关、空间充足仍复现;测试 TestTextSystem 无
+        // 此差)。右内边距把折行宽压回可视宽内,症状消除;余量不改变
+        // 文本右缘与 composer 对齐的观感。
         .overflow_hidden()
+        .pr(px(12.))
         .child(view)
         .into_any_element()
 }
