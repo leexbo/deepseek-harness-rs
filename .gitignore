@@ -9,6 +9,7 @@ docs/history/
 docs/plans/
 
 # 运行时/构建产物
+.liuma/
 .dshrs/
 .zcode/
 .tmp/

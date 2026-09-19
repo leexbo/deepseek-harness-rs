@@ -1,8 +1,8 @@
-# dsh 设计文档
+# liuma 设计文档
 
 ## 1. 引言与质量目标
 
-dsh 是 agent harness:驱动 LLM 多轮对话与工具执行,以事件日志为会话的唯一事实源。宿主为原生 Rust(wasmtime 47+),会话组件产物目标 `wasm32-wasip2`,接口按 WASI 0.3 形状定义。
+liuma 是 agent harness:驱动 LLM 多轮对话与工具执行,以事件日志为会话的唯一事实源。宿主为原生 Rust(wasmtime 47+),会话组件产物目标 `wasm32-wasip2`,接口按 WASI 0.3 形状定义。
 
 质量目标(按重要性排序):
 
@@ -28,13 +28,13 @@ dsh 是 agent harness:驱动 LLM 多轮对话与工具执行,以事件日志为�
 
 ```mermaid
 flowchart LR
-    USER["用户"] -->|"CLI / REPL / JSON-RPC"| DSH
-    DSH["dsh"] -->|"HTTPS + SSE"| LLM["LLM provider<br/>(deepseek-responses / openai-responses / anthropic / deepseek-chat / openai-chat)"]
-    DSH -->|"沙箱子进程"| OS["操作系统<br/>(bash · seatbelt / landlock / bwrap)"]
-    DSH -->|"读 / 写"| FS[("文件系统<br/>(JSONL 会话日志)")]
+    USER["用户"] -->|"CLI / REPL / JSON-RPC"| LIUMA
+    DSH["liuma"] -->|"HTTPS + SSE"| LLM["LLM provider<br/>(deepseek-responses / openai-responses / anthropic / deepseek-chat / openai-chat)"]
+    LIUMA -->|"沙箱子进程"| OS["操作系统<br/>(bash · seatbelt / landlock / bwrap)"]
+    LIUMA -->|"读 / 写"| FS[("文件系统<br/>(JSONL 会话日志)")]
 ```
 
-**范围**:单机会话引擎——对话循环、工具执行、事件持久化、审计、stdio 互操作。会话日志存于 `<DSH_RS_HOME\|~/.dshrs>/sessions/<projectKey(workspace)>/<sessionId>/session.jsonl`(`projectKey` = 路径分隔符折叠为 `-` 并包 `--…--`;独立目录名防与其他宿主混存;旧布局(工作区根/工作区 `.dshrs`)启动时幂等迁移)。
+**范围**:单机会话引擎——对话循环、工具执行、事件持久化、审计、stdio 互操作。会话日志存于 `<LIUMA_HOME\|~/.liuma>/sessions/<projectKey(workspace)>/<sessionId>/session.jsonl`(`projectKey` = 路径分隔符折叠为 `-` 并包 `--…--`;独立目录名防与其他宿主混存;旧布局(工作区根/工作区 `.liuma`)启动时幂等迁移)。
 
 **Non-Goals**(明确不做):多机分布式会话;自带观测后端(OTLP 仅留接缝);沙箱逃逸防御以外的系统级隔离(容器/VM);LLM 训练与缓存;web/浏览器前端(UI 仅保留 GPUI 桌面客户端,stdio 网关保留通道抽象)。
 
@@ -45,36 +45,36 @@ flowchart LR
 1. **事件溯源:日志是唯一事实源。** 会话的全部状态是追加式事件日志;模型历史、审计、遥测、终端渲染都是投影。状态只有一份,派生有唯一实现。
 2. **不变式置于结构性边界。** 「模型可见 ⟺ 已记录」由宿主闸门在唯一出网点强制;沙箱不可用即拒绝执行;确定性由注入强制。规则放在无法被绕过的位置,而非约定。
 3. **能力即束。** 权限是随执行世界传递的数据(cwd + 可写根 + 取消令牌),窄化传递即子环境边界;不做散落各处的运行前检查。
-4. **一切皆插件:核心无特权。** 能力一律注册,核心只依赖端口——provider 是注册的 `ProviderAdapter`,工具是实现 `ToolPort` 的注册方,插件是总线订阅加生命周期,日志后端实现 `LogBackend`,传输实现 `LlmTransport`。核心路径(日志、闸门、状态机)不出现任何具体能力的名字;装配决定具体实现,扩展等于注册,不等于修改。宿主拥有原语,但原语本身也在 trait 之后。端口定义在组件侧(dsh-agent-loop,对应 WIT import),宿主实现分属 `dsh-llm`(LLM transport / provider 方言)与 `dsh-sandbox`(沙箱 / spawn / PTY)——替换实现 = 换 crate 依赖,不触碰宿主核心。
+4. **一切皆插件:核心无特权。** 能力一律注册,核心只依赖端口——provider 是注册的 `ProviderAdapter`,工具是实现 `ToolPort` 的注册方,插件是总线订阅加生命周期,日志后端实现 `LogBackend`,传输实现 `LlmTransport`。核心路径(日志、闸门、状态机)不出现任何具体能力的名字;装配决定具体实现,扩展等于注册,不等于修改。宿主拥有原语,但原语本身也在 trait 之后。端口定义在组件侧(liuma-agent-loop,对应 WIT import),宿主实现分属 `liuma-llm`(LLM transport / provider 方言)与 `liuma-sandbox`(沙箱 / spawn / PTY)——替换实现 = 换 crate 依赖,不触碰宿主核心。
 5. **契约超前,产物保守。** 接口按 WASI 0.3 形状定义,产物走 0.2 目标;切换发生时无迁移债务。
 
 ## 5. 构件视图
 
-### 5.1 白盒:dsh 系统
+### 5.1 白盒:liuma 系统
 
 ```mermaid
 flowchart TB
-    subgraph CLI["dsh(CLI 装配)"]
+    subgraph CLI["liuma(CLI 装配)"]
         CHAT["chat(单轮 / REPL)"]
         SERVE["serve(JSON-RPC 网关)"]
     end
-    subgraph LOOP["dsh-agent-loop"]
+    subgraph LOOP["liuma-agent-loop"]
         ENGINE["LoopEngine(turn/step 状态机)"]
         CT["CancelToken"]
     end
-    subgraph TRANSPORT["LLM 接入(dsh-llm)"]
+    subgraph TRANSPORT["LLM 接入(liuma-llm)"]
         GATE["InvariantGate"]
         ADP["ProviderAdapter ×5(通用引擎 ×3 + Ext 差异点)"]
         HTTP["HttpTransport"]
         GATE --> ADP --> HTTP
     end
-    subgraph TOOLS["dsh-tools"]
+    subgraph TOOLS["liuma-tools"]
         BASH["BashTool(pipes / PTY)"]
         FILE["FileTools(read / edit / search)"]
-        SBX["沙箱链 + 组信号(dsh-sandbox)"]
+        SBX["沙箱链 + 组信号(liuma-sandbox)"]
         BASH --> SBX
     end
-    subgraph SESSION["dsh-session"]
+    subgraph SESSION["liuma-session"]
         LOG[("EventLog")]
         DERIVE["derive_messages"]
     end
@@ -98,48 +98,48 @@ flowchart TB
     CT -.-> ENGINE
 ```
 
-依赖方向:`dsh` → `dsh-host` → `dsh-agent-loop` → `dsh-session`;`dsh-tools` 依赖 dsh-host 与 agent-loop;LLM 接入(`dsh-llm`)与执行原语(`dsh-sandbox`)是宿主侧的独立能力 crate——替换 provider / 沙箱实现 = 换 crate 依赖,不触碰核心;契约层(`wit/`)独立于全部 crate。
+依赖方向:`liuma` → `liuma-host` → `liuma-agent-loop` → `liuma-session`;`liuma-tools` 依赖 liuma-host 与 agent-loop;LLM 接入(`liuma-llm`)与执行原语(`liuma-sandbox`)是宿主侧的独立能力 crate——替换 provider / 沙箱实现 = 换 crate 依赖,不触碰核心;契约层(`wit/`)独立于全部 crate。
 
 ### 5.2 构件职责
 
 | 构件 | 职责 | 对外接口 |
 |---|---|---|
-| `dsh` | CLI 入口(薄壳):参数解析、终端渲染(REPL/Reporter)、stdio 网关装配 | `chat` / `serve` / `info` 子命令 |
-| `dsh-app` | 会话装配层:配置合并、prompt 组装、transport 构建、preset 工具组装、`Session`(turn 驱动 + 会话级事件)、日志重载 | 库 API |
-| `dsh-core` | 多会话应用核心:多会话注册表(worker/队列/turn 内计划评审)、客方线上协议类型、事件翻译(我方词汇 → 客方 SessionEvent)、轨迹/统计/上下文投影;构建于 `dsh-app` 之上(单会话装配 ↔ 多会话核心的分工) | 库 API(`dsh-desktop` 进程内直连) |
-| `dsh-desktop` | 桌面客户端(GPUI 原生 UI,gpui-component):进程内直连 `dsh-core` AppHost(同步方法直调/异步经 tokio runtime,mux+host 广播帧经 futures channel 桥入 GPUI),唯一 UI 客户端;关窗即退出 | `dsh-desktop [--workspace <dir>] [--fake]` |
-| `dsh-host` | 组件宿主:wasmtime 组件管理器、事件总线与插件、持久化(JSONL/turso)、总线 transport、rpc 网关、遥测、配置/preset | 库 API(LLM 接入见 dsh-llm,执行原语见 dsh-sandbox) |
-| `dsh-llm` | LLM 接入:通用方言引擎(chat/responses/anthropic)+ Ext 差异点(deepseek-responses / openai-responses / anthropic / deepseek-chat / openai-chat)、HTTP/SSE transport、不变式闸门(InvariantGate)、假 provider 测试装备 | 库 API;扩展点 `ProviderAdapter` / `FrameMapper` / `ChatExt` / `ResponsesExt` / `AnthropicExt` |
-| `dsh-sandbox` | 执行原语:沙箱链(fail-closed)、受控 spawn/PTY(独立进程组、SIGTERM→grace→SIGKILL) | 库 API |
-| `dsh-agent-loop` | turn/step 状态机;驱动端口定义 | `LlmTransport` / `Summarizer` / `ToolPort` / `ToolSet`(名字分发)/ `CancelToken`(trait 由宿主实现) |
-| `dsh-compaction` | 上下文压缩策略(纯函数):压力阈值/保留尾 token 预算(0.8/0.16×窗口)、压缩范围选段(tool 配对平衡切点)、checkpoint 摘要指令(照源 compaction 包族语义) | 纯函数(select_range / measure_tokens / COMPACTION_INSTRUCTION) |
-| `dsh-plan` | 计划模式协作状态(照源 packages/plan 包边界):状态折叠(模式/待审/活跃计划)、plan:policy 提示词段、exit_plan_mode 工具(turn 内阻塞评审,`^#\\s+\\S` 标题校验)、PlanReviewPort(宿主面:dsh-core/Gateway/CLI)、事件信封构造与载荷校验 | `PlanTool` / `PlanReviewPort` / `header_sections` / 纯函数 fold |
-| `dsh-session` | 事件日志:信封、类型、seq 强制、消息派生、归因查询 | rlib API + WIT `dsh:session` 导出 |
-| `dsh-prompt` | system prompt 组装(纯函数;宿主注入身份/环境/指令文件内容;plan 段由 dsh-plan 预渲染注入) | `assemble(ctx)` |
-| `dsh-tools` | BashTool(沙箱执行、取消、PTY)+ FileTools(file_read / file_edit / file_search——检索为 ripgrep 引擎:ignore 遍历尊重 .gitignore,grep-searcher 行搜索)+ TodoTool(todo/state)+ GoalTool(goal/state)+ SubagentTool(嵌套引擎,独立子日志,能力束窄化)+ SubagentControlTool + JobTool(后台任务 list/read/stop;输出落盘 .dshrs/jobs) | `ToolPort` 实现 |
-| `dsh-mcp` | MCP client 桥:stdio server 连接(后台任务,不阻塞装配)与工具桥接(公共名 `mcp__<server>__<tool>`、raw name 走线、整代原子换带、list_changed 重同步、内容投影) | `McpServerPort`(ToolPort 实现) |
-| `dsh-wit` | host 侧 bindgen 与组件契约测试 | 测试套件 |
-| `dsh-example-tool` | 示例工具组件(echo_config / spin):`dsh:tools` world 参考实现与测试物料(rlib + wasm32-wasip2 双产物,照 dsh-session 模式) | WIT `dsh:tools` 导出 |
+| `liuma` | CLI 入口(薄壳):参数解析、终端渲染(REPL/Reporter)、stdio 网关装配 | `chat` / `serve` / `info` 子命令 |
+| `liuma-app` | 会话装配层:配置合并、prompt 组装、transport 构建、preset 工具组装、`Session`(turn 驱动 + 会话级事件)、日志重载 | 库 API |
+| `liuma-core` | 多会话应用核心:多会话注册表(worker/队列/turn 内计划评审)、客方线上协议类型、事件翻译(我方词汇 → 客方 SessionEvent)、轨迹/统计/上下文投影;构建于 `liuma-app` 之上(单会话装配 ↔ 多会话核心的分工) | 库 API(`liuma-desktop` 进程内直连) |
+| `liuma-desktop` | 桌面客户端(GPUI 原生 UI,gpui-component):进程内直连 `liuma-core` AppHost(同步方法直调/异步经 tokio runtime,mux+host 广播帧经 futures channel 桥入 GPUI),唯一 UI 客户端;关窗即退出 | `liuma-desktop [--workspace <dir>] [--fake]` |
+| `liuma-host` | 组件宿主:wasmtime 组件管理器、事件总线与插件、持久化(JSONL/turso)、总线 transport、rpc 网关、遥测、配置/preset | 库 API(LLM 接入见 liuma-llm,执行原语见 liuma-sandbox) |
+| `liuma-llm` | LLM 接入:通用方言引擎(chat/responses/anthropic)+ Ext 差异点(deepseek-responses / openai-responses / anthropic / deepseek-chat / openai-chat)、HTTP/SSE transport、不变式闸门(InvariantGate)、假 provider 测试装备 | 库 API;扩展点 `ProviderAdapter` / `FrameMapper` / `ChatExt` / `ResponsesExt` / `AnthropicExt` |
+| `liuma-sandbox` | 执行原语:沙箱链(fail-closed)、受控 spawn/PTY(独立进程组、SIGTERM→grace→SIGKILL) | 库 API |
+| `liuma-agent-loop` | turn/step 状态机;驱动端口定义 | `LlmTransport` / `Summarizer` / `ToolPort` / `ToolSet`(名字分发)/ `CancelToken`(trait 由宿主实现) |
+| `liuma-compaction` | 上下文压缩策略(纯函数):压力阈值/保留尾 token 预算(0.8/0.16×窗口)、压缩范围选段(tool 配对平衡切点)、checkpoint 摘要指令(照源 compaction 包族语义) | 纯函数(select_range / measure_tokens / COMPACTION_INSTRUCTION) |
+| `liuma-plan` | 计划模式协作状态(照源 packages/plan 包边界):状态折叠(模式/待审/活跃计划)、plan:policy 提示词段、exit_plan_mode 工具(turn 内阻塞评审,`^#\\s+\\S` 标题校验)、PlanReviewPort(宿主面:liuma-core/Gateway/CLI)、事件信封构造与载荷校验 | `PlanTool` / `PlanReviewPort` / `header_sections` / 纯函数 fold |
+| `liuma-session` | 事件日志:信封、类型、seq 强制、消息派生、归因查询 | rlib API + WIT `liuma:session` 导出 |
+| `liuma-prompt` | system prompt 组装(纯函数;宿主注入身份/环境/指令文件内容;plan 段由 liuma-plan 预渲染注入) | `assemble(ctx)` |
+| `liuma-tools` | BashTool(沙箱执行、取消、PTY)+ FileTools(file_read / file_edit / file_search——检索为 ripgrep 引擎:ignore 遍历尊重 .gitignore,grep-searcher 行搜索)+ TodoTool(todo/state)+ GoalTool(goal/state)+ SubagentTool(嵌套引擎,独立子日志,能力束窄化)+ SubagentControlTool + JobTool(后台任务 list/read/stop;输出落盘 .liuma/jobs) | `ToolPort` 实现 |
+| `liuma-mcp` | MCP client 桥:stdio server 连接(后台任务,不阻塞装配)与工具桥接(公共名 `mcp__<server>__<tool>`、raw name 走线、整代原子换带、list_changed 重同步、内容投影) | `McpServerPort`(ToolPort 实现) |
+| `liuma-wit` | host 侧 bindgen 与组件契约测试 | 测试套件 |
+| `liuma-example-tool` | 示例工具组件(echo_config / spin):`liuma:tools` world 参考实现与测试物料(rlib + wasm32-wasip2 双产物,照 liuma-session 模式) | WIT `liuma:tools` 导出 |
 | `wit/` | 全部契约定义,唯一契约源 | 七个 WIT 包(§7.6) |
 
 ### 5.3 仓库布局
 
 ```
-wit/                      契约层(dsh:json/session/loop/events/host/plugin/tools)
-crates/dsh/               宿主二进制(CLI 薄壳)
-crates/dsh-app/           会话装配层
-crates/dsh-desktop/       GPUI 桌面客户端(进程内直连 dsh-core 宿主;唯一 UI 客户端)
-crates/dsh-core/          多会话应用核心(注册表/协议类型/事件翻译/轨迹/统计/上下文)
-crates/dsh-host/          组件宿主(组件管理器/总线/持久化/网关/遥测)
-crates/dsh-llm/           LLM 接入(provider 方言/HTTP/SSE/不变式闸门)
-crates/dsh-sandbox/       执行原语(沙箱链/进程/PTY)
-crates/dsh-wit/           host bindgen + 组件契约测试
-crates/dsh-session/       事件日志组件(wasm32-wasip2 产物 + rlib)
-crates/dsh-agent-loop/    turn 引擎 + 端口 trait
-crates/dsh-compaction/    上下文压缩策略(阈值/选段/摘要指令,纯函数)
-crates/dsh-prompt/        prompt 组装
-crates/dsh-tools/         工具注册表与内置工具(含 BashTool)
-crates/dsh-example-tool/  示例工具组件(dsh:tools 参考实现,测试物料)
+wit/                      契约层(liuma:json/session/loop/events/host/plugin/tools)
+crates/liuma/               宿主二进制(CLI 薄壳)
+crates/liuma-app/           会话装配层
+crates/liuma-desktop/       GPUI 桌面客户端(进程内直连 liuma-core 宿主;唯一 UI 客户端)
+crates/liuma-core/          多会话应用核心(注册表/协议类型/事件翻译/轨迹/统计/上下文)
+crates/liuma-host/          组件宿主(组件管理器/总线/持久化/网关/遥测)
+crates/liuma-llm/           LLM 接入(provider 方言/HTTP/SSE/不变式闸门)
+crates/liuma-sandbox/       执行原语(沙箱链/进程/PTY)
+crates/liuma-wit/           host bindgen + 组件契约测试
+crates/liuma-session/       事件日志组件(wasm32-wasip2 产物 + rlib)
+crates/liuma-agent-loop/    turn 引擎 + 端口 trait
+crates/liuma-compaction/    上下文压缩策略(阈值/选段/摘要指令,纯函数)
+crates/liuma-prompt/        prompt 组装
+crates/liuma-tools/         工具注册表与内置工具(含 BashTool)
+crates/liuma-example-tool/  示例工具组件(liuma:tools 参考实现,测试物料)
 presets/                  内置能力 preset manifest(standard / minimal,YAML,编译进二进制)
 scripts/                  verify-* 脚本
 ```
@@ -185,11 +185,11 @@ JSONL 日志逐事件重放:信封校验(§7.1)通过即重建 EventLog,`derive_
 
 ### 6.4 场景:网关并发
 
-`dsh serve` 中 turn 后台执行,读端不被长 turn 阻塞;`cancel` 请求在 turn 执行期间可到达并触发软取消。事件通知与响应经同一 FIFO 下行通道写出(顺序 = 事件发生顺序);通道抽象与传输无关,写端可替换为 WebSocket。
+`liuma serve` 中 turn 后台执行,读端不被长 turn 阻塞;`cancel` 请求在 turn 执行期间可到达并触发软取消。事件通知与响应经同一 FIFO 下行通道写出(顺序 = 事件发生顺序);通道抽象与传输无关,写端可替换为 WebSocket。
 
-### 6.5 场景:桌面会话(dsh-desktop)
+### 6.5 场景:桌面会话(liuma-desktop)
 
-`dsh-desktop` 在自身进程内直接构造 `dsh-core` 的 `AppHost`(专任 tokio runtime):同步方法直调、异步方法经 runtime 派发,mux/host 广播帧经 futures channel 桥入 GPUI 事件循环——无 loopback HTTP/WS,无序列化往返。UI = 事件投影:GPUI reducer 与 Rust 翻译表(`dsh-core/src/translate.rs`)同仓同源;历史回填与直播共用 `session.history` 分页重放 + `session/subscribed` 基线;计划审批 = `question/requested` 帧接管 composer → `respond` → `question/resolved`。队列/steer:提交 mode=queue|steer,队列瞬态经 `session/queue` 帧整表下发(queued + steering 两种 placement,基线随 subscribed 重推),steer 认领落 `agent/inbox/spliced`(inserted+removed 双 splice,id 与 user/message 同源),`session.updateQueue` 变更 edit/remove/steer;`session.export` 返回原始会话 JSONL。轨迹台账(`trajectory_page` 读取面)与直播(`trajectory/delta` 帧)同源:宿主槽位驻留增量折叠器(`TrajectoryFolder`,逐事件 feed,驱动 turn sink 单写,attach 暖机 + RPC 读前兜底补喂,seq 连续性自愈),批量折叠即其包装——`trajectory/delta` 载荷 = 变更缓冲(records 按 index、requests 按 number 的 upsert 全量对象 + total + lastSeq),桌面不管面板可见与否直接应用;基线拉取与增量的竞态以「拉取发起时记录增量计数、回包落库时已前进即重拉」收敛。
+`liuma-desktop` 在自身进程内直接构造 `liuma-core` 的 `AppHost`(专任 tokio runtime):同步方法直调、异步方法经 runtime 派发,mux/host 广播帧经 futures channel 桥入 GPUI 事件循环——无 loopback HTTP/WS,无序列化往返。UI = 事件投影:GPUI reducer 与 Rust 翻译表(`liuma-core/src/translate.rs`)同仓同源;历史回填与直播共用 `session.history` 分页重放 + `session/subscribed` 基线;计划审批 = `question/requested` 帧接管 composer → `respond` → `question/resolved`。队列/steer:提交 mode=queue|steer,队列瞬态经 `session/queue` 帧整表下发(queued + steering 两种 placement,基线随 subscribed 重推),steer 认领落 `agent/inbox/spliced`(inserted+removed 双 splice,id 与 user/message 同源),`session.updateQueue` 变更 edit/remove/steer;`session.export` 返回原始会话 JSONL。轨迹台账(`trajectory_page` 读取面)与直播(`trajectory/delta` 帧)同源:宿主槽位驻留增量折叠器(`TrajectoryFolder`,逐事件 feed,驱动 turn sink 单写,attach 暖机 + RPC 读前兜底补喂,seq 连续性自愈),批量折叠即其包装——`trajectory/delta` 载荷 = 变更缓冲(records 按 index、requests 按 number 的 upsert 全量对象 + total + lastSeq),桌面不管面板可见与否直接应用;基线拉取与增量的竞态以「拉取发起时记录增量计数、回包落库时已前进即重拉」收敛。
 
 
 ## 7. 横切概念
@@ -247,7 +247,7 @@ JSONL 日志逐事件重放:信封校验(§7.1)通过即重建 EventLog,`derive_
 模型可见消息 = 裸映射 + 显式策略栈(`derive_visible_messages`,唯一实现):
 
 1. **tool/result 裁剪**:输出超 8192 字符截断为 head 4096 + tail 1024,中段注明省略量;常量而非配置——投影必须跨重放稳定。日志保留全文(审计保真),裁剪只作用于请求面。
-2. **历史折叠**:最近一条 `compaction/summary` 之前的事件折叠为单条摘要消息(用户角色、checkpoint 前言 + `<compacted-summary>` 包裹,照源 frameSummary),其后照常派生。折叠由 engine 在 step 起点判定(策略照源 compaction-basic:量测优先真实 usage、退化字符÷4;越过 0.8×窗口触发,保留尾 0.16×窗口,选段切点回退到 tool 配对平衡处——策略纯函数在 `dsh-compaction`),一次性摘要经 `Summarizer` 端口出网——**非会话面请求**,不经闸门比对;请求 = 会话 header 的 system/tools + 逐字前缀 + checkpoint 指令尾注(源 KV-cache 复用语义)。其持久化 = `audit/call`(operation=compaction)+ `compaction/summary` 事件(载荷含 items/shadowedTokens,桌面标记行素材),重放读记录、不重调。**手动 /compact**(host 命令):经 Job 通道在驱动 turn 间隙执行,无压力阈值门槛,失败落 `compaction/error`;桌面呈现「已压缩 N 条历史记录(约 X tokens)」标记行,可展开摘要。**窗口按模型解析**(合并序:工作区 `dsh.toml context_window` > provider 设置 `model_context_windows[model]` > 内置默认 1M;设置页在 provider 编辑卡的「模型列表」内提供逐模型行内编辑:chip 显示「窗口 默认/128,000」,展开后输入 + 应用/取消,输入接受整数或单位简写(`256K`/`1M` 十进制、`128Ki`/`1Mi` 二进制),非法输入行内报错且不落草稿),装配时注入 engine,与 `session/stats` 的 `contextWindow`(UI context meter)同源;`TransportError::ContextOverflow`(provider 4xx 响应体命中超长用语)不盲目重试,由 engine **强制压缩一次后重试同一请求**(照源 maxOverflowRetries=1,落 `llm/retry{code:CONTEXT_OVERFLOW,reason:context-overflow,delayMs:0}` + `llm/retry-started`),压不出前缀才放行原错误。
+2. **历史折叠**:最近一条 `compaction/summary` 之前的事件折叠为单条摘要消息(用户角色、checkpoint 前言 + `<compacted-summary>` 包裹,照源 frameSummary),其后照常派生。折叠由 engine 在 step 起点判定(策略照源 compaction-basic:量测优先真实 usage、退化字符÷4;越过 0.8×窗口触发,保留尾 0.16×窗口,选段切点回退到 tool 配对平衡处——策略纯函数在 `liuma-compaction`),一次性摘要经 `Summarizer` 端口出网——**非会话面请求**,不经闸门比对;请求 = 会话 header 的 system/tools + 逐字前缀 + checkpoint 指令尾注(源 KV-cache 复用语义)。其持久化 = `audit/call`(operation=compaction)+ `compaction/summary` 事件(载荷含 items/shadowedTokens,桌面标记行素材),重放读记录、不重调。**手动 /compact**(host 命令):经 Job 通道在驱动 turn 间隙执行,无压力阈值门槛,失败落 `compaction/error`;桌面呈现「已压缩 N 条历史记录(约 X tokens)」标记行,可展开摘要。**窗口按模型解析**(合并序:工作区 `liuma.toml context_window` > provider 设置 `model_context_windows[model]` > 内置默认 1M;设置页在 provider 编辑卡的「模型列表」内提供逐模型行内编辑:chip 显示「窗口 默认/128,000」,展开后输入 + 应用/取消,输入接受整数或单位简写(`256K`/`1M` 十进制、`128Ki`/`1Mi` 二进制),非法输入行内报错且不落草稿),装配时注入 engine,与 `session/stats` 的 `contextWindow`(UI context meter)同源;`TransportError::ContextOverflow`(provider 4xx 响应体命中超长用语)不盲目重试,由 engine **强制压缩一次后重试同一请求**(照源 maxOverflowRetries=1,落 `llm/retry{code:CONTEXT_OVERFLOW,reason:context-overflow,delayMs:0}` + `llm/retry-started`),压不出前缀才放行原错误。
 
 engine 的请求构造与闸门的期望比对共用该函数——策略栈两侧同一实现,不变式不被策略破坏。
 
@@ -268,7 +268,7 @@ JSONL 为事实流主格式(append-only,一行一事件);SQLite(turso)为派生�
 
 ### 7.5 LLM 接入分层
 
-本层实现位于 `dsh-llm`;端口在 dsh-agent-loop,宿主侧契约不变。
+本层实现位于 `liuma-llm`;端口在 liuma-agent-loop,宿主侧契约不变。
 
 连接语义与方言差异分离:HttpTransport 管连接池、endpoint、鉴权头、SSE 帧提取(`SseFramer`);方言差异封闭在 `ProviderAdapter` 之后的两层——**通用引擎**(`GenericChatAdapter` / `GenericResponsesAdapter` / `GenericAnthropicAdapter`:各 wire 形态的兼容 provider 共有部分——body 骨架、消息翻译、流解析——只写一次)+ **Ext 差异点 trait**(`ChatExt` / `ResponsesExt` / `AnthropicExt`:声明式常量 + 序列化钩子;分层形态吸收 rig-core 的 Generic<Ext> 设计,不引库)。每个 adapter 提供 `build_request`(内部方言 → wire)与 `FrameMapper`(帧 → 流事件,每请求一个、可带跨帧状态)。
 
@@ -309,15 +309,15 @@ trait ProviderAdapter: Send + Sync {
 
 | 包 | 内容 |
 |---|---|
-| dsh:json | `type json = list<u8>` 字节背板(组件模型无递归类型) |
-| dsh:session | event-log 四函数 + projection 三件套 |
-| dsh:loop | driver |
-| dsh:events | 总线五模式 + 续体 resource |
-| dsh:host | process / cancel / registry / llm-transport(`%stream`、register-adapter)/ telemetry —— llm-transport 宿主实现在 dsh-llm,process 实现在 dsh-sandbox;WIT 契约零变更 |
-| dsh:plugin | world:consumer 为 export + lifecycle(init / dispose / config-schema) |
-| dsh:tools | world tool-component:lifecycle + tools(describe / execute);零 import(world 即授权面:纯 json→json,wasi/cancel/进程/LLM 面不可达);宿主桥 `WasmTool`,preset 路径型 mount 行装载 |
+| liuma:json | `type json = list<u8>` 字节背板(组件模型无递归类型) |
+| liuma:session | event-log 四函数 + projection 三件套 |
+| liuma:loop | driver |
+| liuma:events | 总线五模式 + 续体 resource |
+| liuma:host | process / cancel / registry / llm-transport(`%stream`、register-adapter)/ telemetry —— llm-transport 宿主实现在 liuma-llm,process 实现在 liuma-sandbox;WIT 契约零变更 |
+| liuma:plugin | world:consumer 为 export + lifecycle(init / dispose / config-schema) |
+| liuma:tools | world tool-component:lifecycle + tools(describe / execute);零 import(world 即授权面:纯 json→json,wasi/cancel/进程/LLM 面不可达);宿主桥 `WasmTool`,preset 路径型 mount 行装载 |
 
-dsh-session 以 wasm32-wasip2 产物交付;外部工具组件同样以 wasm32-wasip2 交付(`dsh-example-tool` 为参考实现);loop / prompt / 续体 resource 的组件化以「cargo 出现 0.3 目标 + wit-bindgen stream/future 稳定」为触发条件。
+liuma-session 以 wasm32-wasip2 产物交付;外部工具组件同样以 wasm32-wasip2 交付(`liuma-example-tool` 为参考实现);loop / prompt / 续体 resource 的组件化以「cargo 出现 0.3 目标 + wit-bindgen stream/future 稳定」为触发条件。
 
 ### 7.7 总线与插件
 
@@ -329,9 +329,9 @@ around 续体:waterfall listener 收 `(payload, Next)`;`Next.invoke` 继续链,�
 
 ### 7.8 沙箱与进程
 
-本子系统位于 `dsh-sandbox`。执行侧语义组织:策略形状(3 态 mode)、根推导单源、功能式探测与缓存、enforcement / 拒绝方言 / runner 失败分类、stderr 收集。
+本子系统位于 `liuma-sandbox`。执行侧语义组织:策略形状(3 态 mode)、根推导单源、功能式探测与缓存、enforcement / 拒绝方言 / runner 失败分类、stderr 收集。
 
-**策略形状(mode 3 态 + 根推导单源)**:`SandboxMode{ ReadOnly, WorkspaceWrite, FullAccess }`(与 dsh-core permission.rs 字符串命名一致);可写根经 `SandboxPolicy::writable_roots()` 单源推导——ReadOnly → 无;WorkspaceWrite → {workspace 根, `/tmp`, 平台 temp_dir}(canonicalize + 去重;bwrap 下临时区以隔离 `--tmpfs` 挂载,workspace 根 `--bind`);FullAccess → `/`。装配语义:read-only 下 bash 工具不装配;workspace-write 为默认;full-access 由权限切换触发(可写根 `/` 但**仍要求可用 rung**——不做绕过沙箱的语义)。
+**策略形状(mode 3 态 + 根推导单源)**:`SandboxMode{ ReadOnly, WorkspaceWrite, FullAccess }`(与 liuma-core permission.rs 字符串命名一致);可写根经 `SandboxPolicy::writable_roots()` 单源推导——ReadOnly → 无;WorkspaceWrite → {workspace 根, `/tmp`, 平台 temp_dir}(canonicalize + 去重;bwrap 下临时区以隔离 `--tmpfs` 挂载,workspace 根 `--bind`);FullAccess → `/`。装配语义:read-only 下 bash 工具不装配;workspace-write 为默认;full-access 由权限切换触发(可写根 `/` 但**仍要求可用 rung**——不做绕过沙箱的语义)。
 
 **沙箱链探测(功能式 + 缓存)**:
 
@@ -359,24 +359,24 @@ span 为日志投影:turn/step → 区间 span(span_id = 起始事件 seq);audit
 | 能力 | 契约 | 注册形态 | 替换示例 |
 |---|---|---|---|
 | provider 方言 | `ProviderAdapter` + `FrameMapper`;chat/responses/anthropic 通用引擎 + Ext 差异点 | `adapter_by_name`(配置 dialect 选择) | 新增兼容 provider = 新增(或复用)Ext + 契约测试;新 wire 形态 = 新增通用引擎 + Ext |
-| 工具 | `ToolPort`(specs + execute) | `ToolSet` 名字分发,装配期注入引擎;在树组件注册表(dsh-app `mount`)+ 外部 wasm 工具组件(`dsh:tools` world,`WasmTool` 桥) | 新工具不触碰引擎与循环;外部组件零代码接入 |
+| 工具 | `ToolPort`(specs + execute) | `ToolSet` 名字分发,装配期注入引擎;在树组件注册表(liuma-app `mount`)+ 外部 wasm 工具组件(`liuma:tools` world,`WasmTool` 桥) | 新工具不触碰引擎与循环;外部组件零代码接入 |
 | 插件 | 总线订阅 + lifecycle(init / dispose / config-schema) | `PluginRegistry` 注册,逆序销毁 | 重试 / 回放 / title 均为插件 |
 | 日志后端 | `LogBackend` | 装配期选择 | JSONL ⇄ SQLite(turso) |
 | 传输 | `LlmTransport` | 闸门包裹装配 | HTTP ⇄ 假 provider ⇄ 总线传输 |
-| prompt 策略 | `assemble(ctx)` 纯函数 | 装配期组装(AGENTS.md ≤64KB 注入;plan 态/active-plan 自日志折叠,段文本由 dsh-plan 产出、引擎每 step 重建 header——turn 中途落档的状态事件立即生效于下一步;persona mount 行可覆盖 identity/追加段) | 计划模式 / compaction 策略 |
+| prompt 策略 | `assemble(ctx)` 纯函数 | 装配期组装(AGENTS.md ≤64KB 注入;plan 态/active-plan 自日志折叠,段文本由 liuma-plan 产出、引擎每 step 重建 header——turn 中途落档的状态事件立即生效于下一步;persona mount 行可覆盖 identity/追加段) | 计划模式 / compaction 策略 |
 | preset 组合 | `PresetManifest`(k8s 形态 YAML) | 装配期加载(内置 include_str + workspace `presets/` 覆盖;mount 行 = 在树组件 / wasm 路径 / OCI 引用) | 复制改一份 manifest 即增删能力,零代码 |
 
 ### 7.11 配置
 
-两级装配输入 + 运行时设置层:**CLI > `dsh.toml`(工作区,只读装配输入)> `~/.dshrs/settings.yaml`(用户级设置存储,setter 落盘目标)> 内置默认**;会话内存覆盖最高(重启即回工作区默认)。`dsh.toml` 字段 model / base_url / session / workspace / dialect / preset;dialect 未知值装配期拒绝。CLI 开关:`--pty` / `--no-tools` / `--fake` / `--preset <id>`。设置层承载:onboarding 完成态、provider 注册表(id/base_url/dialect/凭据/默认模型)、工作区级默认(provider/model/permission/preset/effort,projectKey 键控);启动时损坏文件旁置备份后回落内置默认(不拒启)。外部编辑实时感知:运行中的外部改动即被吸收(编辑器半途保存的坏内容不致配置清空;应用内保存不覆盖外部编辑),变更即同步 MCP 端口池与 provider 传输面(凭据/URL/方言变更 → 受影响空闲会话 detach,下次 prompt 重装配)。凭据链:显式注入 > 设置条目 `api_key`(明文,文件 0600)> 引用(`env:`)> 默认环境变量名(`{PROVIDER}_API_KEY`);无 `.env` 文件加载、无钥匙串(授权弹窗烦扰与明文外置均不可取)。
+两级装配输入 + 运行时设置层:**CLI > `liuma.toml`(工作区,只读装配输入)> `~/.liuma/settings.yaml`(用户级设置存储,setter 落盘目标)> 内置默认**;会话内存覆盖最高(重启即回工作区默认)。`liuma.toml` 字段 model / base_url / session / workspace / dialect / preset;dialect 未知值装配期拒绝。CLI 开关:`--pty` / `--no-tools` / `--fake` / `--preset <id>`。设置层承载:onboarding 完成态、provider 注册表(id/base_url/dialect/凭据/默认模型)、工作区级默认(provider/model/permission/preset/effort,projectKey 键控);启动时损坏文件旁置备份后回落内置默认(不拒启)。外部编辑实时感知:运行中的外部改动即被吸收(编辑器半途保存的坏内容不致配置清空;应用内保存不覆盖外部编辑),变更即同步 MCP 端口池与 provider 传输面(凭据/URL/方言变更 → 受影响空闲会话 detach,下次 prompt 重装配)。凭据链:显式注入 > 设置条目 `api_key`(明文,文件 0600)> 引用(`env:`)> 默认环境变量名(`{PROVIDER}_API_KEY`);无 `.env` 文件加载、无钥匙串(授权弹窗烦扰与明文外置均不可取)。
 
 **Provider 目录**:内置目录常量五家(deepseek / glm / kimi / minimax / qwen,官方文档核到的 base_url/方言/模型/计费端点预设)。两入口:「添加提供方」= 提供方下拉(目录五家)+ API 密钥 + 「自定义设置」折叠(URL/适配器只读 + 可编辑模型清单(目录预填,「从端点获取」更新)+ 计费预设展示;适配器与目录绑定);「添加自定义提供方」= 自由表单(名称/Base URL/API Key/API 格式/模型列表,Provider ID 查重)。**API 格式三种**:`openai-completions` / `openai-responses` / `anthropic-messages`(下拉选择);GLM 的专用适配器(dialect `glm-responses`)绑定目录项,不进自定义选项。内置卡保存 = 目录条目为基底落盘(URL/方言/显示名/计费预设/默认模型按厂商派生,仅密钥与模型清单取输入)。**计费预设默认生效**:条目未显式配置时按 id 回落目录内置端点(拉取与自动刷新同源判定);徽标与自动刷新的数据源 = **当前工作区生效 provider**(快照 `workspaceProviders`,绑定 > 宿主默认),跨 provider 切模型即拉新账、徽标跟切,不等防抖节拍;用量窗以进度条呈现:状态栏徽标 = 「5小时/1周」迷你条 + 百分比,点击弹小卡片(每窗百分比 + 恢复时刻,5h 窗显示 HH:MM、周窗显示日期;根级渲染外点关闭);GLM 用量路径按 unit 级过滤取第一命中(窗数编号随套餐漂移,快照含两窗各自的 `resets`/`resets_7d`)。计费路径 = 标准 JSONPath(RFC 9535,jsonpath-rust),GLM 用量端点以裸 token 鉴权(`BillingConfig.auth_style = "raw"`)。模型菜单按 provider 分组 = 条目清单 > 探测缓存;挂窗对「有凭据但清单缺席」的 provider 静默探测 `/models` 兜底(探测缓存不持久,重启即失)。settings 并发锁序:loaded_mtime 恒先于 inner(update 的 mtime 戳记在 inner 释放后打)。
 
 ### 7.11a LLM 用量归一
 
-三家官方 usage 键名互不相同,归一在方言映射器边界完成:`Usage` 事件载荷契约 = 规范五键(`input_tokens` / `output_tokens` / `cached_tokens` 缓存读 / `cache_write_tokens` 缓存写 / `reasoning_tokens`;缺席指标不产键),引擎透传与全部消费端(统计条、回合尾 tok/s、轨迹 Usage 面板)只认规范形。各方言 wire 键映射与官方文档出处见 `dsh-llm::usage` 模块文档。
+三家官方 usage 键名互不相同,归一在方言映射器边界完成:`Usage` 事件载荷契约 = 规范五键(`input_tokens` / `output_tokens` / `cached_tokens` 缓存读 / `cache_write_tokens` 缓存写 / `reasoning_tokens`;缺席指标不产键),引擎透传与全部消费端(统计条、回合尾 tok/s、轨迹 Usage 面板)只认规范形。各方言 wire 键映射与官方文档出处见 `liuma-llm::usage` 模块文档。
 
-preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: dsh/v1 / kind: Preset / metadata{name, displayName, description} / spec.mounts 装配清单;`---` 多文档流按 kind 路由、空文档跳过;deny_unknown_fields;metadata.name 必须与文件名 stem 一致)。内置 standard / minimal 经 `include_str!` 随二进制;workspace 同名文件覆盖内置。mount 行 source 三态:在树组件注册名 / 本地 wasm 路径(相对 workspace,`dsh:tools` 组件经 `WasmTool` 装载)/ OCI 引用(格式容纳,拉取随分发面启用);config 按组件 config-schema 校验后透传。分界:preset 只选模型面——沙箱、持久化、provider 路由、registry 永远留在宿主面。
+preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: liuma/v1 / kind: Preset / metadata{name, displayName, description} / spec.mounts 装配清单;`---` 多文档流按 kind 路由、空文档跳过;deny_unknown_fields;metadata.name 必须与文件名 stem 一致)。内置 standard / minimal 经 `include_str!` 随二进制;workspace 同名文件覆盖内置。mount 行 source 三态:在树组件注册名 / 本地 wasm 路径(相对 workspace,`liuma:tools` 组件经 `WasmTool` 装载)/ OCI 引用(格式容纳,拉取随分发面启用);config 按组件 config-schema 校验后透传。分界:preset 只选模型面——沙箱、持久化、provider 路由、registry 永远留在宿主面。
 
 ### 7.12 权限与审批
 
@@ -386,15 +386,15 @@ preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: dsh/v1 / kind:
 
 ### 7.13 MCP 桥
 
-`dsh-mcp`(rmcp 官方 Rust SDK)把外部 MCP server 的工具桥接进工具面,双传输:`stdio`(command/args/env/cwd 子进程)与 `streamable-http`(url + headers 原样透传——reqwest 层注入、连接池不驻留空闲连接)。**命名**:公共名 `mcp__<server>__<tool>`(非法字符归一、64 上限,有损追加 sha256 前 12hex 消歧);**raw name 只上 tools/call 线路,公共名永不反解**。**生命周期**:端口池锚宿主(非会话)——设置保存/启停/导入即对照 enabled 清单同步(新增/变更启动或重启,禁用/卸载停机,rmcp `RunningService::cancel` 干净关闭,stdio transport drop 杀子进程);所有会话共享一个 server 一条连接,池以单个聚合 `ToolPort` 装进工具面,`specs` 聚合与按名路由都是动态的(工具清单连上后下一 turn 出现,会话无需重装配)。**断线自动重连**:配置型错误(url 非法/头非法/子进程起不来)立即终态 `Failed` 不重试;其余断线与握手失败进监督循环——500ms × 2ⁿ 封顶 30s,每轮 outage 预算 10 次,上一代连接存活 ≥ 30s(封顶值)在**下次断线时**清零预算(短暂成功的 crash-loop 不重置);重连期间旧代工具保留(调用挂起到超时或就绪,不摘除),重连成功整代换带;预算耗尽注销该 server 全部工具并落 `Failed` 通告(恢复 = 设置页改配置/开关重启),重连过程以 `Reconnecting`(第 n/N 次)呈现在设置页状态表,不刷通告。**投影**:text 合并、audio/embedded 降级占位、resource_link 转文本、空内容固定占位;`isError` → 工具失败结果。**图片 → 附件链接线**:image content 经准入链(mime 白名单 PNG/JPEG/WebP/GIF → canonical base64 双查:字符集+填充校验+roundtrip)→ `AttachmentStore` 批量原子落盘,任一无效整批降级(其余块理由 `another image in the same result was invalid`),降级文本 `[image unavailable: {mediaType}; {reason}; raw image data remains available to programmatic callers]` 就地占位;通过的以引用挂 `tool/result` 的 `images` 数组(base64 不进模型面),三方言翻译照用户图片既有形状(chat = image_url data-URL、anthropic = base64 image 块、responses 维持全图降级),请求期 20MB offload 预算覆盖工具图;`read_attachment` 授权扫描认 tool/result 的 images。**边界**:只桥 tools(resources/prompts 不桥);MCP 工具不经沙箱与审批闸门(server 由用户配置接入,审批泛化随 hooks 桥);`tools/list_changed` → 整代原子换带(同名 raw 重复整代无效,保留上一代)。
+`liuma-mcp`(rmcp 官方 Rust SDK)把外部 MCP server 的工具桥接进工具面,双传输:`stdio`(command/args/env/cwd 子进程)与 `streamable-http`(url + headers 原样透传——reqwest 层注入、连接池不驻留空闲连接)。**命名**:公共名 `mcp__<server>__<tool>`(非法字符归一、64 上限,有损追加 sha256 前 12hex 消歧);**raw name 只上 tools/call 线路,公共名永不反解**。**生命周期**:端口池锚宿主(非会话)——设置保存/启停/导入即对照 enabled 清单同步(新增/变更启动或重启,禁用/卸载停机,rmcp `RunningService::cancel` 干净关闭,stdio transport drop 杀子进程);所有会话共享一个 server 一条连接,池以单个聚合 `ToolPort` 装进工具面,`specs` 聚合与按名路由都是动态的(工具清单连上后下一 turn 出现,会话无需重装配)。**断线自动重连**:配置型错误(url 非法/头非法/子进程起不来)立即终态 `Failed` 不重试;其余断线与握手失败进监督循环——500ms × 2ⁿ 封顶 30s,每轮 outage 预算 10 次,上一代连接存活 ≥ 30s(封顶值)在**下次断线时**清零预算(短暂成功的 crash-loop 不重置);重连期间旧代工具保留(调用挂起到超时或就绪,不摘除),重连成功整代换带;预算耗尽注销该 server 全部工具并落 `Failed` 通告(恢复 = 设置页改配置/开关重启),重连过程以 `Reconnecting`(第 n/N 次)呈现在设置页状态表,不刷通告。**投影**:text 合并、audio/embedded 降级占位、resource_link 转文本、空内容固定占位;`isError` → 工具失败结果。**图片 → 附件链接线**:image content 经准入链(mime 白名单 PNG/JPEG/WebP/GIF → canonical base64 双查:字符集+填充校验+roundtrip)→ `AttachmentStore` 批量原子落盘,任一无效整批降级(其余块理由 `another image in the same result was invalid`),降级文本 `[image unavailable: {mediaType}; {reason}; raw image data remains available to programmatic callers]` 就地占位;通过的以引用挂 `tool/result` 的 `images` 数组(base64 不进模型面),三方言翻译照用户图片既有形状(chat = image_url data-URL、anthropic = base64 image 块、responses 维持全图降级),请求期 20MB offload 预算覆盖工具图;`read_attachment` 授权扫描认 tool/result 的 images。**边界**:只桥 tools(resources/prompts 不桥);MCP 工具不经沙箱与审批闸门(server 由用户配置接入,审批泛化随 hooks 桥);`tools/list_changed` → 整代原子换带(同名 raw 重复整代无效,保留上一代)。
 
 ### 7.14 Skill 子系统
 
-`dsh-skill` 加载 `.agents/skills` 标准位置的 SKILL.md 技能:项目根(向上找 `.git` 锚,回退 cwd)与用户 home 两根,rank 100/200 近层同名遮蔽,一层扫描,目录 `<name>/SKILL.md` 与扁平 `<name>.md` 两形态。frontmatter 手写栅栏扫描 + serde_norway:name(kebab 必填)/description(必填)/`disable-model-invocation`/`user-invocable` 双面调用策略(无工具白名单),坏文件 warn-and-skip;正文仅 trim 不截断,正文永不缓存(每次 `get` 重读),摘要缓存按 mtime/size 校验。**模型面**:`skill` 工具(按名加载,结果 = `<skill_content>`,含基目录资源提示)+ 持久 user 消息目录(`source.kind=skill-catalog`,渐进披露——目录只有 name + 500 字符归一化 description,变化整条替换,digest 幂等不重发,冷恢复从日志倒序重算);「模型恒只见一份目录」由 `derive_visible_messages` 的「skill-catalog 保留最新一条」纯派生规则达成(源在 pre-step 决策里物理移除旧目录,日志只追加,派生层同一语义)。**用户手势**:消息文本中的空白界定 `/name` 词元(仅真实用户消息可触发,路径/分数不误伤)注入同构 `<skill_content>`(`source.kind=skill-invocation`),排在全部注入最后(材料最贴近回答);args 留在用户气泡不进注入体。**边界**:子代理会话不挂工具不注入(照源 child preset);`/` 前缀文本只有内置四命令短路,其余按普通消息放行由手势识别接管(命令赢同名,plain-text 决策);桌面 `/` 菜单「技能」节(user-invocable only,`session_skills` RPC)点击落草稿 chip,skill 工具卡 = Instructions 展开体 + Inspect。
+`liuma-skill` 加载 `.agents/skills` 标准位置的 SKILL.md 技能:项目根(向上找 `.git` 锚,回退 cwd)与用户 home 两根,rank 100/200 近层同名遮蔽,一层扫描,目录 `<name>/SKILL.md` 与扁平 `<name>.md` 两形态。frontmatter 手写栅栏扫描 + serde_norway:name(kebab 必填)/description(必填)/`disable-model-invocation`/`user-invocable` 双面调用策略(无工具白名单),坏文件 warn-and-skip;正文仅 trim 不截断,正文永不缓存(每次 `get` 重读),摘要缓存按 mtime/size 校验。**模型面**:`skill` 工具(按名加载,结果 = `<skill_content>`,含基目录资源提示)+ 持久 user 消息目录(`source.kind=skill-catalog`,渐进披露——目录只有 name + 500 字符归一化 description,变化整条替换,digest 幂等不重发,冷恢复从日志倒序重算);「模型恒只见一份目录」由 `derive_visible_messages` 的「skill-catalog 保留最新一条」纯派生规则达成(源在 pre-step 决策里物理移除旧目录,日志只追加,派生层同一语义)。**用户手势**:消息文本中的空白界定 `/name` 词元(仅真实用户消息可触发,路径/分数不误伤)注入同构 `<skill_content>`(`source.kind=skill-invocation`),排在全部注入最后(材料最贴近回答);args 留在用户气泡不进注入体。**边界**:子代理会话不挂工具不注入(照源 child preset);`/` 前缀文本只有内置四命令短路,其余按普通消息放行由手势识别接管(命令赢同名,plain-text 决策);桌面 `/` 菜单「技能」节(user-invocable only,`session_skills` RPC)点击落草稿 chip,skill 工具卡 = Instructions 展开体 + Inspect。
 
 ### 7.15 Hooks 桥
 
-`dsh-hooks` 运行既有 Claude Code / Codex `hooks.json` 的 command 钩子(源 packages/hooks 逐字对齐移植):两方言桥共享一个纯函数内核——matcher(claude-code 纯 `[A-Za-z0-9_|]+` = 字面量 alternation,其余无锚定 regex;codex 恒 regex;缺省/`''`/`'*'` = match-all;无效正则运行时不命中、解析期整份拒绝)、codec(exit 2 = 阻塞且 stderr 为因;exit 0 且 stdout 以 `{` 开头才解析 JSON;顶层 `decision` 只认 approve/block,`hookSpecificOutput.permissionDecision` 认 allow/deny/ask 且覆盖;判别名缺失/不符丢弃块内事件级字段)、merge(最严格:deny > ask > allow;reason 只从获胜 rank 收集 `\n\n` 连接;stop 粘滞;上下文保序累积)、events(`hook/invoked` + `hook/result` log-only、turn 封闭;decision 派生 `decision ?? continue:false ? stop : pass`;stderr 摘要 500 字符 + `…`)。**引擎拦截点**:`dsh-agent-loop::HookPort` 四调用点——UserPromptSubmit(turn/start 后;Reject ⇒ turn 以 blocked 收尾无 step,事件序 `turn/start → hook 对 → turn/end`)、PreToolUse(tool/call 落档后;Deny ⇒ 工具不执行、`Error: {reason}` isError 回灌;被拒调用不再触发 PostToolUse)、PostToolUse(执行后;Block ⇒ 结果改写 isError+feedback;Inject ⇒ 结果后追加 kind=plugin 染色行)、Stop(turn 收尾前;Continue ⇒ reason 压入引擎 steer 通道续跑,loop guard 照源不做)。**执行**:`bash -c` 经沙箱链 workspace-write(与模型命令同一信任面,fail-closed;`SpawnOptions.stdin` 新原语喂序列化载荷,CC 带尾换行/Codex 不带),env 擦洗(KEY/PASSWORD/SECRET/TOKEN/DSH_*)后合并方言 env(CC 的 `CLAUDE_PROJECT_DIR`),per-hook timeout(秒)覆盖缺省 600s,取消/超时杀进程组按信号死解码。**ask 通道**:PreToolUse `permissionDecision: ask` 走通用工具级审批面 `request_tool_approval`(审计对 `approval/asked` kind=tool + 问询骑问答卡「允许一次/拒绝」+ never 入口即拒 + 闲时拒绝不落档);无审批面 = fail-closed deny("needs approval")。**配置**:settings `hookBridges`(dialect/configPath/pluginRoot/projectDir/timeout/summary 上限),设置页 Hooks 分区卡片列表;CC 的 `${CLAUDE_PLUGIN_ROOT}`/`${CLAUDE_PROJECT_DIR}` 解析期替换;配置读不到/解析不了 ⇒ warn 不注册,agent 照常。**上下文染色**:全部注入消息 `source.kind=plugin`(mislabel guard);SessionStart detached(可能错过首请求,照源 TODO)。**边界**:Codex 五点无 ask/子代理点;`tool_input` Codex 简化形 `{command}`;plain-stdout-as-context 仅 Codex SessionStart/UserPromptSubmit;`continue:false` 仅记 decision=stop 不停运行(照源 TODO);updatedInput/systemMessage 解析 + warn + 忽略。
+`liuma-hooks` 运行既有 Claude Code / Codex `hooks.json` 的 command 钩子(源 packages/hooks 逐字对齐移植):两方言桥共享一个纯函数内核——matcher(claude-code 纯 `[A-Za-z0-9_|]+` = 字面量 alternation,其余无锚定 regex;codex 恒 regex;缺省/`''`/`'*'` = match-all;无效正则运行时不命中、解析期整份拒绝)、codec(exit 2 = 阻塞且 stderr 为因;exit 0 且 stdout 以 `{` 开头才解析 JSON;顶层 `decision` 只认 approve/block,`hookSpecificOutput.permissionDecision` 认 allow/deny/ask 且覆盖;判别名缺失/不符丢弃块内事件级字段)、merge(最严格:deny > ask > allow;reason 只从获胜 rank 收集 `\n\n` 连接;stop 粘滞;上下文保序累积)、events(`hook/invoked` + `hook/result` log-only、turn 封闭;decision 派生 `decision ?? continue:false ? stop : pass`;stderr 摘要 500 字符 + `…`)。**引擎拦截点**:`liuma-agent-loop::HookPort` 四调用点——UserPromptSubmit(turn/start 后;Reject ⇒ turn 以 blocked 收尾无 step,事件序 `turn/start → hook 对 → turn/end`)、PreToolUse(tool/call 落档后;Deny ⇒ 工具不执行、`Error: {reason}` isError 回灌;被拒调用不再触发 PostToolUse)、PostToolUse(执行后;Block ⇒ 结果改写 isError+feedback;Inject ⇒ 结果后追加 kind=plugin 染色行)、Stop(turn 收尾前;Continue ⇒ reason 压入引擎 steer 通道续跑,loop guard 照源不做)。**执行**:`bash -c` 经沙箱链 workspace-write(与模型命令同一信任面,fail-closed;`SpawnOptions.stdin` 新原语喂序列化载荷,CC 带尾换行/Codex 不带),env 擦洗(KEY/PASSWORD/SECRET/TOKEN/LIUMA_*)后合并方言 env(CC 的 `CLAUDE_PROJECT_DIR`),per-hook timeout(秒)覆盖缺省 600s,取消/超时杀进程组按信号死解码。**ask 通道**:PreToolUse `permissionDecision: ask` 走通用工具级审批面 `request_tool_approval`(审计对 `approval/asked` kind=tool + 问询骑问答卡「允许一次/拒绝」+ never 入口即拒 + 闲时拒绝不落档);无审批面 = fail-closed deny("needs approval")。**配置**:settings `hookBridges`(dialect/configPath/pluginRoot/projectDir/timeout/summary 上限),设置页 Hooks 分区卡片列表;CC 的 `${CLAUDE_PLUGIN_ROOT}`/`${CLAUDE_PROJECT_DIR}` 解析期替换;配置读不到/解析不了 ⇒ warn 不注册,agent 照常。**上下文染色**:全部注入消息 `source.kind=plugin`(mislabel guard);SessionStart detached(可能错过首请求,照源 TODO)。**边界**:Codex 五点无 ask/子代理点;`tool_input` Codex 简化形 `{command}`;plain-stdout-as-context 仅 Codex SessionStart/UserPromptSubmit;`continue:false` 仅记 decision=stop 不停运行(照源 TODO);updatedInput/systemMessage 解析 + warn + 忽略。
 
 ## 8. 质量场景
 
@@ -417,8 +417,8 @@ preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: dsh/v1 / kind:
 | Windows ACL rung | Windows 无工具执行能力 | 具备 Windows 环境 |
 | 0.3 产物切换 + loop/prompt/续体组件化 | 无(契约已按 0.3 形状) | Rust→wasm 工具链成熟 |
 | 沙箱内 rustc 崩溃(macOS guard page 分配被拒) | 编译型工作负载(build/test 工具调用)在沙箱内不可用,模型重试浪费 step | 会话要求模型跑 rustc 时(实测) |
-| dsh-host 剩余簇单体(bus/engine/arena/persistence/rpc/telemetry/config) | 能力实现与核心同 crate,替换需改核心 | wasm 组件化边界成熟(0.3 工具链) |
-| dsh-wit bindgen 仅覆盖 session world | loop/prompt/plugin world 缺宿主调用桩 | loop 组件化触发条件(0.3 工具链) |
+| liuma-host 剩余簇单体(bus/engine/arena/persistence/rpc/telemetry/config) | 能力实现与核心同 crate,替换需改核心 | wasm 组件化边界成熟(0.3 工具链) |
+| liuma-wit bindgen 仅覆盖 session world | loop/prompt/plugin world 缺宿主调用桩 | loop 组件化触发条件(0.3 工具链) |
 
 ## 10. 术语表
 

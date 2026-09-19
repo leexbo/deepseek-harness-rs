@@ -1,7 +1,7 @@
-// dsh:loop — agent-loop 组件契约(turn/step 状态机、inbox、phase)。
+// liuma:loop — agent-loop 组件契约(turn/step 状态机、inbox、phase)。
 // 一个 step = 一次模型请求加其触发的工具执行;一个 turn = 零或多个 step。
 // 类型细节(user-message/phase 的完整字段)实现期定稿,当前为最小占位。
-package dsh:loop@0.1.0;
+package liuma:loop@0.1.0;
 
 interface driver {
     record user-message {

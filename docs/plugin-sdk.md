@@ -1,7 +1,7 @@
-# dsh 插件 SDK(native 形态)
+# liuma 插件 SDK(native 形态)
 
-> 状态:native 形态定稿;wasm 组件插件(`dsh:plugin` world)与
-> 工具组件(`dsh:tools` world)的 WIT 映射见文末。
+> 状态:native 形态定稿;wasm 组件插件(`liuma:plugin` world)与
+> 工具组件(`liuma:tools` world)的 WIT 映射见文末。
 > 本文是插件作者的契约文档:生命周期、订阅、配置、三条硬规则。
 
 ## 0. 三条硬规则(违反即 bug)
@@ -16,10 +16,10 @@
 ## 1. 插件是什么
 
 一个插件 = **配置 + 总线订阅 + 销毁回收**。native 形态下是宿主内的
-一个安装函数;wasm 形态下是满足 `dsh:plugin` world 的组件。
+一个安装函数;wasm 形态下是满足 `liuma:plugin` world 的组件。
 
 ```rust
-// 最小骨架(完整示例见 crates/dsh-host/tests/plugins.rs 的 TitlePlugin)
+// 最小骨架(完整示例见 crates/liuma-host/tests/plugins.rs 的 TitlePlugin)
 pub fn install(bus: &EventBus, config: &Value, state: SharedState) -> u64 {
     validate_config(&Self::schema(), config).expect("配置校验");   // ① 配置先过 schema
     bus.subscribe("user/message", 0, Arc::new(move |payload| {     // ② 订阅声明事件与优先级
@@ -55,7 +55,7 @@ running --dispose_all()--> disposing --> destroyed
 ## 3. 配置契约
 
 - 插件声明 JSON Schema 子集(`type` / `properties` / `required` / `items`),
-  用 `dsh_host::config::validate_config` 校验;
+  用 `liuma_host::config::validate_config` 校验;
 - 类型即校验:缺必填、类型不匹配在安装期拒绝,不带病运行;
 - wasm 形态下 `config-schema()` 是组件 export,宿主与 native 插件
   走同一校验路径。
@@ -121,7 +121,7 @@ let next_result = next.invoke(transformed).await?;
 
 - **export** `consumer`:事件消费(订阅声明为数据,经 lifecycle 交接);
 - **export** `lifecycle`:`init(config)` / `dispose()` / `config-schema()`;
-- import `dsh:events/*`(总线面)与 `dsh:host/*`(能力面)。
+- import `liuma:events/*`(总线面)与 `liuma:host/*`(能力面)。
 
 映射关系:
 
@@ -131,17 +131,17 @@ let next_result = next.invoke(transformed).await?;
 | `PluginRegistry.register(name, subs, dispose)` | 宿主按 world 实例化 + 登记订阅数据 |
 | 逆序销毁回调 | `lifecycle.dispose()` 逆序 await |
 | `validate_config(&schema(), cfg)` | `lifecycle.config-schema()` + 宿主同路径校验 |
-| around 续体 `Next` | `dsh:events` 续体 resource(形状以 wit/ 定稿为准) |
+| around 续体 `Next` | `liuma:events` 续体 resource(形状以 wit/ 定稿为准) |
 
-## 7. 工具组件(dsh:tools world)
+## 7. 工具组件(liuma:tools world)
 
 与总线插件的分工:总线插件在宿主内观察/拦截(事件订阅、请求改写);
 **工具组件给模型声明并执行工具**——preset manifest 的 mount 行装载,
 零宿主代码接入。
 
-world `tool-component`(`wit/tools/tools.wit`,dsh:tools@0.1.0):
+world `tool-component`(`wit/tools/tools.wit`,liuma:tools@0.1.0):
 
-- **export** `dsh:plugin/lifecycle`:`init(config)` / `dispose()` /
+- **export** `liuma:plugin/lifecycle`:`init(config)` / `dispose()` /
   `config-schema()`——与总线插件同一生命周期与配置契约(§3 同一校验路径);
 - **export** `tools`:`describe: func() -> list<tool-spec>`
   (name / description / input-schema,单组件可声明多工具)与
@@ -163,13 +163,13 @@ world `tool-component`(`wit/tools/tools.wit`,dsh:tools@0.1.0):
 - execute 同步形状是 0.2 产物约束(无 async export);0.3 工具链切换时
   升 `async func` 并 bump 契约版本。
 
-参考实现:`crates/dsh-example-tool`(echo_config 吃 config 最小形态 /
+参考实现:`crates/liuma-example-tool`(echo_config 吃 config 最小形态 /
 spin 死循环硬停测试物料;rlib + wasm32-wasip2 双产物,
-`cargo build -p dsh-example-tool --target wasm32-wasip2`)。
+`cargo build -p liuma-example-tool --target wasm32-wasip2`)。
 
 ## 8. 参考实现
 
-- `crates/dsh-host/tests/plugins.rs::TitlePlugin` — 完整插件形态:
+- `crates/liuma-host/tests/plugins.rs::TitlePlugin` — 完整插件形态:
   schema 校验 → 订阅 → 状态自持 → 注册 → 销毁回收;
-- `crates/dsh-host/tests/bus.rs` — 重试(around 包裹)与回放
+- `crates/liuma-host/tests/bus.rs` — 重试(around 包裹)与回放
   (around 替换)插件的语义锁定测试。

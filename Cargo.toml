@@ -1,25 +1,25 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/dsh",
-    "crates/dsh-app",
-    "crates/dsh-compaction",
-    "crates/dsh-desktop",
-    "crates/dsh-core",
-    "crates/dsh-mcp",
-    "crates/dsh-skill",
-    "crates/dsh-wit",
-    "crates/dsh-hooks",
-    "crates/dsh-host",
-    "crates/dsh-llm",
-    "crates/dsh-sandbox",
-    "crates/dsh-session",
-    "crates/dsh-attachment",
-    "crates/dsh-plan",
-    "crates/dsh-agent-loop",
-    "crates/dsh-prompt",
-    "crates/dsh-tools",
-    "crates/dsh-example-tool",
+    "crates/liuma",
+    "crates/liuma-app",
+    "crates/liuma-compaction",
+    "crates/liuma-desktop",
+    "crates/liuma-core",
+    "crates/liuma-mcp",
+    "crates/liuma-skill",
+    "crates/liuma-wit",
+    "crates/liuma-hooks",
+    "crates/liuma-host",
+    "crates/liuma-llm",
+    "crates/liuma-sandbox",
+    "crates/liuma-session",
+    "crates/liuma-attachment",
+    "crates/liuma-plan",
+    "crates/liuma-agent-loop",
+    "crates/liuma-prompt",
+    "crates/liuma-tools",
+    "crates/liuma-example-tool",
 ]
 
 [workspace.package]
@@ -56,22 +56,22 @@ serde_json = "1.0.151"
 # preset manifest 解析(serde_yaml 的接棒 fork)
 serde_norway = "0.9"
 wit-bindgen = "0.62"
-dsh-app = { path = "crates/dsh-app" }
-dsh-attachment = { path = "crates/dsh-attachment" }
-dsh-core = { path = "crates/dsh-core" }
-dsh-hooks = { path = "crates/dsh-hooks" }
-dsh-host = { path = "crates/dsh-host" }
-dsh-session = { path = "crates/dsh-session" }
-dsh-compaction = { path = "crates/dsh-compaction" }
-dsh-plan = { path = "crates/dsh-plan" }
-dsh-wit = { path = "crates/dsh-wit" }
-dsh-agent-loop = { path = "crates/dsh-agent-loop" }
-dsh-prompt = { path = "crates/dsh-prompt" }
-dsh-tools = { path = "crates/dsh-tools" }
-dsh-llm = { path = "crates/dsh-llm" }
-dsh-mcp = { path = "crates/dsh-mcp" }
-dsh-skill = { path = "crates/dsh-skill" }
-dsh-sandbox = { path = "crates/dsh-sandbox" }
+liuma-app = { path = "crates/liuma-app" }
+liuma-attachment = { path = "crates/liuma-attachment" }
+liuma-core = { path = "crates/liuma-core" }
+liuma-hooks = { path = "crates/liuma-hooks" }
+liuma-host = { path = "crates/liuma-host" }
+liuma-session = { path = "crates/liuma-session" }
+liuma-compaction = { path = "crates/liuma-compaction" }
+liuma-plan = { path = "crates/liuma-plan" }
+liuma-wit = { path = "crates/liuma-wit" }
+liuma-agent-loop = { path = "crates/liuma-agent-loop" }
+liuma-prompt = { path = "crates/liuma-prompt" }
+liuma-tools = { path = "crates/liuma-tools" }
+liuma-llm = { path = "crates/liuma-llm" }
+liuma-mcp = { path = "crates/liuma-mcp" }
+liuma-skill = { path = "crates/liuma-skill" }
+liuma-sandbox = { path = "crates/liuma-sandbox" }
 portable-pty = "0.9.0"
 ignore = "0.4.33"
 grep-searcher = "0.1.17"

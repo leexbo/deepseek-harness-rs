@@ -1,10 +1,10 @@
-# deepseek-harness-rs
+# 流马 liuma
 
-Rust + WASM Component Agent Harness——以事件日志为唯一事实源,驱动 LLM 多轮对话与工具执行;工具以 WASM 组件形态接入,在 fail-closed 沙箱中运行;附 GPUI 原生桌面客户端与 JSON-RPC stdio 网关。
+Rust + WASM Component Agent Harness——以事件日志为唯一事实源,驱动 LLM 多轮对话与工具执行;工具以 WASM 组件形态接入,在 fail-closed 沙箱中运行;附 GPUI 原生桌面客户端与 JSON-RPC stdio 网关。取名自木牛流马:不食不眠、自行运转的运输 agent。
 
 ## 与 DeepSeek Harness 的关系
 
-本项目以 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 为初始蓝本:那是 DeepSeek AI 开发的开源 agent harness(TypeScript,npm 包 `@deepseek-ai/dsh`,构建于 Cordis 插件体系,附 Web UI);起步阶段的 system prompt、工具行为语义、会话事件协议与客户端交互形态参照其开发快照设计。内核原生自研:Rust 事件溯源核心、wasmtime WASM 组件工具、GPUI 桌面客户端,运行时不依赖 Node.js。
+本项目起步时以 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(DeepSeek AI 的开源 agent harness,TypeScript,npm 包 `@deepseek-ai/dsh`)为初始蓝本,参照其开发快照设计早期的 system prompt、工具语义与交互形态;此后分为独立的多厂商 harness 并更名 liuma。内核原生自研:Rust 事件溯源核心、wasmtime WASM 组件工具、GPUI 桌面客户端,运行时不依赖 Node.js。
 
 ## 兼容性说明
 
@@ -21,11 +21,11 @@ Rust + WASM Component Agent Harness——以事件日志为唯一事实源,驱�
 - **沙箱执行**:macOS Seatbelt / Linux Landlock / bubblewrap 沙箱链(fail-closed),受控 spawn 与 PTY(独立进程组,SIGTERM→宽限→SIGKILL);权限三态 + 审批门(ask / never)与 bash 一次性沙箱升级。
 - **内置工具面**:bash / file_read / file_edit / file_search(ripgrep 引擎)/ todo / plan / goal / 子代理(嵌套引擎、独立子日志、能力束窄化)/ 后台任务(输出落盘,状态可查可停)。
 - **多模态附件**:图片与文件附件,粘贴 / 拖拽 / `@` 引用统一准入链;MCP 图片自动转附件。
-- **上下文压缩**:手动 `/compact` 与压力阈值自动折叠(0.8×窗口触发、保留尾 0.16×窗口、tool 配对平衡切点),结构化 checkpoint 摘要照源 compaction 语义,桌面「已压缩」标记行可展开;窗口按模型解析(`dsh.toml context_window` > 设置页逐模型设定 > 默认 1M),provider 报上下文超长时强制压缩一次并重试(照源 maxOverflowRetries=1)。
+- **上下文压缩**:手动 `/compact` 与压力阈值自动折叠(0.8×窗口触发、保留尾 0.16×窗口、tool 配对平衡切点),结构化 checkpoint 摘要照源 compaction 语义,桌面「已压缩」标记行可展开;窗口按模型解析(`liuma.toml context_window` > 设置页逐模型设定 > 默认 1M),provider 报上下文超长时强制压缩一次并重试(照源 maxOverflowRetries=1)。
 - **MCP 工具桥**:rmcp 官方 SDK,stdio + streamable-http 双传输,工具以 `mcp__<server>__<tool>` 桥入,断线自动重连。
 - **Skill 子系统**:加载 `.agents/skills` 的 SKILL.md,渐进披露目录 + `skill` 工具 + `/name` 用户手势。
 - **Hooks 桥**:运行 Claude Code / Codex 形态的 hooks.json,UserPromptSubmit / PreToolUse / PostToolUse / Stop 四拦截点。
-- **两种入口**:`dsh` CLI(单轮 / REPL / `serve` JSON-RPC stdio 网关)与 `dsh-desktop`(GPUI 桌面客户端:聊天、队列与插队、计划审批、问答与审批卡、轨迹检查器、全文检索、会话导出、Mermaid 渲染、暗色主题与 Liquid Glass 毛玻璃;进程内直连核心)。
+- **两种入口**:`liuma` CLI(单轮 / REPL / `serve` JSON-RPC stdio 网关)与 `liuma-desktop`(GPUI 桌面客户端:聊天、队列与插队、计划审批、问答与审批卡、轨迹检查器、全文检索、会话导出、Mermaid 渲染、暗色主题与 Liquid Glass 毛玻璃;进程内直连核心)。
 - **能力 preset**:YAML manifest 声明工具与权限面(内置 standard / minimal,工作区可扩展)。
 
 ## 快速开始
@@ -34,13 +34,13 @@ Rust + WASM Component Agent Harness——以事件日志为唯一事实源,驱�
 
 ```bash
 # 不联网自检(fake provider,脚本化回声)
-cargo run -p dsh -- chat --fake
+cargo run -p liuma -- chat --fake
 
 # 接真实 provider(缺省读 DEEPSEEK_API_KEY;--dialect 可切 anthropic / openai-chat 等)
-cargo run -p dsh -- chat
+cargo run -p liuma -- chat
 
 # JSON-RPC stdio 网关
-cargo run -p dsh -- serve
+cargo run -p liuma -- serve
 
 # GPUI 桌面客户端
 just desktop-run        # 参数透传,如 just desktop-run --fake
@@ -57,23 +57,23 @@ just verify    # 格式 / clippy / 测试 / WIT / 组件契约 / e2e / 链接检
 | 路径 | 职责 |
 |---|---|
 | `wit/` | 契约层,全部 WIT 包的唯一契约源 |
-| `crates/dsh` | 宿主二进制(CLI 薄壳) |
-| `crates/dsh-app` | 会话装配层(配置合并 / prompt 组装 / preset 工具组装) |
-| `crates/dsh-core` | 多会话应用核心(注册表 / 客方协议类型 / 轨迹与统计投影) |
-| `crates/dsh-desktop` | GPUI 桌面客户端 |
-| `crates/dsh-host` | 组件宿主(wasmtime 组件管理器 / 事件总线 / 持久化 / 网关) |
-| `crates/dsh-llm` | LLM 接入(方言引擎 / HTTP+SSE transport / 不变式闸门) |
-| `crates/dsh-sandbox` | 执行原语(沙箱链 / 受控 spawn / PTY) |
-| `crates/dsh-agent-loop` | turn/step 状态机与端口 trait |
-| `crates/dsh-session` | 事件日志(信封 / seq / 消息派生,wasm32-wasip2 产物 + rlib) |
-| `crates/dsh-attachment` | 附件存储与准入(内容寻址存储 / 图片解码 / 粘贴与拖放准入链) |
-| `crates/dsh-prompt` | system prompt 组装(纯函数) |
-| `crates/dsh-hooks` | hooks 桥(Claude Code / Codex shell hooks 接入) |
-| `crates/dsh-mcp` | MCP client 桥(rmcp;stdio + streamable-http 双传输 / 断线重连 / 工具桥接) |
-| `crates/dsh-skill` | Skill 子系统(`.agents/skills` 目录加载 / 渐进披露 / skill 工具) |
-| `crates/dsh-tools` | 工具注册表与内置工具 |
-| `crates/dsh-wit` | host 侧 bindgen 与组件契约测试 |
-| `crates/dsh-example-tool` | 示例工具组件(`dsh:tools` world 参考实现) |
+| `crates/liuma` | 宿主二进制(CLI 薄壳) |
+| `crates/liuma-app` | 会话装配层(配置合并 / prompt 组装 / preset 工具组装) |
+| `crates/liuma-core` | 多会话应用核心(注册表 / 客方协议类型 / 轨迹与统计投影) |
+| `crates/liuma-desktop` | GPUI 桌面客户端 |
+| `crates/liuma-host` | 组件宿主(wasmtime 组件管理器 / 事件总线 / 持久化 / 网关) |
+| `crates/liuma-llm` | LLM 接入(方言引擎 / HTTP+SSE transport / 不变式闸门) |
+| `crates/liuma-sandbox` | 执行原语(沙箱链 / 受控 spawn / PTY) |
+| `crates/liuma-agent-loop` | turn/step 状态机与端口 trait |
+| `crates/liuma-session` | 事件日志(信封 / seq / 消息派生,wasm32-wasip2 产物 + rlib) |
+| `crates/liuma-attachment` | 附件存储与准入(内容寻址存储 / 图片解码 / 粘贴与拖放准入链) |
+| `crates/liuma-prompt` | system prompt 组装(纯函数) |
+| `crates/liuma-hooks` | hooks 桥(Claude Code / Codex shell hooks 接入) |
+| `crates/liuma-mcp` | MCP client 桥(rmcp;stdio + streamable-http 双传输 / 断线重连 / 工具桥接) |
+| `crates/liuma-skill` | Skill 子系统(`.agents/skills` 目录加载 / 渐进披露 / skill 工具) |
+| `crates/liuma-tools` | 工具注册表与内置工具 |
+| `crates/liuma-wit` | host 侧 bindgen 与组件契约测试 |
+| `crates/liuma-example-tool` | 示例工具组件(`liuma:tools` world 参考实现) |
 | `presets/` | 内置能力 preset manifest(standard / minimal) |
 | `scripts/` | verify 脚本 |
 

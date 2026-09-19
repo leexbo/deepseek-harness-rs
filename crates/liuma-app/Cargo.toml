@@ -1,0 +1,27 @@
+[package]
+name = "liuma-app"
+description = "会话装配层:Session/prompt/工具组装/transport 构建/日志重载"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+anyhow.workspace = true
+liuma-agent-loop.workspace = true
+liuma-attachment.workspace = true
+liuma-compaction.workspace = true
+liuma-host.workspace = true
+liuma-llm.workspace = true
+liuma-plan.workspace = true
+liuma-prompt.workspace = true
+liuma-sandbox.workspace = true
+liuma-session.workspace = true
+liuma-tools.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+liuma-host.workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "liuma-llm"
+description = "LLM 接入:provider 方言适配器、HTTP/SSE transport 与不变式闸门"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+base64.workspace = true
+liuma-attachment.workspace = true
+liuma-agent-loop.workspace = true
+liuma-compaction.workspace = true
+liuma-session.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

@@ -1,6 +1,6 @@
 # nonk8s
 # minimal:仅 bash + 文件编辑的双工具编码 Agent
-apiVersion: dsh/v1
+apiVersion: liuma/v1
 kind: Preset
 metadata:
   name: minimal

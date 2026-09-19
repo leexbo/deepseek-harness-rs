@@ -1,6 +1,6 @@
 # nonk8s
 # standard:功能完整的编码 Agent(默认)
-apiVersion: dsh/v1
+apiVersion: liuma/v1
 kind: Preset
 metadata:
   name: standard

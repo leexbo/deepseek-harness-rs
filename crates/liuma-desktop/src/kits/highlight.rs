@@ -1,0 +1,594 @@
+//! 语法高亮(syntect + 自写 VSCode Dark+/Light+ 近似主题,随主题盘)。
+//!
+//! 服务 read 卡正文与 markdown 代码块(shiki 式
+//! 行级高亮;diff 卡/终端卡本就不高亮)。
+//!
+//! - 懒加载:SyntaxSet + Theme 经 OnceLock,首次调用 ~几十 ms,启动不阻塞;
+//! - lang → syntax:`find_syntax_by_token`(语言名/扩展名均认),未知名回退
+//!   纯文本(None);
+//! - 行级有状态:`HighlightLines` 逐行喂入,跨行语法上下文正确(多行字符串/
+//!   块注释不丢色)——等效整窗 tokenize;
+//! - 主题:程序化构造 ~20 scope 的 Dark+/Light+ 近似(色值与轨迹
+//!   json_tokens 同族,字面取 VSCode 调色板;按 theme::is_dark() 取盘);
+//! - 块级缓存:key + 内容哈希,512B 入驻门槛 + 上限 128(与 markdown/terminal
+//!   parse 缓存同模式)——重绘零重算,流式代码块跟随内容变化只重算当前块。
+
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, OnceLock};
+
+use gpui_kit::Rgba;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{FontStyle, ScopeSelectors, Theme, ThemeItem, ThemeSettings};
+use syntect::parsing::{SyntaxDefinition, SyntaxSet};
+
+use super::cache::MemoCache;
+
+/// 一个高亮 span(纯色;MVP 不做粗斜体)。offset = **行内字节偏移**
+/// (syntect 全切分 = 累计;tree-sitter 稀疏段 = 真实位置,间隙
+/// 由行前景承接)
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Span {
+    pub color: Rgba,
+    pub text: String,
+    /// 本行内的字节偏移
+    pub offset: usize,
+}
+
+// ── 引擎(懒加载单例)─────────────────────────────────────────
+
+struct Engine {
+    set: SyntaxSet,
+    /// 双盘语法主题(下标 = theme::is_dark() as usize;浅盘 = Light+)
+    themes: [Theme; 2],
+}
+
+/// syntect 默认语法集缺 TOML(find_syntax_by_token 实测为 None);
+/// 内嵌 Sublime 官方 TOML 语法定义,引擎构建时合并
+const TOML_SYNTAX: &str = include_str!("../../assets/syntaxes/TOML.sublime-syntax");
+
+fn engine() -> &'static Engine {
+    static ENGINE: OnceLock<Engine> = OnceLock::new();
+    ENGINE.get_or_init(|| {
+        let mut builder = SyntaxSet::load_defaults_newlines().into_builder();
+        // 资产随二进制分发,损坏属分发级异常:降级纯文本不崩(高亮
+        // 完整性由测试锁兜底——toml 高亮用例失败即资产坏)
+        match SyntaxDefinition::load_from_str(TOML_SYNTAX, true, Some("TOML")) {
+            Ok(def) => builder.add(def),
+            Err(err) => eprintln!("[liuma-desktop] TOML 语法装载失败,回退纯文本:{err}"),
+        }
+        Engine {
+            set: builder.build(),
+            themes: [plus_theme(false), plus_theme(true)],
+        }
+    })
+}
+
+// ── 自写主题(VSCode Dark+ / Light+ 近似;与轨迹 json_tokens 同族)──
+
+/// VSCode 调色板(字面值;json_tokens 的 #CE9178/#B5CEA8 即出 Dark+)
+mod palette {
+    use gpui_kit::Rgba;
+
+    pub const FG: Rgba = rgb(0xD4D4D4); // 默认前景
+    pub const COMMENT: Rgba = rgb(0x6A9955);
+    pub const STRING: Rgba = rgb(0xCE9178);
+    pub const NUMBER: Rgba = rgb(0xB5CEA8);
+    pub const KEYWORD: Rgba = rgb(0xC586C0); // 控制流/导入类关键字
+    pub const KEYWORD_TYPE: Rgba = rgb(0x569CD6); // 类型/存储/语言常量
+    pub const FUNCTION: Rgba = rgb(0xDCDCAA);
+    pub const TYPE: Rgba = rgb(0x4EC9B0); // 类/接口/内建类型名
+    pub const VARIABLE: Rgba = rgb(0x9CDCFE); // 参数/属性
+    pub const ESCAPE: Rgba = rgb(0xD7BA7D);
+
+    const fn rgb(hex: u32) -> Rgba {
+        Rgba {
+            r: ((hex >> 16) & 0xFF) as f32 / 255.0,
+            g: ((hex >> 8) & 0xFF) as f32 / 255.0,
+            b: (hex & 0xFF) as f32 / 255.0,
+            a: 1.0,
+        }
+    }
+}
+
+/// VSCode Light+ 调色板(浅盘代码块;与 Dark+ 同槽位一一对应)
+mod light_palette {
+    use gpui_kit::Rgba;
+
+    pub const FG: Rgba = rgb(0x3B3B3B);
+    pub const COMMENT: Rgba = rgb(0x008000);
+    pub const STRING: Rgba = rgb(0xA31515);
+    pub const NUMBER: Rgba = rgb(0x098658);
+    pub const KEYWORD: Rgba = rgb(0xAF00DB);
+    pub const KEYWORD_TYPE: Rgba = rgb(0x0000FF);
+    pub const FUNCTION: Rgba = rgb(0x795E26);
+    pub const TYPE: Rgba = rgb(0x267F99);
+    pub const VARIABLE: Rgba = rgb(0x001080);
+    pub const ESCAPE: Rgba = rgb(0xEE0000);
+
+    const fn rgb(hex: u32) -> Rgba {
+        Rgba {
+            r: ((hex >> 16) & 0xFF) as f32 / 255.0,
+            g: ((hex >> 8) & 0xFF) as f32 / 255.0,
+            b: (hex & 0xFF) as f32 / 255.0,
+            a: 1.0,
+        }
+    }
+}
+
+fn to_sy_color(c: Rgba) -> syntect::highlighting::Color {
+    syntect::highlighting::Color {
+        r: (c.r * 255.) as u8,
+        g: (c.g * 255.) as u8,
+        b: (c.b * 255.) as u8,
+        a: (c.a * 255.) as u8,
+    }
+}
+
+/// scope 选择器(解析失败即构造主题失败——字面量常量表,不容错)
+fn sel(s: &str) -> ScopeSelectors {
+    s.parse()
+        .unwrap_or_else(|e| panic!("非法 scope 选择器 {s}: {e}"))
+}
+
+fn plus_theme(dark: bool) -> Theme {
+    use syntect::highlighting::StyleModifier;
+    let item = |scope: &str, color: Rgba| ThemeItem {
+        scope: sel(scope),
+        style: StyleModifier {
+            foreground: Some(to_sy_color(color)),
+            background: None,
+            font_style: Some(FontStyle::empty()),
+        },
+    };
+    let (fg, comment, string, number, keyword, keyword_type, function, ty, variable, escape) =
+        if dark {
+            (
+                palette::FG,
+                palette::COMMENT,
+                palette::STRING,
+                palette::NUMBER,
+                palette::KEYWORD,
+                palette::KEYWORD_TYPE,
+                palette::FUNCTION,
+                palette::TYPE,
+                palette::VARIABLE,
+                palette::ESCAPE,
+            )
+        } else {
+            (
+                light_palette::FG,
+                light_palette::COMMENT,
+                light_palette::STRING,
+                light_palette::NUMBER,
+                light_palette::KEYWORD,
+                light_palette::KEYWORD_TYPE,
+                light_palette::FUNCTION,
+                light_palette::TYPE,
+                light_palette::VARIABLE,
+                light_palette::ESCAPE,
+            )
+        };
+    // 泛化在前、特化在后(syntect 按 scope 匹配度取最优)
+    let items = vec![
+        item("comment", comment),
+        item("punctuation.definition.comment", comment),
+        item("string", string),
+        item("punctuation.definition.string", string),
+        item("constant.character.escape", escape),
+        item("constant.numeric", number),
+        item("constant.language", keyword_type),
+        item("keyword", keyword),
+        item("storage", keyword_type),
+        item("entity.name.function", function),
+        item("support.function", function),
+        item("entity.name.type", ty),
+        item("support.type", ty),
+        item("support.class", ty),
+        item("entity.name.tag", keyword_type),
+        item("entity.other.attribute-name", variable),
+        item("variable.language", keyword_type),
+        item("variable.other", variable),
+        item("support.variable.property", variable),
+    ];
+    Theme {
+        name: Some(if dark {
+            "liuma-dark-plus".into()
+        } else {
+            "liuma-light-plus".into()
+        }),
+        author: Some("liuma-desktop 自写(VSCode Dark+/Light+ 近似)".into()),
+        scopes: items,
+        settings: ThemeSettings {
+            foreground: Some(to_sy_color(fg)),
+            ..Default::default()
+        },
+    }
+}
+
+// ── 高亮管线 ─────────────────────────────────────────────────
+
+/// 常见语言名归一/近似(默认语法集的缺口:无 TypeScript——TS 按 JS
+/// 近似高亮;TOML 经内嵌官方语法定义补齐,见 [`TOML_SYNTAX`])
+fn alias(lang: &str) -> String {
+    match lang.to_ascii_lowercase().as_str() {
+        "typescript" | "ts" | "tsx" | "jsx" => "javascript".into(),
+        "golang" => "go".into(),
+        "shell" | "shellscript" | "zsh" => "bash".into(),
+        other => other.to_string(),
+    }
+}
+
+/// 高亮窗口:逐行 spans(与输入行一一对应,空行为空 vec)。
+/// lang 未知名/缺省 → None(调用方回退纯文本)。
+fn highlight(lang: &str, lines: &[&str]) -> Option<Vec<Vec<Span>>> {
+    let eng = engine();
+    let lang = alias(lang);
+    let syntax = eng.set.find_syntax_by_token(&lang)?;
+    let theme = &eng.themes[crate::kits::theme::is_dark() as usize];
+    let mut hl = HighlightLines::new(syntax, theme);
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        out.push(highlight_line(&mut hl, line));
+    }
+    Some(out)
+}
+
+/// 单行 spans(newline 加载语法集要求行尾带 \n;结果范围按需裁掉)
+fn highlight_line(hl: &mut HighlightLines, line: &str) -> Vec<Span> {
+    let set = &engine().set;
+    let fed = format!("{line}\n");
+    let ranges = match hl.highlight_line(&fed, set) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut spans: Vec<Span> = Vec::new();
+    let mut offset = 0usize;
+    for (style, text) in ranges {
+        if text.is_empty() {
+            continue;
+        }
+        spans.push(Span {
+            color: rgba_of(style.foreground),
+            text: text.to_string(),
+            offset,
+        });
+        offset += text.len();
+    }
+    // 行尾终结符贴在末 span 上:剥掉,避免 h_flex 里出现空白占位
+    if let Some(last) = spans.last_mut() {
+        while last.text.ends_with('\n') {
+            last.text.pop();
+        }
+        if last.text.is_empty() {
+            spans.pop();
+        }
+    }
+    spans
+}
+
+const CACHE_CAP: usize = 128;
+/// 入缓存的最小文本长度(短块高亮本就廉价,不驻留留内存)
+const CACHE_MIN_BYTES: usize = 512;
+
+/// 域内自持高亮缓存(见 kits::cache;key 撞车互不可见)
+static CACHE: MemoCache<Vec<Vec<Span>>> = MemoCache::new(CACHE_CAP, CACHE_MIN_BYTES);
+
+// ── tree-sitter 引擎(Zed 同款管线;预览代码高亮)─────────────
+
+/// tree-sitter 全量高亮:语言经 `LanguageRegistry`(聚合 feature 已
+/// 开 29 种;缺的语言后续经 `LanguageRegistry::register` 增补)。
+/// 未注册/无 grammar → None,调用方按纯文本渲染(预览无 syntect
+/// 兜底)。输出 = 行级**稀疏** spans(只含有样式段;行渲染的
+/// StyledText ranges 对未覆盖段用行前景)
+pub(crate) fn treesitter_spans(lang: &str, text: &str) -> Option<Vec<Vec<Span>>> {
+    use gpui_kit::component::highlighter::{HighlightTheme, LanguageRegistry, SyntaxHighlighter};
+    let lang = alias(lang);
+    let config = LanguageRegistry::singleton().language(&lang)?;
+    if !config.has_grammar() {
+        return None;
+    }
+    let rope = gpui_kit::base::input::Rope::from_str(text);
+    let mut hl = SyntaxHighlighter::new(&lang);
+    hl.update(None, &rope, None);
+    let theme = if crate::kits::theme::is_dark() {
+        HighlightTheme::default_dark()
+    } else {
+        HighlightTheme::default_light()
+    };
+    let styles = hl.styles(&(0..text.len()), &*theme);
+    // 行首字节偏移表(含末尾哨兵),字节范围依行归属切分(可跨行)
+    let mut line_starts: Vec<usize> = Vec::with_capacity(64);
+    line_starts.push(0);
+    for (i, b) in text.bytes().enumerate() {
+        if b == b'\n' {
+            line_starts.push(i + 1);
+        }
+    }
+    line_starts.push(text.len());
+    let mut out: Vec<Vec<Span>> = vec![Vec::new(); line_starts.len() - 1];
+    for (range, style) in styles {
+        let Some(color) = style.color else {
+            continue;
+        };
+        let color = Rgba::from(color);
+        let mut line = line_starts.partition_point(|&s| s <= range.start) - 1;
+        let mut offset = range.start;
+        while line < out.len() && offset < range.end {
+            let line_end = line_starts[line + 1].saturating_sub(1).max(offset);
+            let seg_end = range.end.min(line_end);
+            if offset < seg_end {
+                let seg = &text[offset..seg_end];
+                if !seg.is_empty() {
+                    out[line].push(Span {
+                        color,
+                        text: seg.to_string(),
+                        offset: offset - line_starts[line],
+                    });
+                }
+                offset = seg_end;
+            }
+            if offset < range.end {
+                offset = line_starts[line + 1].max(offset + 1);
+                line += 1;
+            }
+        }
+    }
+    Some(out)
+}
+
+fn rgba_of(c: syntect::highlighting::Color) -> Rgba {
+    Rgba {
+        r: c.r as f32 / 255.0,
+        g: c.g as f32 / 255.0,
+        b: c.b as f32 / 255.0,
+        a: c.a as f32 / 255.0,
+    }
+}
+
+/// 缓存只读命中(不算;后台任务起点查,命中直用)
+pub(crate) fn cached_spans(
+    key: &str,
+    lang: Option<&str>,
+    lines: &[&str],
+) -> Option<Arc<Vec<Vec<Span>>>> {
+    let lang = lang?;
+    let mut h = DefaultHasher::new();
+    lang.hash(&mut h);
+    for l in lines {
+        l.hash(&mut h);
+    }
+    let mode_tag = if crate::kits::theme::is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    CACHE.get(&format!("{mode_tag}·{key}·{lang}"), h.finish())
+}
+
+/// 全量产物写入块缓存(后台任务终点调用;键规则同 highlight_window)
+pub(crate) fn cache_spans(
+    key: &str,
+    lang: Option<&str>,
+    lines: &[&str],
+    spans: Arc<Vec<Vec<Span>>>,
+) {
+    let Some(lang) = lang else { return };
+    let bytes: usize = lines.iter().map(|l| l.len()).sum();
+    let mut h = DefaultHasher::new();
+    lang.hash(&mut h);
+    for l in lines {
+        l.hash(&mut h);
+    }
+    let mode_tag = if crate::kits::theme::is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    CACHE.put(
+        &format!("{mode_tag}·{key}·{lang}"),
+        h.finish(),
+        spans,
+        bytes,
+    );
+}
+
+/// 带缓存的高亮窗口:key 需调用方稳定(read 卡 = call key;markdown 块 =
+/// 节点 key)。命中条件 = 同 key + 同 lang + 内容哈希一致。
+pub(crate) fn highlight_window(
+    key: &str,
+    lang: Option<&str>,
+    lines: &[&str],
+) -> Option<Arc<Vec<Vec<Span>>>> {
+    let lang = lang?;
+    let bytes: usize = lines.iter().map(|l| l.len()).sum();
+    let hash = {
+        let mut h = DefaultHasher::new();
+        lang.hash(&mut h);
+        for l in lines {
+            l.hash(&mut h);
+        }
+        h.finish()
+    };
+    // 盘随主题切:缓存 key 必须带盘,否则换盘后吃到旧色
+    let mode_tag = if crate::kits::theme::is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    let cache_key = format!("{mode_tag}·{key}·{lang}");
+    if let Some(spans) = CACHE.get(&cache_key, hash) {
+        return Some(spans);
+    }
+    let spans = Arc::new(highlight(lang, lines)?);
+    CACHE.put(&cache_key, hash, spans.clone(), bytes);
+    Some(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn colors_of(spans: &[Span]) -> Vec<Rgba> {
+        spans.iter().map(|s| s.color).collect()
+    }
+
+    /// 语言映射:常见名/扩展名命中(TS 无语法按 JS 近似),未知名回退 None
+    #[test]
+    fn lang_mapping() {
+        let lines = ["fn main() {}"];
+        assert!(highlight_window("t", Some("rust"), &lines).is_some());
+        assert!(highlight_window("t", Some("rs"), &lines).is_some());
+        assert!(highlight_window("t", Some("py"), &lines).is_some());
+        assert!(highlight_window("t", Some("typescript"), &lines).is_some());
+        // TOML 经内嵌官方语法补齐(默认集没有;资产坏/合并失败即红)
+        assert!(highlight_window("t", Some("toml"), &["[package]"]).is_some());
+        assert!(highlight_window("t", Some("no-such-lang"), &lines).is_none());
+        assert!(highlight_window("t", None, &lines).is_none());
+    }
+
+    /// tree-sitter 高亮正确性/覆盖锁:行级稀疏 spans 行数对齐、关键
+    /// 结构上色、行内容可还原;聚合 feature 的语言(toml/python/bash/
+    /// yaml)全部可用
+    #[test]
+    fn treesitter_spans_shapes_and_colors() {
+        let code = "fn main() {\n    // note\n    let s = \"str\";\n}\n";
+        let spans = treesitter_spans("rs", code).expect("rust 应可用");
+        assert_eq!(spans.len(), 5, "行数对齐(含末空行)");
+        // 注释行整行注释色;字符串段非默认前景(色存在即可,不断言具体值)
+        let flat: Vec<&crate::kits::highlight::Span> = spans.iter().flatten().collect();
+        assert!(!flat.is_empty(), "应有样式段");
+        let comment_line = &spans[1];
+        assert!(!comment_line.is_empty(), "注释行应上色");
+        // 稀疏 spans 的文本段都源自对应源行(行渲染对未覆盖段用行前景)
+        for (ix, line) in code.split('\n').enumerate() {
+            for seg in &spans[ix] {
+                assert!(
+                    line.contains(seg.text.as_str()),
+                    "行 {ix} 的样式段 {:?} 应源自该行",
+                    seg.text
+                );
+            }
+        }
+        for lang in ["toml", "python", "bash", "yaml", "go", "json"] {
+            assert!(
+                treesitter_spans(lang, "x = 1\n").is_some(),
+                "{lang} 应经聚合 feature 可用"
+            );
+        }
+        // 未注册语言 → None(纯色语义)
+        assert!(treesitter_spans("no-such-lang", "x").is_none());
+    }
+
+    /// TOML 高亮着色锁:字符串行吃 STRING 色、注释行吃 COMMENT 色
+    /// (内嵌语法定义 + 自写主题 scope 匹配两环都在才有色)
+    #[test]
+    fn toml_highlight_colors() {
+        let lines = ["name = \"app\"", "# note"];
+        let spans = highlight("toml", &lines).expect("toml 高亮应可用");
+        let stringed = &spans[0];
+        assert!(
+            stringed
+                .iter()
+                .any(|s| s.text.contains("app") && s.color == palette::STRING),
+            "字符串值应收 STRING 色,实际 {:?}",
+            stringed
+                .iter()
+                .map(|s| (s.color, s.text.clone()))
+                .collect::<Vec<_>>()
+        );
+        let commented = &spans[1];
+        assert!(
+            commented.iter().all(|s| s.color == palette::COMMENT),
+            "注释行应收 COMMENT 色,实际 {:?}",
+            commented
+                .iter()
+                .map(|s| (s.color, s.text.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Light+ 主题构造:浅盘字面值就位(浅色代码块的分发面)
+    #[test]
+    fn light_plus_theme_built() {
+        let t = plus_theme(false);
+        assert_eq!(t.name.as_deref(), Some("liuma-light-plus"));
+        assert_eq!(
+            t.settings.foreground.expect("前景"),
+            to_sy_color(light_palette::FG)
+        );
+    }
+
+    /// Dark+ 基本类色:注释绿、字符串橙、数字浅绿、let 蓝
+    #[test]
+    fn dark_plus_basic_classes() {
+        let lines = ["// 注释", "let s = \"str\";", "let n = 42;"];
+        let spans = highlight("rust", &lines).expect("rust 高亮");
+        assert_eq!(spans.len(), 3);
+        // 注释行可被 syntect 拆多段(标点+内容),但整行皆绿
+        assert!(
+            colors_of(&spans[0]).iter().all(|c| *c == palette::COMMENT),
+            "{:?}",
+            colors_of(&spans[0])
+        );
+        let line2 = colors_of(&spans[1]);
+        assert!(
+            line2.contains(&palette::KEYWORD_TYPE),
+            "let 应为蓝:{line2:?}"
+        );
+        assert!(line2.contains(&palette::STRING), "字符串应为橙:{line2:?}");
+        let line3 = colors_of(&spans[2]);
+        assert!(line3.contains(&palette::NUMBER), "数字应为浅绿:{line3:?}");
+    }
+
+    /// 行级有状态:块注释/多行字符串跨行不丢色
+    #[test]
+    fn multiline_context_carries() {
+        let lines = ["/* 起", "跨行注释仍绿", "收 */", "let x = 1;"];
+        let spans = highlight("rust", &lines).expect("rust");
+        assert_eq!(
+            colors_of(&spans[1]),
+            vec![palette::COMMENT],
+            "注释续行应保持绿"
+        );
+        // 终止行后恢复正常着色(含关键字蓝)
+        let after = colors_of(&spans[3]);
+        assert!(after.contains(&palette::KEYWORD_TYPE) || after.contains(&palette::NUMBER));
+    }
+
+    /// 空行为空 vec;行尾 \n 剥净(spans 文本无换行符)
+    #[test]
+    fn empty_lines_and_newline_stripped() {
+        let lines = ["let a = 1;", "", "let b = 2;"];
+        let spans = highlight("rust", &lines).expect("rust");
+        assert_eq!(spans.len(), 3);
+        assert!(spans[1].is_empty());
+        for line in &spans {
+            for s in line {
+                assert!(!s.text.contains('\n'), "span 不应含换行:{:?}", s.text);
+            }
+        }
+    }
+
+    /// 缓存命中(Arc 指针相等);短块不驻留
+    #[test]
+    fn cache_hits_and_threshold() {
+        let long: Vec<String> = (0..40)
+            .map(|i| format!("let v{i} = {i}; // 注释行"))
+            .collect();
+        let refs: Vec<&str> = long.iter().map(|s| s.as_str()).collect();
+        let a = highlight_window("k1", Some("rust"), &refs).expect("hl");
+        let b = highlight_window("k1", Some("rust"), &refs).expect("hl");
+        assert!(Arc::ptr_eq(&a, &b));
+        // 内容变化 → 重算
+        let mut changed = long.clone();
+        changed[0] = "let changed = 0;".into();
+        let refs2: Vec<&str> = changed.iter().map(|s| s.as_str()).collect();
+        let c = highlight_window("k1", Some("rust"), &refs2).expect("hl");
+        assert!(!Arc::ptr_eq(&a, &c));
+        // 短块不入缓存(两次调用不同 Arc)
+        let s1 = highlight_window("k2", Some("rust"), &["let x = 1;"]).expect("hl");
+        let s2 = highlight_window("k2", Some("rust"), &["let x = 1;"]).expect("hl");
+        assert!(!Arc::ptr_eq(&s1, &s2));
+    }
+}

@@ -1,7 +1,7 @@
-// dsh:host — 宿主函数契约(无 WASI 对应的能力 + 自建语义)。
+// liuma:host — 宿主函数契约(无 WASI 对应的能力 + 自建语义)。
 // fs/clock/random/env 复用 wasi-filesystem / wasi-clocks / wasi-random / wasi:cli;
 // 网络不直接 import wasi-http,统一走 llm-transport + registry(重写方案 §2)。
-package dsh:host@0.1.0;
+package liuma:host@0.1.0;
 
 interface process {
     /// spawn 选项(执行世界能力束:目录视图/spawn 策略/沙箱链参数)
@@ -44,7 +44,7 @@ interface cancel {
 /// 动态能力查找(Typert lookup 的等价物)。
 /// 静态依赖在 WIT 声明 import、linker 注入;动态查找走此处,宿主中介转发。
 interface registry {
-    use dsh:json/value@0.1.0.{json};
+    use liuma:json/value@0.1.0.{json};
 
     resource provider-id;
 
@@ -72,7 +72,7 @@ interface registry {
 /// LLM 传输:传输在宿主(连接池/SSE+裸流双模解码),策略在组件。
 /// header/messages 是不变式比对对象(内容级 derive-and-compare,E1)。
 interface llm-transport {
-    use dsh:json/value@0.1.0.{json};
+    use liuma:json/value@0.1.0.{json};
 
     resource adapter-id;
 
@@ -107,7 +107,7 @@ interface llm-transport {
 }
 
 interface telemetry {
-    use dsh:json/value@0.1.0.{json};
+    use liuma:json/value@0.1.0.{json};
 
     resource span-handle;
 

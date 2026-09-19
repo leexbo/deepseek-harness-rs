@@ -1,11 +1,11 @@
-// dsh:session — 事件日志组件契约。
+// liuma:session — 事件日志组件契约。
 // 继承语义(重写方案 §4「事件日志重新设计」):
 //   seq 连续(宿主校验单调)、ignorable 未知事件守卫、
 //   surfaceOp/sourceEventSeqs 引用链、投影三件套、single boundary rule。
-package dsh:session@0.1.0;
+package liuma:session@0.1.0;
 
 interface event-log {
-    use dsh:json/value@0.1.0.{json};
+    use liuma:json/value@0.1.0.{json};
 
     /// 事件信封(语义与 SessionEvent 一一对应;格式重新设计)
     record event {
@@ -29,7 +29,7 @@ interface event-log {
 }
 
 interface projection {
-    use dsh:json/value@0.1.0.{json};
+    use liuma:json/value@0.1.0.{json};
     use event-log.{event};
 
     /// 投影三件套(纯函数,session-projection 契约:

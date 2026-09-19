@@ -2244,293 +2244,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
 
 [[package]]
-name = "dsh"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dsh-agent-loop",
- "dsh-app",
- "dsh-host",
- "dsh-llm",
- "dsh-plan",
- "dsh-prompt",
- "dsh-session",
- "dsh-tools",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "dsh-agent-loop"
-version = "0.1.0"
-dependencies = [
- "dsh-attachment",
- "dsh-compaction",
- "dsh-session",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "dsh-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dsh-agent-loop",
- "dsh-attachment",
- "dsh-compaction",
- "dsh-host",
- "dsh-llm",
- "dsh-plan",
- "dsh-prompt",
- "dsh-sandbox",
- "dsh-session",
- "dsh-tools",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "dsh-attachment"
-version = "0.1.0"
-dependencies = [
- "hex",
- "image",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "dsh-compaction"
-version = "0.1.0"
-dependencies = [
- "dsh-session",
- "serde_json",
-]
-
-[[package]]
-name = "dsh-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "dsh-agent-loop",
- "dsh-app",
- "dsh-attachment",
- "dsh-compaction",
- "dsh-hooks",
- "dsh-host",
- "dsh-llm",
- "dsh-mcp",
- "dsh-plan",
- "dsh-sandbox",
- "dsh-session",
- "dsh-skill",
- "dsh-tools",
- "jsonpath-rust",
- "reqwest",
- "serde",
- "serde_json",
- "serde_norway",
- "tokio",
- "uuid",
- "zip",
-]
-
-[[package]]
-name = "dsh-desktop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "chrono",
- "dsh-attachment",
- "dsh-core",
- "futures",
- "gpui-kit",
- "image",
- "merman",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-core-graphics",
- "objc2-foundation 0.3.2",
- "pdf-render",
- "raw-window-handle",
- "resvg 0.48.1",
- "serde_json",
- "smallvec",
- "syntect",
- "tokio",
- "usvg 0.48.1",
-]
-
-[[package]]
-name = "dsh-example-tool"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "wit-bindgen 0.62.0",
-]
-
-[[package]]
-name = "dsh-hooks"
-version = "0.1.0"
-dependencies = [
- "dsh-agent-loop",
- "dsh-sandbox",
- "dsh-session",
- "regex",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "dsh-host"
-version = "0.1.0"
-dependencies = [
- "dsh-agent-loop",
- "dsh-attachment",
- "dsh-llm",
- "dsh-plan",
- "dsh-session",
- "dsh-wit",
- "futures",
- "hex",
- "serde",
- "serde_json",
- "serde_norway",
- "sha2 0.11.0",
- "thiserror 2.0.20",
- "tokio",
- "toml 1.1.4+spec-1.1.0",
- "turso",
- "wasmtime",
- "wasmtime-wasi",
-]
-
-[[package]]
-name = "dsh-llm"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "dsh-agent-loop",
- "dsh-attachment",
- "dsh-compaction",
- "dsh-session",
- "reqwest",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "dsh-mcp"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "dsh-agent-loop",
- "dsh-attachment",
- "dsh-session",
- "hex",
- "reqwest",
- "rmcp",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tokio",
-]
-
-[[package]]
-name = "dsh-plan"
-version = "0.1.0"
-dependencies = [
- "dsh-agent-loop",
- "dsh-prompt",
- "dsh-session",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "dsh-prompt"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
-name = "dsh-sandbox"
-version = "0.1.0"
-dependencies = [
- "landlock",
- "libc",
- "portable-pty",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "dsh-session"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "wit-bindgen 0.62.0",
-]
-
-[[package]]
-name = "dsh-skill"
-version = "0.1.0"
-dependencies = [
- "dsh-agent-loop",
- "hex",
- "serde",
- "serde_json",
- "serde_norway",
- "sha2 0.11.0",
- "tokio",
-]
-
-[[package]]
-name = "dsh-tools"
-version = "0.1.0"
-dependencies = [
- "dsh-agent-loop",
- "dsh-host",
- "dsh-llm",
- "dsh-plan",
- "dsh-sandbox",
- "dsh-session",
- "grep-regex",
- "grep-searcher",
- "ignore",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "dsh-wit"
-version = "0.1.0"
-dependencies = [
- "dsh-host",
- "dsh-session",
- "serde_json",
- "tokio",
- "wasmtime",
- "wit-parser 0.259.0",
-]
-
-[[package]]
 name = "dtoa"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5444,6 +5157,293 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
+name = "liuma"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "liuma-agent-loop",
+ "liuma-app",
+ "liuma-host",
+ "liuma-llm",
+ "liuma-plan",
+ "liuma-prompt",
+ "liuma-session",
+ "liuma-tools",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "liuma-agent-loop"
+version = "0.1.0"
+dependencies = [
+ "liuma-attachment",
+ "liuma-compaction",
+ "liuma-session",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "liuma-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "liuma-agent-loop",
+ "liuma-attachment",
+ "liuma-compaction",
+ "liuma-host",
+ "liuma-llm",
+ "liuma-plan",
+ "liuma-prompt",
+ "liuma-sandbox",
+ "liuma-session",
+ "liuma-tools",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "liuma-attachment"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "image",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "liuma-compaction"
+version = "0.1.0"
+dependencies = [
+ "liuma-session",
+ "serde_json",
+]
+
+[[package]]
+name = "liuma-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "jsonpath-rust",
+ "liuma-agent-loop",
+ "liuma-app",
+ "liuma-attachment",
+ "liuma-compaction",
+ "liuma-hooks",
+ "liuma-host",
+ "liuma-llm",
+ "liuma-mcp",
+ "liuma-plan",
+ "liuma-sandbox",
+ "liuma-session",
+ "liuma-skill",
+ "liuma-tools",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "tokio",
+ "uuid",
+ "zip",
+]
+
+[[package]]
+name = "liuma-desktop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "futures",
+ "gpui-kit",
+ "image",
+ "liuma-attachment",
+ "liuma-core",
+ "merman",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "pdf-render",
+ "raw-window-handle",
+ "resvg 0.48.1",
+ "serde_json",
+ "smallvec",
+ "syntect",
+ "tokio",
+ "usvg 0.48.1",
+]
+
+[[package]]
+name = "liuma-example-tool"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "wit-bindgen 0.62.0",
+]
+
+[[package]]
+name = "liuma-hooks"
+version = "0.1.0"
+dependencies = [
+ "liuma-agent-loop",
+ "liuma-sandbox",
+ "liuma-session",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "liuma-host"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "hex",
+ "liuma-agent-loop",
+ "liuma-attachment",
+ "liuma-llm",
+ "liuma-plan",
+ "liuma-session",
+ "liuma-wit",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml 1.1.4+spec-1.1.0",
+ "turso",
+ "wasmtime",
+ "wasmtime-wasi",
+]
+
+[[package]]
+name = "liuma-llm"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "liuma-agent-loop",
+ "liuma-attachment",
+ "liuma-compaction",
+ "liuma-session",
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "liuma-mcp"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "hex",
+ "liuma-agent-loop",
+ "liuma-attachment",
+ "liuma-session",
+ "reqwest",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+]
+
+[[package]]
+name = "liuma-plan"
+version = "0.1.0"
+dependencies = [
+ "liuma-agent-loop",
+ "liuma-prompt",
+ "liuma-session",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "liuma-prompt"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "liuma-sandbox"
+version = "0.1.0"
+dependencies = [
+ "landlock",
+ "libc",
+ "portable-pty",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "liuma-session"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "wit-bindgen 0.62.0",
+]
+
+[[package]]
+name = "liuma-skill"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "liuma-agent-loop",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "sha2 0.11.0",
+ "tokio",
+]
+
+[[package]]
+name = "liuma-tools"
+version = "0.1.0"
+dependencies = [
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "liuma-agent-loop",
+ "liuma-host",
+ "liuma-llm",
+ "liuma-plan",
+ "liuma-sandbox",
+ "liuma-session",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "liuma-wit"
+version = "0.1.0"
+dependencies = [
+ "liuma-host",
+ "liuma-session",
+ "serde_json",
+ "tokio",
+ "wasmtime",
+ "wit-parser 0.259.0",
+]
 
 [[package]]
 name = "lock_api"

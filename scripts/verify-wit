@@ -3,4 +3,4 @@
 # 用法:scripts/verify-wit
 set -euo pipefail
 cd "$(dirname "$0")/.."
-cargo test -p dsh-wit --test verify_wit
+cargo test -p liuma-wit --test verify_wit
