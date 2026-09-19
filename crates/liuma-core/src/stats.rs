@@ -175,6 +175,14 @@ impl StatsAgg {
                     self.last_turn = Some(t);
                 }
             }
+            "compaction/stats" => {
+                // 压缩落档后的上下文占用重置(摘要请求不经 request-done
+                // 审计,context_used 若只采样正常请求会在压缩后停留旧值
+                // 直到下一 turn;engine 以压缩后派生面字符量估算落此信号)
+                if let Some(used) = data["contextUsed"].as_u64() {
+                    self.context_used = used;
+                }
+            }
             "audit/call" => {
                 let boundary = data["boundary"].as_str().unwrap_or_default();
                 let op = data["operation"].as_str().unwrap_or_default();
@@ -219,7 +227,10 @@ impl StatsAgg {
     /// 是否统计相关(决定是否推送;chunk 等高频非统计事件不推;
     /// turn/end 在列 = 轮桶收口即推,轮尾即时拿到本轮用量)
     pub fn is_stats_event(ty: &str) -> bool {
-        matches!(ty, "turn/start" | "step/start" | "turn/end" | "audit/call")
+        matches!(
+            ty,
+            "turn/start" | "step/start" | "turn/end" | "audit/call" | "compaction/stats"
+        )
     }
 
     /// 输出(session.stats RPC 与 session/stats 推送同形;
@@ -497,6 +508,31 @@ mod tests {
         assert_eq!(
             a.to_json(Breakdown::default(), CONTEXT_WINDOW)["contextUsed"],
             12_000
+        );
+    }
+
+    /// 压缩后占用重置:compaction/stats 信号把 context_used 重置为压缩
+    /// 后估算——摘要请求不经 request-done 审计,无此重置则压缩后圆环
+    /// 停留压缩前采样直到下一 turn(真机反馈「压缩后上下文没变」)。
+    #[test]
+    fn compaction_resets_context_used() {
+        let mut a = StatsAgg::new();
+        a.apply("audit/call", 0, &llm_done(900_000, 1, 0));
+        assert_eq!(
+            a.to_json(Breakdown::default(), CONTEXT_WINDOW)["contextUsed"],
+            900_000
+        );
+        a.apply("compaction/stats", 0, &json!({ "contextUsed": 91_248 }));
+        assert_eq!(
+            a.to_json(Breakdown::default(), CONTEXT_WINDOW)["contextUsed"],
+            91_248,
+            "压缩信号应立即重置占用"
+        );
+        // 后续正常请求照常采样覆盖
+        a.apply("audit/call", 0, &llm_done(120_000, 1, 0));
+        assert_eq!(
+            a.to_json(Breakdown::default(), CONTEXT_WINDOW)["contextUsed"],
+            120_000
         );
     }
 

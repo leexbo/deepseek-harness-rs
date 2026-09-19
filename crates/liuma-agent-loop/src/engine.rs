@@ -1628,6 +1628,30 @@ impl LoopEngine {
             ),
             sink,
         )?;
+        // 压缩后上下文占用估算(字符÷4):摘要请求不经 stats 审计
+        // (summarize 不落 request-done),stats.context_used 若只采样
+        // 正常请求 input,压缩后会停留旧值直到下一 turn——圆环/详情卡
+        // 长时间显示压缩前占用(真机反馈「压缩后上下文没变」)。此处
+        // 以压缩后派生面字符量估算,落载荷供 stats fold 重置。
+        let remaining_tokens = {
+            let Ok(l) = log.lock() else {
+                return Err(LoopError::Log("log 锁中毒".into()));
+            };
+            derive_visible_messages(l.iter())
+                .to_string()
+                .chars()
+                .count() as u64
+                / liuma_compaction::CHARS_PER_TOKEN
+        };
+        Self::commit(
+            log,
+            EventEnvelope::new_ignorable(
+                "compaction/stats",
+                clock(),
+                serde_json::json!({ "contextUsed": remaining_tokens }),
+            ),
+            sink,
+        )?;
         Ok(FoldOutcome::Folded {
             seq,
             items: range.fold_len as u64,
@@ -2572,6 +2596,26 @@ mod streaming_tests {
             1,
             "溢出触发一次强制压缩"
         );
+        // 压缩后占用估算信号:摘要请求不经 request-done 审计,无此信号
+        // 则 stats.context_used 停留压缩前采样(圆环不回落)
+        assert_eq!(
+            count_events(&log, "compaction/stats"),
+            1,
+            "压缩后应落 compaction/stats 信号"
+        );
+        {
+            let l = log.lock().unwrap();
+            let s = l
+                .iter()
+                .find(|e| e.r#type == "compaction/stats")
+                .expect("compaction/stats");
+            let used = s.data["contextUsed"].as_u64().expect("contextUsed");
+            assert!(used > 0, "估算应非零");
+            assert!(
+                used < 900_000,
+                "压缩后估算应远小于压缩前全量(样本为短历史): {used}"
+            );
+        }
         assert_eq!(count_events(&log, "llm/retry-started"), 1);
         assert_eq!(retry_code, "CONTEXT_OVERFLOW");
         assert_eq!(retry_reason, "context-overflow");
