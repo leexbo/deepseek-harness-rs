@@ -323,10 +323,9 @@ impl Render for WorkspaceView {
         // 锚定/跟随滚底)(订阅/帧泵回调无窗口句柄或无滚动时机;
         // 见 store 字段注释)
         self.store.update(cx, |s, cx| {
-            // 侧栏让位协商(窗口窄到对话列跌破 composer 默认宽度 →
-            // 左侧栏自动隐藏;变宽自动恢复;见 sync_sidebar_yield)。
-            // 必须先于 col_w/面板让位计算
-            s.sync_sidebar_yield(f32::from(window.viewport_size().width), cx);
+            // 面板/侧栏让位协商(优先级:对话列 > 面板下限 > 侧栏;
+            // 见 sync_yield_negotiation)。必须先于 col_w/面板渲染宽计算
+            s.sync_yield_negotiation(f32::from(window.viewport_size().width), cx);
             s.flush_composer_clear(window, cx);
             s.sync_composer_placeholder(window, cx);
             s.flush_trajectory_scroll();

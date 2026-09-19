@@ -36,6 +36,9 @@ pub const SCROLLBAR_GUTTER_W: f32 = 24.;
 pub const MIN_COL: f32 = 748.;
 /// 用户气泡占列宽比例(原 525/748 ≈ 70%,随列等比)
 pub const BUBBLE_RATIO: f32 = 0.7;
+/// 面板让位下限:面板打开时渲染宽低于此 → 整体让位隐藏(避免细条;
+/// 窗口变宽自动恢复,见 AppStore::sync_yield_negotiation)
+pub const PANEL_YIELD_MIN: f32 = 320.;
 /// 聊天内容区需求宽 = 对话列默认宽(MIN_COL)+ 双槽 + 两侧留白。
 /// 面板让位/拖宽协商预留此宽(面板打开时对话列仍恒 748);侧栏
 /// 让位同一阈值(窗口减侧栏不足此宽 → 左侧栏自动隐藏,

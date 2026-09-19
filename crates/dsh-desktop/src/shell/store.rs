@@ -124,6 +124,8 @@ pub struct AppStore {
     pub sidebar_resize_anchor: Option<(f32, f32)>,
     /// 当前收起态是否为「让位自动收起」(区别于用户手动;变宽自动恢复)
     pub sidebar_auto_collapsed: bool,
+    /// 面板是否为「让位自动隐藏」(低于让位下限;变宽自动恢复)
+    pub panel_auto_closed: bool,
     /// 会话与工作区树功能切片状态(行/组/工作区菜单开态与坐标、
     /// 重命名/删除目标、工作区路径/标题/分支表、折叠组;域与行为
     /// 见 features::sessions)
@@ -214,6 +216,7 @@ impl AppStore {
             panel_plus_menu_at: None,
             sidebar_resize_anchor: None,
             sidebar_auto_collapsed: false,
+            panel_auto_closed: false,
             sessions: SessionsStore::default(),
             hero_menu: HeroMenu::None,
             session_cfg_by_id: HashMap::new(),
@@ -957,27 +960,48 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 侧栏让位协商:窗口减侧栏(展开态)不足对话列需求宽
-    /// (SIDEBAR_YIELD_MIN = composer 默认宽度形态)→ 左侧栏强制隐藏,
-    /// 对话列保住 MIN_COL;窗口变宽自动恢复「让位收起」的侧栏
-    /// (用户此后手动展开=其意志,不再强收)。 unfit 期间持续强制,
+    /// 面板/侧栏让位协商(优先级:对话列 CHAT_AREA_MIN > 面板下限
+    /// PANEL_YIELD_MIN > 侧栏):窗口装不下时侧栏先隐藏,再不够面板
+    /// 整体隐藏(避免细条);窗口变宽按记忆自动恢复。渲染前同步,
     /// 不依赖状态沿
-    pub fn sync_sidebar_yield(&mut self, viewport_w: f32, cx: &mut Context<Self>) {
+    pub fn sync_yield_negotiation(&mut self, viewport_w: f32, cx: &mut Context<Self>) {
         if self.settings.settings_open {
             return;
         }
-        // unfit 按展开态宽度判定(与当前是否已收起无关,防收起↔展开振荡):
-        // 窗口减「若展开的侧栏」装不下对话列需求宽即不足
+        // 侧栏:为「对话列 + 面板下限(面板打开时)」让位
+        let panel_reserve = if self.panel_open {
+            crate::shell::metrics::PANEL_YIELD_MIN
+        } else {
+            0.
+        };
         let expanded_w = f32::from(crate::shell::metrics::clamp_sidebar(self.sidebar_px));
-        let unfit = viewport_w - expanded_w < crate::shell::metrics::CHAT_AREA_MIN;
-        if unfit && !self.sidebar_collapsed {
+        let sidebar_unfit =
+            viewport_w - expanded_w < crate::shell::metrics::CHAT_AREA_MIN + panel_reserve;
+        if sidebar_unfit && !self.sidebar_collapsed {
             self.sidebar_collapsed = true;
             self.sidebar_auto_collapsed = true;
             cx.notify();
-        } else if !unfit && self.sidebar_auto_collapsed {
-            // 窗口变宽:仅恢复「让位自动收起」的;用户手动收起的不动
+        } else if !sidebar_unfit && self.sidebar_auto_collapsed {
             self.sidebar_collapsed = false;
             self.sidebar_auto_collapsed = false;
+            cx.notify();
+        }
+        // 面板:让位下限内随动;低于下限整体隐藏(记忆来源,变宽恢复)
+        let sidebar_w = f32::from(crate::shell::metrics::sidebar_width_for(
+            self.sidebar_collapsed,
+            self.sidebar_px,
+        ));
+        let available = viewport_w - sidebar_w - crate::shell::metrics::CHAT_AREA_MIN;
+        if self.panel_open {
+            if available < crate::shell::metrics::PANEL_YIELD_MIN && !self.panel_auto_closed {
+                self.panel_auto_closed = true;
+                self.panel_open = false;
+                cx.notify();
+            }
+        } else if self.panel_auto_closed && available >= crate::shell::metrics::PANEL_YIELD_MIN {
+            // 空间恢复:让位隐藏的面板自动重开
+            self.panel_auto_closed = false;
+            self.panel_open = true;
             cx.notify();
         }
     }
@@ -1008,9 +1032,13 @@ impl AppStore {
 
     // 右侧面板:手动开关 + 左缘拖宽(向左拖 = 增宽,与侧栏方向相反)。
 
-    /// 面板开关
+    /// 面板开关(手动开=用户意志,清除让位自动隐藏标记;窄窗下
+    /// sync_yield_negotiation 仍会强收——空间优先给对话列)
     pub fn toggle_panel(&mut self, cx: &mut Context<Self>) {
         self.panel_open = !self.panel_open;
+        if self.panel_open {
+            self.panel_auto_closed = false;
+        }
         cx.notify();
     }
 
