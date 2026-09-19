@@ -122,6 +122,8 @@ pub struct AppStore {
     pub sidebar_px: f32,
     /// 侧栏拖宽锚点(当次拖拽:光标 x + 起始宽);None = 未拖拽
     pub sidebar_resize_anchor: Option<(f32, f32)>,
+    /// 当前收起态是否为「让位自动收起」(区别于用户手动;变宽自动恢复)
+    pub sidebar_auto_collapsed: bool,
     /// 会话与工作区树功能切片状态(行/组/工作区菜单开态与坐标、
     /// 重命名/删除目标、工作区路径/标题/分支表、折叠组;域与行为
     /// 见 features::sessions)
@@ -211,6 +213,7 @@ impl AppStore {
             panel_active_tab: None,
             panel_plus_menu_at: None,
             sidebar_resize_anchor: None,
+            sidebar_auto_collapsed: false,
             sessions: SessionsStore::default(),
             hero_menu: HeroMenu::None,
             session_cfg_by_id: HashMap::new(),
@@ -946,10 +949,37 @@ impl AppStore {
 
     // ── 工作区整理 ──────────────────────────────────────────
 
-    /// 侧栏折叠切换
+    /// 侧栏折叠切换(手动;清让位标记——窄窗下手动展开是用户意志,
+    /// 不再自动恢复,直到窗口重新跨越让位阈值)
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_collapsed = !self.sidebar_collapsed;
+        self.sidebar_auto_collapsed = false;
         cx.notify();
+    }
+
+    /// 侧栏让位协商:窗口减侧栏(展开态)不足对话列需求宽
+    /// (SIDEBAR_YIELD_MIN = composer 默认宽度形态)→ 左侧栏强制隐藏,
+    /// 对话列保住 MIN_COL;窗口变宽自动恢复「让位收起」的侧栏
+    /// (用户此后手动展开=其意志,不再强收)。 unfit 期间持续强制,
+    /// 不依赖状态沿
+    pub fn sync_sidebar_yield(&mut self, viewport_w: f32, cx: &mut Context<Self>) {
+        if self.settings.settings_open {
+            return;
+        }
+        // unfit 按展开态宽度判定(与当前是否已收起无关,防收起↔展开振荡):
+        // 窗口减「若展开的侧栏」装不下对话列需求宽即不足
+        let expanded_w = f32::from(crate::shell::metrics::clamp_sidebar(self.sidebar_px));
+        let unfit = viewport_w - expanded_w < crate::shell::metrics::SIDEBAR_YIELD_MIN;
+        if unfit && !self.sidebar_collapsed {
+            self.sidebar_collapsed = true;
+            self.sidebar_auto_collapsed = true;
+            cx.notify();
+        } else if !unfit && self.sidebar_auto_collapsed {
+            // 窗口变宽:仅恢复「让位自动收起」的;用户手动收起的不动
+            self.sidebar_collapsed = false;
+            self.sidebar_auto_collapsed = false;
+            cx.notify();
+        }
     }
 
     // 侧栏拖宽(base + dx):锚点 = 光标 x + 起始宽,移动用增量加入
