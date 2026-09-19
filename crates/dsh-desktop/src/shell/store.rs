@@ -974,7 +974,7 @@ impl AppStore {
         } else {
             0.
         };
-        let expanded_w = f32::from(crate::shell::metrics::clamp_sidebar(self.sidebar_px));
+        let expanded_w = crate::shell::metrics::clamp_sidebar(self.sidebar_px);
         let sidebar_unfit =
             viewport_w - expanded_w < crate::shell::metrics::CHAT_AREA_MIN + panel_reserve;
         if sidebar_unfit && !self.sidebar_collapsed {
