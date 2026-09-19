@@ -377,6 +377,7 @@ impl Render for WorkspaceView {
             || st.sessions.workspace_menu_open
             || st.panel_plus_menu_at.is_some()
             || st.preview.menu.is_some()
+            || st.billing_card_open
             || st.stats_card.is_some()
             || st.chat.tail_card.is_some();
         let settings_open = st.settings.settings_open;

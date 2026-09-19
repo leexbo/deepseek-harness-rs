@@ -5499,6 +5499,85 @@ fn statusbar_stats_pills_open_detail_cards(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 统计卡外点关闭:开用量卡 → 点输入区(冒泡到根级 close_all_menus)
+/// → 卡应收起。回归锚:2026-09-19 真机反馈「用量卡点开后无法关闭」。
+#[gpui_kit::test]
+fn stats_card_closes_on_outside_click(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "stats-outside");
+    let id = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("当前会话");
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.stats_by_id.insert(
+                id,
+                serde_json::json!({
+                    "turns": 8, "steps": 371,
+                    "llmMs": 1_081_000, "toolMs": 1_266_000,
+                    "firstTokenMs": 1_300, "tokensPerSecond": 262,
+                    "inputTokens": 74_887_088, "outputTokens": 161_652,
+                    "uncachedInputTokens": 235_440,
+                    "cacheReadTokens": 74_651_648, "cacheWriteTokens": 0,
+                    "reasoningTokens": 0,
+                }),
+            );
+            cx.notify();
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    click_sel(&mut wcx, "statusbar-stats-usage");
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds("stats-card").is_some(), "用量卡未弹出");
+    // 外点输入区 → 根级 close_all_menus 应收卡
+    click_sel(&mut wcx, "composer-hit");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).stats_card),
+        None,
+        "外点应关闭统计卡"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 计费小卡片外点关闭:开卡 → 点输入区(冒泡到根级 close_all_menus)
+/// → 卡应收起。回归锚:2026-09-19 真机反馈「用量卡点开后无法关闭」——
+/// 根级外点层挂载条件 any_menu_open 漏了 billing_card_open,计费卡
+/// 开着时外点监听根本不挂载。
+#[gpui_kit::test]
+fn billing_card_closes_on_outside_click(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "billing-outside");
+    // 直接置开态 + 锚定 bounds(徽标数据链依赖 provider 快照,开卡/关闭
+    // 行为与数据源无关——本测只锁外点关闭)
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            st.billing_card_open = true;
+            st.billing_chip_bounds = Some(gpui_kit::Bounds {
+                origin: gpui_kit::Point {
+                    x: gpui_kit::px(600.),
+                    y: gpui_kit::px(800.),
+                },
+                size: gpui_kit::Size {
+                    width: gpui_kit::px(80.),
+                    height: gpui_kit::px(22.),
+                },
+            });
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds("billing-card").is_some(), "计费卡未弹出");
+    click_sel(&mut wcx, "composer-hit");
+    cx.run_until_parked();
+    assert!(
+        !cx.update(|app| store.read(app).billing_card_open),
+        "外点应关闭计费卡"
+    );
+    assert!(wcx.debug_bounds("billing-card").is_none(), "卡应消失");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 产物 chip 点击 = 右栏预览 tab 打开(阅读流不离开应用;2026-09-19
 /// 真机反馈曾回落系统编辑器跳出应用——open_deliverable 旧体是
 /// cx.open_with_system 直开,68a78cc 标称修复但实际只重排了无关签名,
