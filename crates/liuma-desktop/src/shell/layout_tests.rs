@@ -5509,7 +5509,7 @@ fn statusbar_stats_pills_open_detail_cards(cx: &mut TestAppContext) {
 /// Preview{path=产物 rel 路径}。
 #[gpui_kit::test]
 fn deliverable_chip_opens_preview_panel(cx: &mut TestAppContext) {
-    let (store, mut wcx, root) = menu_harness(cx, "deliverable-preview");
+    let (store, _wcx, root) = menu_harness(cx, "deliverable-preview");
     // 工作区夹具 + ws_paths 注入(current_workspace_dir 兜底取 values().next())
     let ws = root.join("ws");
     std::fs::create_dir_all(&ws).expect("建 ws");
