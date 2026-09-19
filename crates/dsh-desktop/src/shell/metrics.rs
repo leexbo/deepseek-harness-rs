@@ -42,9 +42,9 @@ pub const MAX_COL: f32 = 780.;
 pub const COL_RATIO: f32 = 0.5;
 /// 用户气泡占列宽比例(原 525/748 ≈ 70%,随列等比)
 pub const BUBBLE_RATIO: f32 = 0.7;
-/// 聊天内容区最小宽(= 对话列下限 + 双槽 + 两侧留白):窗口窄于此
-/// 仍可收缩,但内容卡不再让位——composer 及各列保持默认宽度形态,
-/// 不被压破(min_w 兜底,超出视口由 overflow_hidden 裁剪)
+/// 聊天内容区需求宽(= 对话列下限 + 双槽 + 两侧留白):面板让位/
+/// 拖宽协商用它保证对话列保有 composer 默认宽度;窗口硬下限另由
+/// window_min_size 承担(内容卡不得硬顶最小宽,窄窗会溢出裁剪)
 pub const CHAT_AREA_MIN: f32 = MIN_COL + 2. * H_PAD + NAV_GUTTER_W + SCROLLBAR_GUTTER_W;
 
 /// 侧栏拖宽 clamp 到协议范围 [SIDEBAR_MIN, SIDEBAR_MAX]。

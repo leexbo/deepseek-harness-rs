@@ -26,10 +26,10 @@ fn styled_view(view: TextView) -> gpui_kit::AnyElement {
     div()
         .text_size(px(14.))
         .line_height(relative(1.75))
-        // 滚动条槽预留(旧渲染器世界由列宽计算扣除,TextView 路径
-        // 丢失 = 换行宽度吃满整行,右缘数个字符被裁);行尾不可断段
-        // (行内代码 chip)的少量溢出由裁剪兜底
-        .pr(px(crate::shell::metrics::SCROLLBAR_GUTTER_W))
+        // 行尾不可断段(行内代码 chip)的少量溢出由裁剪兜底。
+        // 滚动条槽不在内层预留:外层列表容器已让位 SCROLLBAR_GUTTER
+        // (悬浮滚动条在槽内,不在列上),内层再扣一份 = 正文比
+        // composer 窄一截、右缘不齐
         .overflow_hidden()
         .child(view)
         .into_any_element()

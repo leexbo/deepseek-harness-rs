@@ -3568,7 +3568,8 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
     );
 
     // 场景 B:同窗展开侧栏(280):960 − 280 − 860 < 0 → 面板让位到 0
-    // (不渲染),内容卡守 860 下限(超出视口 180 由 overflow 裁剪)
+    // (不渲染),内容卡 = 960 − 280 = 680(下限在窗口 min 960 兜底,
+    // 卡片不硬顶——侧栏展开的窄窗由用户收侧栏换取列宽)
     cx.update(|app| {
         store.update(app, |st, cx| {
             st.sidebar_collapsed = false;
@@ -3583,8 +3584,8 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
     );
     let card_b = wcx.debug_bounds("content-card").expect("内容区应渲染");
     assert!(
-        (card_b.size.width - px(860.)).abs() < px(1.),
-        "面板让没后内容卡应守 860 下限,card={card_b:?}"
+        (card_b.size.width - px(680.)).abs() < px(1.),
+        "面板让没后内容区应全宽 680,card={card_b:?}"
     );
     let rail_b = wcx.debug_bounds("nav-rail").expect("导航轨应渲染");
     assert!(
