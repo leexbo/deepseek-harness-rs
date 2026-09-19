@@ -5398,7 +5398,6 @@ fn turn_tail_pills_open_detail_cards(cx: &mut TestAppContext) {
     ] {
         assert!(wcx.debug_bounds(sel).is_some(), "轮尾动作钮 {sel} 未渲染");
     }
-
     // 点用量 pill → 本轮用量卡;点用时 pill → 本轮用时和速度卡
     click_sel(&mut wcx, "turn-tail-turn-end:9-usage");
     wcx.refresh().expect("刷新失败");
@@ -5540,29 +5539,37 @@ fn agents_baseline_keeps_hero_blank(cx: &mut TestAppContext) {
 fn context_meter_renders_and_opens(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "ctx");
     // 注入占用(正常路径 = 首个 LLM 请求后 session_stats 产出;
-    // 不触发真实 refresh_stats 以免后台回读覆盖注入值)
-    cx.update(|app| {
-        let id = store.read(app).state.current_id.clone().unwrap();
-        store.update(app, |st, _| {
-            st.stats_by_id.insert(
-                id,
-                serde_json::json!({
-                    "turns": 2,
-                    "contextUsed": 250_000,
-                    "contextWindow": 1_000_000,
-                    "contextBreakdown": {
-                        "systemTokens": 50_000,
-                        "toolsTokens": 30_000,
-                        "messageTokens": 170_000,
-                    }
-                }),
-            );
+    // 不触发真实 refresh_stats 以免后台回读覆盖注入值;attach 期的
+    // 在途回读仍可能晚到覆写——轮询内幂等重申注入(与静默写竞速)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        cx.update(|app| {
+            let id = store.read(app).state.current_id.clone().unwrap();
+            store.update(app, |st, _| {
+                st.stats_by_id.insert(
+                    id.clone(),
+                    serde_json::json!({
+                        "turns": 2,
+                        "contextUsed": 250_000,
+                        "contextWindow": 1_000_000,
+                        "contextBreakdown": {
+                            "systemTokens": 50_000,
+                            "toolsTokens": 30_000,
+                            "messageTokens": 170_000,
+                        }
+                    }),
+                );
+            });
         });
-    });
-    cx.run_until_parked();
-    wcx.refresh().expect("刷新失败");
-    cx.update(|_: &mut gpui_kit::App| {});
-    cx.run_until_parked();
+        cx.run_until_parked();
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+        if wcx.debug_bounds("context-ring").is_some() || std::time::Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert!(
         wcx.debug_bounds("context-ring").is_some(),
         "composer 圆环未出现"
@@ -6959,41 +6966,86 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
     };
+    // 轮询等待元素入场(直改 chats 的重绘偶发晚一拍,单次 refresh 断言
+    // 在 0.3.5 帧调度下竞态;家族既定药方:异步回写断言改轮询)
+    let poll =
+        |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext, sel: &'static str| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                redraw(cx, wcx);
+                if wcx.debug_bounds(sel).is_some() || std::time::Instant::now() > deadline {
+                    return wcx.debug_bounds(sel).is_some();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
 
-    // 排队:回合进行中受理 → compact-queued 行(静态,非红)
-    cx.update(|app| {
-        store.update(app, |st, _| {
-            let id = st.state.current_id.clone().expect("当前会话");
-            let mut chat = crate::features::chat::ChatState::default();
-            chat.nodes.push(ChatNode::User {
-                key: "user:0".into(),
-                text: "先聊着".into(),
-                images: vec![],
-                files: Vec::new(),
+    // 排队:回合进行中受理 → compact-queued 行(静态,非红)。
+    // compact_queued/running 是瞬态位:迟到的历史折叠(真 tokio I/O,
+    // 完成时刻不定)会将其复位——轮询内幂等重申,不与折叠竞速
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        cx.update(|app| {
+            store.update(app, |st, cx| {
+                let id = st.state.current_id.clone().expect("当前会话");
+                if let Some(chat) = st.state.chats.get_mut(&id) {
+                    // 非空节点才能离开 hero 态(空会话不渲染聊天栈)
+                    if chat.nodes.is_empty() {
+                        chat.nodes.push(ChatNode::User {
+                            key: "user:0".into(),
+                            text: "先聊着".into(),
+                            images: vec![],
+                            files: Vec::new(),
+                        });
+                    }
+                    chat.compact_queued = true;
+                    chat.compact_running = false;
+                } else {
+                    let mut chat = crate::features::chat::ChatState::default();
+                    chat.nodes.push(ChatNode::User {
+                        key: "user:0".into(),
+                        text: "先聊着".into(),
+                        images: vec![],
+                        files: Vec::new(),
+                    });
+                    chat.compact_queued = true;
+                    st.state.chats.insert(id, chat);
+                }
+                st.chat.chat_version += 1;
+                cx.notify();
             });
-            chat.compact_queued = true;
-            st.state.chats.insert(id, chat);
         });
-    });
-    redraw(cx, &mut wcx);
+        redraw(cx, &mut wcx);
+        if wcx.debug_bounds("compact-queued").is_some() || std::time::Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert!(
         wcx.debug_bounds("compact-queued").is_some(),
         "排队态应渲染 quiet 状态行"
     );
 
     // 进行中:受理置位 → compact-running 在场,红色告警不在场
-    cx.update(|app| {
-        store.update(app, |st, cx| {
-            let id = st.state.current_id.clone().unwrap();
-            let chat = st.state.chats.get_mut(&id).unwrap();
-            chat.compact_queued = false;
-            chat.compact_running = true;
-            // 直改绕过帧泵 notify:补版本位触发重绘(生产路径经 apply 有)
-            st.chat.chat_version += 1;
-            cx.notify();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        cx.update(|app| {
+            store.update(app, |st, cx| {
+                let id = st.state.current_id.clone().unwrap();
+                if let Some(chat) = st.state.chats.get_mut(&id) {
+                    chat.compact_queued = false;
+                    chat.compact_running = true;
+                }
+                st.chat.chat_version += 1;
+                cx.notify();
+            });
         });
-    });
-    redraw(cx, &mut wcx);
+        redraw(cx, &mut wcx);
+        if wcx.debug_bounds("compact-running").is_some() || std::time::Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert!(
         wcx.debug_bounds("compact-running").is_some(),
         "进行中应渲染 quiet 状态行"
@@ -7022,11 +7074,7 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
             cx.notify();
         });
     });
-    redraw(cx, &mut wcx);
-    assert!(
-        wcx.debug_bounds("compact-row").is_some(),
-        "空反馈应渲染中性行"
-    );
+    assert!(poll(cx, &mut wcx, "compact-row"), "空反馈应渲染中性行");
     assert!(
         wcx.debug_bounds("turn-notice").is_none(),
         "空反馈不得走红色告警行"
@@ -7047,9 +7095,8 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
             cx.notify();
         });
     });
-    redraw(cx, &mut wcx);
     assert!(
-        wcx.debug_bounds("compact-done-2").is_some(),
+        poll(cx, &mut wcx, "compact-done-2"),
         "完成标记行应渲染(quiet 样式)"
     );
     click_sel(&mut wcx, "compact-done-2");

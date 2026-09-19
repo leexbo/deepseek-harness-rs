@@ -78,7 +78,7 @@ grep-searcher = "0.1.17"
 grep-regex = "0.1.14"
 uuid = { version = "1", features = ["v4", "v7"] }
 # GPUI 桌面门面:重导出 gpui(= gpui-pre)+ component/base/assets,升级走 semver
-gpui-kit = "0.6.1"
+gpui-kit = "0.6.4"
 # Mermaid → SVG(引擎选型见 kits/mermaid.rs);alpha 锁死防漂移
 merman = { version = "=0.8.0-alpha.5", default-features = false, features = ["svg", "layout-cytoscape"] }
 # Mermaid 查看器视口裁剪光栅(与 gpui 锁同版去重)

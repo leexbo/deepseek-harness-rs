@@ -249,6 +249,117 @@ mod tests {
         );
     }
 
+    /// 列表字号一致性探针:同 6 项列表分别包在 13px(正文)与 16px
+    /// wrapper 里,高度必须不同——相等即列表渲染钉死在 rem 默认字号、
+    /// 不随 wrapper 继承(真机截图曾现此症:列表项比正文段落大一号)
+    #[gpui_kit::test]
+    fn tv_list_font_size_follows_wrapper(cx: &mut TestAppContext) {
+        init(cx);
+        const LIST: &str =
+            "- 项目甲测试\n- 项目乙测试\n- 项目丙测试\n- 项目丁测试\n- 项目戊测试\n- 项目己测试\n";
+        struct Probe;
+        impl Render for Probe {
+            fn render(
+                &mut self,
+                _: &mut Window,
+                _: &mut gpui_kit::Context<Self>,
+            ) -> impl IntoElement {
+                div()
+                    .w(px(400.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .debug_selector(|| "tv-probe-13".to_string())
+                            .child(tv_static("probe-13", LIST)),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "tv-probe-16".to_string())
+                            .text_size(px(16.))
+                            .line_height(relative(1.75))
+                            .child(TextView::markdown("probe-16", LIST).style(view_style())),
+                    )
+            }
+        }
+        let (_view, cx) = cx.add_window_view(|window, cx| {
+            let v = cx.new(|_| Probe);
+            Root::new(v, window, cx)
+        });
+        cx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+        let mut h = |sel: &'static str| {
+            cx.debug_bounds(sel)
+                .map(|b| f32::from(b.size.height))
+                .unwrap_or(0.)
+        };
+        let h13 = h("tv-probe-13");
+        let h16 = h("tv-probe-16");
+        assert!(h13 > 0. && h16 > 0., "两块都应有高度({h13} / {h16})");
+        assert!(
+            (h16 - h13).abs() > 12.,
+            "列表字号应随 wrapper:13px 高 {h13} vs 16px 高 {h16}(差值过小 = 列表钉死默认字号)"
+        );
+    }
+
+    /// 行内代码 chip 行高锁:chip 行必须随正文字号缩放(gpui-base
+    /// 0.6.1 曾把 chip 行高钉死在窗口根行高——13px 正文的 chip 行恒
+    /// 26px,列表里 chip 密集即显「文字异常大」;0.6.4 起跟随)。
+    #[gpui_kit::test]
+    fn tv_inline_code_line_height_follows_body(cx: &mut TestAppContext) {
+        init(cx);
+        const CHIP: &str = "前缀 `chip` 后缀。";
+        struct Probe;
+        impl Render for Probe {
+            fn render(
+                &mut self,
+                _: &mut Window,
+                _: &mut gpui_kit::Context<Self>,
+            ) -> impl IntoElement {
+                div()
+                    .w(px(430.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .debug_selector(|| "tv-chip-13".to_string())
+                            .text_size(px(13.))
+                            .line_height(relative(1.75))
+                            .child(TextView::markdown("chip-13", CHIP).style(view_style())),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "tv-chip-16".to_string())
+                            .text_size(px(16.))
+                            .line_height(relative(1.75))
+                            .child(TextView::markdown("chip-16", CHIP).style(view_style())),
+                    )
+            }
+        }
+        let (_view, cx) = cx.add_window_view(|window, cx| {
+            let v = cx.new(|_| Probe);
+            Root::new(v, window, cx)
+        });
+        cx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+        let h13 = cx
+            .debug_bounds("tv-chip-13")
+            .map(|b| f32::from(b.size.height))
+            .unwrap_or(0.);
+        let h16 = cx
+            .debug_bounds("tv-chip-16")
+            .map(|b| f32::from(b.size.height))
+            .unwrap_or(0.);
+        assert!(h13 > 0. && h16 > 0., "两块都应有高度({h13} / {h16})");
+        // chip 行随正文缩放:16px 下的行高须显著大于 13px(旧缺陷:两者同为 26)
+        assert!(
+            h16 - h13 >= 4.,
+            "chip 行高应随正文字号:{h13} → {h16}(未缩放 = 上游钉死回归)"
+        );
+    }
+
     /// 流式增量 == 一次全量(行为等价 + 不丢块):分 5 段 push_str 喂的
     /// TextView 与全量构造的 TextView 高度一致(±2px),且逐段单调
     #[gpui_kit::test]
