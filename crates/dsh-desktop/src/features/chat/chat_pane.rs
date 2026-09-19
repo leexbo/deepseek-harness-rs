@@ -1233,6 +1233,7 @@ fn render_node(
         } => turn_tail(
             store,
             cx,
+            ix,
             key,
             *aborted,
             *turn,
@@ -1462,7 +1463,7 @@ fn user_bubble(
                 })
                 .when(!text.is_empty(), |el| el.child(bubble_rich_text(ix, text))),
         )
-        .child(copy_button(store, cx, ("copy-user", ix), key, text))
+        .child(copy_button(store, cx, ("copy-user", ix), "copy", key, text))
 }
 
 /// 用户气泡富文本:`@file`/`@folder`/`@session` 渲染成胶囊(源 refChip),
@@ -1674,7 +1675,14 @@ fn assistant_block(
                     .flex_shrink_0()
                     .items_center()
                     .gap(px(4.))
-                    .child(copy_button(store, cx, ("copy-asst", ix), &key, text))
+                    .child(copy_button(
+                        store,
+                        cx,
+                        ("copy-asst", ix),
+                        "copy",
+                        &key,
+                        text,
+                    ))
                     .children(crate::features::feedback::actions(store, message_id, cx)),
             );
         }
@@ -2118,11 +2126,13 @@ fn io_section(
 /// 消息复制钮(文档流内常显,20px 命中区;点击写剪贴板,图标
 /// Copy→Check——图标恒可见,hover
 /// 只加底色。此前的浮层方案锚在内容列外,被滚动容器横向裁剪,
-/// 生产不可见不可点)
+/// 生产不可见不可点。`sel_ns` = 调试选择器命名空间(消息行/轮尾行
+/// 各自独立,防同 key 双钮撞 selector)
 fn copy_button(
     store: &Entity<AppStore>,
     cx: &App,
     id: impl Into<gpui_kit::ElementId>,
+    sel_ns: &str,
     key: &str,
     text: &str,
 ) -> impl IntoElement {
@@ -2130,7 +2140,7 @@ fn copy_button(
     let s = store.clone();
     let k = key.to_string();
     let t = text.to_string();
-    let sel = format!("copy-{}", key);
+    let sel = format!("{sel_ns}-{key}");
     div()
         .id(id)
         .flex()
@@ -2157,12 +2167,14 @@ fn copy_button(
         })
 }
 
-/// 回合收尾行(照源 TurnTailNodeView:用量 pill + 用时 pill + 时钟;
-/// 中断轮保留警示标。详情卡根级渲染,点击坐标锚定)+ 产物行
+/// 回合收尾行(照源 MessageIconActions + TurnTailNodeView:复制/赞/踩/
+/// 分支 + 用量 pill + 用时 pill + 时钟,同一行;中断轮保留警示标。
+/// 详情卡根级渲染,点击坐标锚定)+ 产物行
 #[allow(clippy::too_many_arguments)]
 fn turn_tail(
     store: &Entity<AppStore>,
     cx: &App,
+    ix: usize,
     key: &str,
     aborted: bool,
     turn: u64,
@@ -2172,6 +2184,23 @@ fn turn_tail(
 ) -> impl IntoElement {
     let st = store.read(cx);
     let session = st.state.current_id.clone().unwrap_or_default();
+    // 本轮最后一条真实 assistant 消息(动作行的作用对象,同源动作行语义)
+    let last_reply = st.state.chats.get(&session).and_then(|c| {
+        c.nodes[..ix.min(c.nodes.len())]
+            .iter()
+            .rev()
+            .find_map(|n| match n {
+                ChatNode::Assistant {
+                    key,
+                    text,
+                    message_id,
+                    ..
+                } if !message_id.is_empty() => {
+                    Some((key.clone(), text.clone(), message_id.clone()))
+                }
+                _ => None,
+            })
+    });
     let bucket = st
         .state
         .chats
@@ -2190,6 +2219,53 @@ fn turn_tail(
         .flex_wrap()
         .items_center()
         .gap(px(6.))
+        // 复制(作用本轮最终答复)
+        .when_some(
+            last_reply.clone().filter(|(_, text, _)| !text.is_empty()),
+            |el, (rkey, text, _)| {
+                el.child(copy_button(
+                    store,
+                    cx,
+                    gpui_kit::SharedString::from(format!("tail-copy-{key}")),
+                    "tail-copy",
+                    &rkey,
+                    &text,
+                ))
+            },
+        )
+        // 赞/踩(有评分后追加「补充说明」,与消息动作行同源)
+        .when_some(
+            last_reply
+                .clone()
+                .map(|(_, _, mid)| mid)
+                .filter(|m| !m.is_empty()),
+            |el, message_id| {
+                el.children(crate::features::feedback::actions(store, &message_id, cx))
+            },
+        )
+        // 分支(整会话分叉并打开;收尾行处 ≈ 分叉至此)
+        .when(!session.is_empty(), |el| {
+            let fork_store = store.clone();
+            let fork_session = session.clone();
+            let fork_sel = format!("turn-tail-{key}-fork");
+            el.child(
+                div()
+                    .id(gpui_kit::SharedString::from(format!("tail-fork-{key}")))
+                    .debug_selector(move || fork_sel.clone())
+                    .size(px(24.))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_color(theme::CAPTION())
+                    .hover(|s| s.bg(theme::DOCK()))
+                    .on_click(move |_, _, cx| {
+                        fork_store.update(cx, |st, cx| st.fork(&fork_session, cx));
+                    })
+                    .child(fixed(DshIcon::GitBranch, 12.)),
+            )
+        })
         // 中断轮警示标(照源无状态文案;中断语义必须可见,保留)
         .when(aborted, |el| {
             el.child(
@@ -2202,10 +2278,6 @@ fn turn_tail(
                     .child(fixed(IconName::TriangleAlert, 12.))
                     .child("已中断"),
             )
-        })
-        .when(!aborted && run_ms <= 0 && total.is_none(), |el| {
-            // 无任何统计可显(极老日志/零长轮):退化为静默勾标
-            el.child(fixed(IconName::Check, 12.).text_color(theme::CAPTION()))
         })
         .when_some(total.filter(|t| *t > 0), |el, total| {
             el.child(tail_pill(

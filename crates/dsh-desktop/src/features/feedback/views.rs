@@ -33,6 +33,7 @@ pub fn actions(store: &Entity<AppStore>, message_id: &str, cx: &App) -> Vec<gpui
     els.push(
         feedback_btn(
             gpui_kit::SharedString::from(format!("fb-like-{like_sel}")),
+            format!("fb-like-{like_sel}"),
             IconName::ThumbsUp,
             like_active,
             move |cx| {
@@ -52,6 +53,7 @@ pub fn actions(store: &Entity<AppStore>, message_id: &str, cx: &App) -> Vec<gpui
     els.push(
         feedback_btn(
             gpui_kit::SharedString::from(format!("fb-dislike-{dislike_sel}")),
+            format!("fb-dislike-{dislike_sel}"),
             IconName::ThumbsDown,
             dislike_active,
             move |cx| {
@@ -108,14 +110,14 @@ pub fn actions(store: &Entity<AppStore>, message_id: &str, cx: &App) -> Vec<gpui
     els
 }
 
-/// 单个评分钮(选中态高亮 + 点击评分)
+/// 单个评分钮(选中态高亮 + 点击评分;`sel` = 调试选择器,按消息唯一)
 fn feedback_btn(
     id: impl Into<gpui_kit::ElementId>,
+    sel: String,
     icon: IconName,
     active: bool,
     on_click: impl Fn(&mut App) + 'static,
 ) -> impl IntoElement {
-    let sel = "feedback-btn".to_string();
     div()
         .id(id)
         .debug_selector(move || sel.clone())

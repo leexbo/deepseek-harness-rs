@@ -5343,7 +5343,7 @@ fn turn_tail_pills_open_detail_cards(cx: &mut TestAppContext) {
                 reasoning: String::new(),
                 streaming: false,
                 usage: None,
-                message_id: String::new(),
+                message_id: "m-1".into(),
             });
             chat.nodes.push(crate::features::chat::ChatNode::TurnTail {
                 key: "turn-end:9".into(),
@@ -5389,6 +5389,15 @@ fn turn_tail_pills_open_detail_cards(cx: &mut TestAppContext) {
         wcx.debug_bounds("turn-tail-turn-end:9-time").is_some(),
         "轮尾用时 pill 未渲染"
     );
+    // 照源 MessageIconActions:复制/赞/踩/分支与 pill 同行在场
+    for sel in [
+        "tail-copy-a:1:1",
+        "fb-like-m-1",
+        "fb-dislike-m-1",
+        "turn-tail-turn-end:9-fork",
+    ] {
+        assert!(wcx.debug_bounds(sel).is_some(), "轮尾动作钮 {sel} 未渲染");
+    }
 
     // 点用量 pill → 本轮用量卡;点用时 pill → 本轮用时和速度卡
     click_sel(&mut wcx, "turn-tail-turn-end:9-usage");
