@@ -308,9 +308,6 @@ struct SlotInner {
     /// 轨迹增量折叠(驻留台账;驱动单写,RPC 只读快照。恢复式锁:
     /// 后台 panic 不连坐,连续性由 seq 补喂守卫)
     traj: Mutex<crate::trajectory::TrajectoryFolder>,
-    /// 落盘句柄克隆(durable 队列:泵侧 splice 事件的持久化通道;
-    /// 与驱动共享同一写者互斥,行完整性不破)
-    backend: liuma_host::JsonlBackend,
     /// 槽已摘除(detach):旧泵/驱动任务对后续 Job/命令弃处理,防以
     /// 冻结高水位的旧 log 追加(重挂后双写)
     closed: std::sync::atomic::AtomicBool,
@@ -2822,7 +2819,6 @@ impl AppHost {
                 service.as_ref().map(|svc| {
                     let sink: liuma_hooks::HookSink = {
                         let log = Arc::clone(&inner.log);
-                        let backend = inner.backend.clone();
                         Arc::new(move |ty, data| {
                             if let Ok(mut l) = log.lock() {
                                 let ev = liuma_session::EventEnvelope::new(
@@ -2833,11 +2829,10 @@ impl AppHost {
                                         .unwrap_or(0),
                                     data,
                                 );
-                                if let Ok(seq) = l.append(ev)
-                                    && let Some(envelope) = l.get(seq)
-                                {
-                                    let _ = backend.append(envelope);
-                                }
+                                // 持久化归日志的 durability sink(单写权威);
+                                // 手动 backend.append 会把同一 seq 落两行,
+                                // 会话重载即被连续性守卫拒收
+                                let _ = l.append(ev);
                             }
                         })
                     };
@@ -3793,8 +3788,6 @@ impl AppHost {
         // 被折叠组吞掉。
         let backend = liuma_app::open_backend(&resolved.session)
             .map_err(|e| RpcError::internal(format!("打开会话日志失败:{e}")))?;
-        // 泵侧落盘句柄克隆(见 SlotInner.backend)
-        let backend_shared = backend.clone();
         let log = {
             // attach 装配(建日志+装配持久化汇)与冷路径追加互斥
             // (见 AppendLocks):冷读尾→append 不得落进装配窗口
@@ -3998,7 +3991,6 @@ impl AppHost {
             cancel: cancel.clone(),
             log: session_log,
             traj: Mutex::new(crate::trajectory::TrajectoryFolder::new()),
-            backend: backend_shared,
             closed: std::sync::atomic::AtomicBool::new(false),
         };
         if slot.inner.set(inner).is_err() {
@@ -7088,10 +7080,11 @@ async fn driver_loop(
         if let Some(service) = host0.build_hook_service() {
             let sink: liuma_hooks::HookSink = {
                 let log = Arc::clone(&inner.log);
-                let backend = inner.backend.clone();
                 Arc::new(move |ty, data| {
-                    // hook/* 落档照 engine commit 模式:append 赋 seq 后
-                    // 取回信封落盘。锁竞争由短临界区收敛(hook 串行)
+                    // hook/* 落档照 engine commit 模式:锁内 append 赋 seq,
+                    // 持久化由日志的 durability sink 独占——手动
+                    // backend.append 会把同一 seq 落两行,会话重载即被
+                    // 连续性守卫拒收。锁竞争由短临界区收敛(hook 串行)
                     if let Ok(mut l) = log.lock() {
                         let ev = liuma_session::EventEnvelope::new(
                             ty,
@@ -7103,11 +7096,7 @@ async fn driver_loop(
                             },
                             data,
                         );
-                        if let Ok(seq) = l.append(ev)
-                            && let Some(envelope) = l.get(seq)
-                        {
-                            let _ = backend.append(envelope);
-                        }
+                        let _ = l.append(ev);
                     }
                 })
             };
@@ -7131,7 +7120,6 @@ async fn driver_loop(
             let ss_session_id = session_id.clone();
             let ss_ws = ws_root.clone();
             let ss_log = Arc::clone(&inner.log);
-            let ss_backend = inner.backend.clone();
             // SessionStart 链不 join(detached);任务句柄显式 drop
             drop(tokio::spawn(async move {
                 let source = "startup";
@@ -7139,7 +7127,10 @@ async fn driver_loop(
                     .run_session_start(&ss_session_id, &ss_ws, source, None)
                     .await;
                 if let Some(text) = merged.additional_context.first() {
-                    // 上下文染色落档(kind=plugin mislabel guard 的 RS 面)
+                    // 上下文染色落档(kind=plugin mislabel guard 的 RS 面);
+                    // 持久化归日志的 durability sink(单写权威)——手动
+                    // backend.append 会把同一 seq 落两行,会话重载即被
+                    // 连续性守卫拒收
                     let payload = serde_json::json!({
                         "id": uuid::Uuid::now_v7().to_string(),
                         "content": text,
@@ -7156,11 +7147,7 @@ async fn driver_loop(
                             },
                             payload,
                         );
-                        if let Ok(seq) = l.append(ev)
-                            && let Some(envelope) = l.get(seq)
-                        {
-                            let _ = ss_backend.append(envelope);
-                        }
+                        let _ = l.append(ev);
                     }
                 }
             }));

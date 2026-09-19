@@ -152,12 +152,7 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
         ]);
         let gate = InvariantGate::new(provider, app::fresh_log());
         let log = gate.log();
-        let review = CliReview::new(
-            Arc::clone(&log),
-            backend.clone(),
-            cancel.clone(),
-            message.is_none(),
-        );
+        let review = CliReview::new(Arc::clone(&log), cancel.clone(), message.is_none());
         let mut session = Session::new(
             parts,
             gate,
@@ -176,12 +171,7 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
             app::fresh_log(),
         );
         let log = gate.log();
-        let review = CliReview::new(
-            Arc::clone(&log),
-            backend.clone(),
-            cancel.clone(),
-            message.is_none(),
-        );
+        let review = CliReview::new(Arc::clone(&log), cancel.clone(), message.is_none());
         let mut session = Session::new(
             parts,
             gate,
@@ -203,12 +193,7 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
         );
         let log = gate.log();
         // 评审面:turn 内阻塞评审(REPL 行路由;单发读 stdin)
-        let review = CliReview::new(
-            Arc::clone(&log),
-            backend.clone(),
-            cancel.clone(),
-            message.is_none(),
-        );
+        let review = CliReview::new(Arc::clone(&log), cancel.clone(), message.is_none());
         let tools = app::build_tools(
             &resolved,
             &api_key,
@@ -303,7 +288,6 @@ struct CliReview {
 
 struct CliReviewInner {
     log: Arc<Mutex<EventLog>>,
-    backend: liuma_host::JsonlBackend,
     cancel: liuma_agent_loop::CancelToken,
     interactive: bool,
     /// REPL 行路由的应答通道(评审打开期间 Some)
@@ -313,14 +297,12 @@ struct CliReviewInner {
 impl CliReview {
     fn new(
         log: Arc<Mutex<EventLog>>,
-        backend: liuma_host::JsonlBackend,
         cancel: liuma_agent_loop::CancelToken,
         interactive: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             inner: Arc::new(CliReviewInner {
                 log,
-                backend,
                 cancel,
                 interactive,
                 tx: Mutex::new(None),
@@ -370,17 +352,12 @@ impl liuma_plan::PlanReviewPort for CliReview {
     }
 }
 
-/// log-only 事件落档(锁内定 seq + 落盘;失败记日志不阻断评审)
+/// log-only 事件落档(锁内定 seq;持久化由装配点 Session::new 挂入的
+/// durability sink 独占——此处再写盘会把同一 seq 落两行,会话重载即被
+/// 连续性守卫拒收)
 fn review_append(inner: &CliReviewInner, ev: EventEnvelope) {
-    let committed = inner
-        .log
-        .lock()
-        .ok()
-        .and_then(|mut l| l.append(ev).ok().and_then(|seq| l.get(seq).cloned()));
-    if let Some(ev) = committed
-        && let Err(e) = inner.backend.append(&ev)
-    {
-        eprintln!("plan 事件落盘失败:{e}");
+    if let Ok(mut l) = inner.log.lock() {
+        let _ = l.append(ev);
     }
 }
 

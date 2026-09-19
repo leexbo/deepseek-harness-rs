@@ -52,13 +52,23 @@ fn message_tokens(data: &Value) -> u64 {
 /// 从日志计算上下文构成。
 ///
 /// - system/tools 取**最新** audit llm "request" 记录(引擎出网前落档的
-///   字符长度;重放可得,与直播一致——「最新请求信封」语义)
+///   字符长度;重放可得,与直播一致——「最新请求信封」语义;压缩不
+///   影响两段,system/工具目录不随折叠变化)
 /// - message 按事件类型折叠 user/message、assistant/message、思考、
-///   工具结果与折叠摘要。折叠后历史不扣减(折叠预算 4M 字符下
-///   触发极稀,启发式差量可接受)
+///   工具结果与折叠摘要,只计**模型可见面**:最新 `compaction/summary`
+///   的 `throughSeq` 之前的历史已被折叠为该摘要(与
+///   `derive_visible_messages` 同一语义),不再计入——否则分项随全量
+///   历史单调累积,与压缩后的占用环同屏背离
 pub fn context_breakdown<'a>(
     events: impl IntoIterator<Item = &'a EventEnvelope>,
 ) -> ContextBreakdown {
+    let events: Vec<&EventEnvelope> = events.into_iter().collect();
+    let through_seq = events
+        .iter()
+        .rev()
+        .find(|e| e.r#type == "compaction/summary")
+        .and_then(|e| e.data["throughSeq"].as_u64())
+        .unwrap_or(0);
     let mut system_tokens = 0u64;
     let mut tools_tokens = 0u64;
     let mut message = 0u64;
@@ -75,7 +85,16 @@ pub fn context_breakdown<'a>(
                     tools_tokens = ceil_div(chars, CHARS_PER_TOKEN) + BLOCK_OVERHEAD;
                 }
             }
-            "user/message" | "assistant/message" => {
+            "user/message"
+            | "assistant/message"
+            | "assistant/reasoning"
+            | "tool/result"
+            | "compaction/summary" => {
+                // 被折叠遮蔽的历史(已定序且 seq <= 最新摘要 throughSeq)
+                // 已由摘要代表,不再占上下文;seq 0 = 未定序,不参与判定
+                if ev.seq > 0 && ev.seq <= through_seq {
+                    continue;
+                }
                 // 注入上下文(user/message + source.kind != "user")不计入
                 // message_tokens:注入是旁车上下文,不占历史消息数;
                 // 真实用户/助手消息照算。
@@ -84,27 +103,11 @@ pub fn context_breakdown<'a>(
                 {
                     continue;
                 }
-                message += message_tokens(&ev.data)
-            }
-            "assistant/reasoning" => {
-                if let Some(text) = ev.data["text"].as_str() {
-                    message += ceil_div(text.chars().count() as u64, CHARS_PER_TOKEN)
-                        + BLOCK_OVERHEAD
-                        + ROLE_OVERHEAD;
-                }
-            }
-            "tool/result" => {
-                if let Some(text) = ev.data["output"].as_str() {
-                    message += ceil_div(text.chars().count() as u64, CHARS_PER_TOKEN)
-                        + BLOCK_OVERHEAD
-                        + ROLE_OVERHEAD;
-                }
-            }
-            "compaction/summary" => {
-                if let Some(text) = ev.data["summary"].as_str() {
-                    message += ceil_div(text.chars().count() as u64, CHARS_PER_TOKEN)
-                        + BLOCK_OVERHEAD
-                        + ROLE_OVERHEAD;
+                message += match ev.r#type.as_str() {
+                    "assistant/reasoning" => ev.data["text"].as_str().map_or(0, price_block),
+                    "tool/result" => ev.data["output"].as_str().map_or(0, price_block),
+                    "compaction/summary" => ev.data["summary"].as_str().map_or(0, price_block),
+                    _ => message_tokens(&ev.data),
                 }
             }
             _ => {}
@@ -115,6 +118,11 @@ pub fn context_breakdown<'a>(
         tools_tokens,
         message_tokens: message,
     }
+}
+
+/// 单文本块价格:字符价 + 块结构开销 + 角色开销
+fn price_block(text: &str) -> u64 {
+    ceil_div(text.chars().count() as u64, CHARS_PER_TOKEN) + BLOCK_OVERHEAD + ROLE_OVERHEAD
 }
 
 #[cfg(test)]
@@ -209,5 +217,47 @@ mod tests {
         let b = context_breakdown(&log);
         assert_eq!(b.system_tokens, 0);
         assert_eq!(b.tools_tokens, 0);
+    }
+
+    #[test]
+    fn folded_history_is_excluded_from_message_tokens() {
+        // 压缩可见面:最新 compaction/summary 的 throughSeq 之前的历史
+        // (含更早的摘要)已折叠为该摘要,分项只计最新摘要与其后消息——
+        // 与占用环同口径,否则分项随全量历史累积、压缩后不同步回落
+        let mut early = ev("user/message", json!({ "content": "abcd" }));
+        early.seq = 1;
+        let mut folded_result = ev("tool/result", json!({ "output": "wxyz" }));
+        folded_result.seq = 2;
+        let mut old_summary = ev(
+            "compaction/summary",
+            json!({ "summary": "old summary", "throughSeq": 2 }),
+        );
+        old_summary.seq = 3;
+        let mut middle = ev("assistant/message", json!({ "content": "mid answer" }));
+        middle.seq = 4;
+        let mut summary = ev(
+            "compaction/summary",
+            json!({ "summary": "condensed", "throughSeq": 4 }),
+        );
+        summary.seq = 5;
+        let mut later = ev("user/message", json!({ "content": "later" }));
+        later.seq = 6;
+
+        let b = context_breakdown([
+            &early,
+            &folded_result,
+            &old_summary,
+            &middle,
+            &summary,
+            &later,
+        ]);
+        // 摘要 "condensed" = ceil(9/4)+4+4 = 11;"later" = ceil(5/4)+4+4 = 10;
+        // seq <= 4 的四条(early/tool 结果/旧摘要/middle)不计
+        assert_eq!(b.message_tokens, 11 + 10);
+        // system/tools 语义不受压缩影响:折叠前的 request 记录仍生效
+        let log_with_request = vec![audit_llm_request(100, 200), summary];
+        let b = context_breakdown(&log_with_request);
+        assert_eq!(b.system_tokens, ceil_div(100, 4) + ROLE_OVERHEAD);
+        assert_eq!(b.tools_tokens, ceil_div(200, 4) + BLOCK_OVERHEAD);
     }
 }

@@ -328,7 +328,6 @@ pub struct Session<T, TOOLS> {
     engine: LoopEngine,
     gate: T,
     tools: TOOLS,
-    backend: JsonlBackend,
     session_path: String,
     parts: PromptParts,
     cancel: CancelToken,
@@ -374,7 +373,6 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
             // 令牌与工具共享:engine 安全点与工具执行中的 select 同源
             gate,
             tools,
-            backend,
             session_path,
             cancel,
         }
@@ -538,17 +536,11 @@ where
     /// 事件 seq 与压缩统计;`None` = 无可压缩历史。
     pub async fn compact_now(&mut self) -> Result<Option<(u64, u64, u64)>> {
         self.refresh_header();
-        let Session {
-            engine,
-            gate,
-            backend,
-            ..
-        } = self;
-        let mut sink = |ev: &EventEnvelope| {
-            if let Err(e) = backend.append(ev) {
-                eprintln!("持久化失败:{e}");
-            }
-        };
+        let Session { engine, gate, .. } = self;
+        // 持久化由装配点的 durability sink 独占(单写权威);此 sink 只是
+        // 渲染广播位——再写一次盘会把同一 seq 落两行,重载即被连续性
+        // 守卫拒收
+        let mut sink = |_ev: &EventEnvelope| {};
         let clock = wall_clock;
         match engine.compact_now(gate, &clock, &mut sink).await {
             Ok(liuma_agent_loop::FoldOutcome::Folded { seq, items, tokens }) => {
@@ -683,5 +675,106 @@ mod tests {
         // 文件缺失 = 空日志(新会话)
         let missing = dir.join("none.jsonl");
         assert_eq!(load_log(missing.to_str().unwrap()).unwrap().high_water(), 0);
+    }
+
+    /// 回归锁:手动压缩落档由装配点挂入日志的 durability sink 独占——
+    /// /compact 后文件每 seq 恰一行且连续,重开过连续性守卫(渲染位
+    /// sink 里再落盘会双写,历史即被拒载)
+    #[tokio::test]
+    async fn compact_now_persists_single_copy_and_reloads() {
+        let dir = std::env::temp_dir().join(format!("liuma-compact-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+
+        // 可折叠历史(与宿主 compaction 测试同一形态)
+        let log = std::sync::Arc::new(std::sync::Mutex::new(liuma_session::EventLog::new()));
+        {
+            let mut l = log.lock().unwrap();
+            for i in 0..10 {
+                l.append(liuma_session::EventEnvelope::new(
+                    "user/message",
+                    0,
+                    serde_json::json!({ "content": format!("question {i}: {}", "q".repeat(600)) }),
+                ))
+                .unwrap();
+                l.append(liuma_session::EventEnvelope::new(
+                    "assistant/message",
+                    0,
+                    serde_json::json!({ "content": format!("answer {i}") }),
+                ))
+                .unwrap();
+            }
+        }
+        // 历史先落盘(真实会话形态:文件承载 1..N 全量),再装配后端
+        {
+            use std::io::Write as _;
+            let hist: Vec<_> = log.lock().unwrap().iter().cloned().collect();
+            let mut out = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+            for ev in &hist {
+                serde_json::to_writer(&mut out, ev).unwrap();
+                out.write_all(b"\n").unwrap();
+            }
+            out.flush().unwrap();
+        }
+        let backend = crate::open_backend(path.to_str().unwrap()).unwrap();
+
+        let mut provider = liuma_llm::FakeProvider::new();
+        provider.summaries.push("condensed".into());
+
+        let preset =
+            liuma_host::PresetManifest::load(std::path::Path::new("/nonexistent"), "standard")
+                .unwrap();
+        let resolved = crate::Resolved {
+            model: "test-model".into(),
+            base_url: String::new(),
+            session: String::new(),
+            workspace: std::path::PathBuf::from("/tmp/ws"),
+            dialect: String::new(),
+            reasoning_effort: None,
+            models: None,
+            context_window: liuma_compaction::DEFAULT_CONTEXT_WINDOW,
+            preset,
+        };
+        let parts = prompt_parts(&resolved, false);
+        let mut session = crate::Session::new(
+            parts,
+            provider,
+            std::sync::Arc::clone(&log),
+            liuma_agent_loop::NoTools,
+            backend,
+            path.to_str().unwrap().to_string(),
+            liuma_agent_loop::CancelToken::new(),
+        );
+        // 保留尾压到 1:小会话也能压出前缀
+        session.engine.set_fold_thresholds(0, 1);
+
+        let outcome = session.compact_now().await.unwrap();
+        assert!(outcome.is_some(), "可折叠历史应折叠落档");
+
+        // 文件每 seq 恰一行且连续(重复 seq = 双写)
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut seqs: Vec<u64> = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).unwrap();
+                v["seq"].as_u64().unwrap()
+            })
+            .collect();
+        seqs.sort();
+        for (ix, s) in seqs.iter().enumerate() {
+            assert_eq!(*s, (ix + 1) as u64, "每 seq 恰一行且连续");
+        }
+
+        // 重开过守卫:摘要事件恰好一份
+        let re = load_log(path.to_str().unwrap()).unwrap();
+        assert_eq!(re.high_water(), seqs.len() as u64);
+        assert_eq!(
+            re.query(Some("compaction/summary")).len(),
+            1,
+            "compaction/summary 恰一份"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -275,7 +275,6 @@ pub struct Gateway<T, TOOLS = NoTools> {
     engine: LoopEngine,
     transport: T,
     tools: TOOLS,
-    backend: JsonlBackend,
     log: Arc<Mutex<EventLog>>,
     /// 软取消令牌(turn 执行中可被 `cancel` 方法/外部触发打断)
     cancel: CancelToken,
@@ -320,7 +319,6 @@ impl<T, TOOLS> Gateway<T, TOOLS> {
             engine,
             transport,
             tools,
-            backend,
             log,
             cancel,
             downlink: None,
@@ -528,9 +526,9 @@ impl<T: LlmTransport + Summarizer + Send, TOOLS: ToolPort + Send> Gateway<T, TOO
                 }
                 None => notifications.push(notification),
             }
-            if let Err(e) = self.backend.append(ev) {
-                eprintln!("[gateway] 持久化失败:{e}");
-            }
+            // 持久化由装配点挂入日志的 durability sink 独占(单写权威);
+            // 此 sink 只做下行通知——再写一次盘会把同一 seq 落两行,
+            // 会话重载即被连续性守卫拒收
         };
         let outcome = self
             .engine

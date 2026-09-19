@@ -411,3 +411,41 @@ async fn wait_review_open(channel: &liuma_host::rpc::PlanReviewChannel) {
     }
     panic!("评审未打开");
 }
+
+/// 回归锁:turn 落档由装配点挂入日志的 durability sink 独占——事件在
+/// 文件中每 seq 恰一行且连续(通知 sink 里再落盘会双写,会话重载即被
+/// 连续性守卫拒收)
+#[tokio::test]
+async fn turn_persists_each_event_once() {
+    let dir = std::env::temp_dir().join(format!("liuma-rpc-once-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut gw = gateway(
+        &dir,
+        vec![vec![
+            LlmEvent::Chunk("he".into()),
+            LlmEvent::Chunk("llo".into()),
+            LlmEvent::AssistantMessage(json!({ "content": "hello" })),
+            LlmEvent::Done,
+        ]],
+    );
+
+    gw.handle("turn", &json!({ "input": "hi" }))
+        .await
+        .expect("turn");
+
+    let text = std::fs::read_to_string(dir.join("rpc.jsonl")).unwrap();
+    let mut seqs: Vec<u64> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let v: Value = serde_json::from_str(l).unwrap();
+            v["seq"].as_u64().unwrap()
+        })
+        .collect();
+    seqs.sort();
+    for (ix, s) in seqs.iter().enumerate() {
+        assert_eq!(*s, (ix + 1) as u64, "每 seq 恰一行且连续(行序 = seq 序)");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
